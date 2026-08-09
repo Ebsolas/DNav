@@ -396,17 +396,17 @@ _dsearch_paint_row() {
 
   case $mode in
     bar)
-      # [DNav Search: ] query…          count  [Help]
+      # [ DNav Search:] query…          count  [Help]
       local label count helpchip gap avail qshow
-      label=" DNav Search: "
+      label=" DNav Search:"
       helpchip=" Help "
       if (( $#_dsearch_matches > 0 )) && [[ ${_dsearch_focus:-list} == list ]]; then
         count=" $(( _dsearch_sel + 1 ))/$#_dsearch_matches "
       else
         count=""
       fi
-      # Room for query between label and count+Help
-      avail=$(( maxw - ${#label} - ${#count} - ${#helpchip} ))
+      # Room for query: label + space after chip + count + Help
+      avail=$(( maxw - ${#label} - 1 - ${#count} - ${#helpchip} ))
       (( avail < 1 )) && avail=1
       qshow="$text"
       if (( ${#qshow} > avail )); then
@@ -416,10 +416,10 @@ _dsearch_paint_row() {
           qshow="${qshow[1,avail-1]}…"
         fi
       fi
-      gap=$(( maxw - ${#label} - ${#qshow} - ${#count} - ${#helpchip} ))
+      gap=$(( maxw - ${#label} - 1 - ${#qshow} - ${#count} - ${#helpchip} ))
       (( gap < 0 )) && gap=0
-      # Label chip always cyan; query normal; Help cyan when focused
-      printf "\r${hl}%s${rst}%s%*s%s" "$label" "$qshow" $gap "" "$count"
+      # Label chip always cyan; space + query normal; Help cyan when focused
+      printf "\r${hl}%s${rst} %s%*s%s" "$label" "$qshow" $gap "" "$count"
       if [[ ${_dsearch_focus:-list} == help ]]; then
         printf "${hl}%s${rst}" "$helpchip"
       else
