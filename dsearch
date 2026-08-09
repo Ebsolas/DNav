@@ -5,22 +5,40 @@
 #   _dsearch_available    – always true when this file is sourced
 #   _dsearch_start        – search overlay (return 0 = navigated/done, 1 = cancel → main)
 #   _dsearch_in_dfile     – stub: jump inside dfile explorer (later)
-#   _dsearch_ensure_index – build/load directory path cache
+#   _dsearch_ensure_index – ensure on-disk directory path cache is fresh
 #
+# Strategy: load-once path list, incremental filter-out, awk scorer (not pure zsh).
 # Index: ${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx  (dirs only, rebuilt after 24h)
 # Scope: $HOME + common roots; prunes noisy trees. Override roots with DNAV_SEARCH_ROOTS.
 
 _dsearch_available() { return 0 }
 
-# In-memory index (reused within a shell session after first load)
-typeset -ga _DSEARCH_INDEX
-typeset -g  _DSEARCH_INDEX_LOADED=0
-
 # ── dfile hook (stub) ─────────────────────────────────────────────────────
-# Called when dfile is open; should navigate explorer instead of cd+exit.
 _dsearch_in_dfile() {
-  # Not implemented until dfile exists.
   return 1
+}
+
+# ── Spinner ───────────────────────────────────────────────────────────────
+# Braille “dots marching” — no status text
+typeset -ga _DSEARCH_SPINNER_FRAMES
+_DSEARCH_SPINNER_FRAMES=(⠄⠄⠄ ⠂⠄⠄ ⠁⠂⠄ ⠂⠁⠂ ⠄⠂⠁ ⠄⠄⠂)
+
+# Run command while animating spinner on the current line. No text labels.
+_dsearch_run_with_spinner() {
+  local i=1 pid ret
+  (
+    "$@"
+  ) &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r\e[2K%s" "${_DSEARCH_SPINNER_FRAMES[i]}"
+    (( i = i % $#_DSEARCH_SPINNER_FRAMES + 1 ))
+    sleep 0.1
+  done
+  wait "$pid"
+  ret=$?
+  printf "\r\e[2K"
+  return $ret
 }
 
 # ── Index ─────────────────────────────────────────────────────────────────
@@ -33,7 +51,6 @@ _dsearch_index_stale() {
   [[ ! -f $idx || ! -s $idx ]] && return 0
   local now mtime age
   now=$(date +%s)
-  # GNU coreutils (Linux)
   mtime=$(stat -c %Y -- "$idx" 2>/dev/null) || return 0
   age=$(( now - mtime ))
   (( age > 86400 ))
@@ -43,7 +60,6 @@ _dsearch_collect_roots() {
   local -a roots
   local r
   if [[ -n ${DNAV_SEARCH_ROOTS:-} ]]; then
-    # space-separated override
     roots=(${=DNAV_SEARCH_ROOTS})
   else
     roots=("$HOME")
@@ -66,7 +82,6 @@ _dsearch_build_index() {
   : > "$tmp"
   for r in $roots; do
     [[ -d $r ]] || continue
-    # Prune heavy / useless trees; print remaining directories
     find "$r" \
       \( \
         -name .git -o \
@@ -82,7 +97,6 @@ _dsearch_build_index() {
       -type d -print 2>/dev/null
   done >> "$tmp"
 
-  # Deduplicate / sort for stable results
   if command -v sort >/dev/null 2>&1; then
     sort -u "$tmp" -o "$tmp" 2>/dev/null || true
   fi
@@ -90,151 +104,219 @@ _dsearch_build_index() {
   mv -f "$tmp" "$idx"
 }
 
-_dsearch_load_index() {
-  local idx="$1"
-  _DSEARCH_INDEX=()
-  [[ -f $idx ]] || return 1
-  # Read lines into array (drop empties)
-  _DSEARCH_INDEX=("${(@f)$(<"$idx")}")
-  _DSEARCH_INDEX=("${(@)_DSEARCH_INDEX:#}")
-  _DSEARCH_INDEX_LOADED=1
-  return 0
-}
-
-# Ensure on-disk index is fresh and loaded into _DSEARCH_INDEX.
-# Prints status to current line if rebuilding (caller draws the bar).
+# Ensure on-disk index exists and is fresh. Does not load into a zsh array.
+# Uses braille spinner while rebuilding (no text).
 _dsearch_ensure_index() {
   local idx
   idx="$(_dsearch_index_path)"
 
-  if (( _DSEARCH_INDEX_LOADED )) && (( $#_DSEARCH_INDEX )); then
+  if ! _dsearch_index_stale "$idx"; then
     return 0
   fi
 
-  if _dsearch_index_stale "$idx"; then
-    printf "\r\e[2KIndexing directories…"
-    _dsearch_build_index "$idx" || {
-      printf "\r\e[2KIndex build failed\e[K"
-      return 1
-    }
+  if ! _dsearch_run_with_spinner _dsearch_build_index "$idx"; then
+    return 1
   fi
-
-  _dsearch_load_index "$idx" || {
-    # Retry once with rebuild
-    printf "\r\e[2KIndexing directories…"
-    _dsearch_build_index "$idx" || return 1
-    _dsearch_load_index "$idx" || return 1
-  }
-  return 0
+  [[ -f $idx && -s $idx ]]
 }
 
-# ── Fuzzy filter ──────────────────────────────────────────────────────────
-# Subsequence match, case-insensitive. Higher score is better.
-# Returns score via reply[1]; 0 = no match.
-_dsearch_score() {
-  local path="$1" query="$2"
-  local lp=${(L)path} lq=${(L)query}
-  local qi=1 pi=1 plen=${#lp} qlen=${#lq}
-  local score=0 run=0 last=-2
-  local ch pc
-
-  (( qlen == 0 )) && { reply=(0); return 1 }
-
-  for (( qi=1; qi <= qlen; qi++ )); do
-    ch=$lq[qi]
-    local found=0
-    for (( ; pi <= plen; pi++ )); do
-      pc=$lp[pi]
-      if [[ $pc == $ch ]]; then
-        found=1
-        # Consecutive bonus
-        if (( pi == last + 1 )); then
-          (( run++ ))
-          (( score += 8 + run ))
-        else
-          run=0
-          (( score += 2 ))
-        fi
-        # Component-start bonus (start of string or after /)
-        if (( pi == 1 )) || [[ $lp[pi-1] == / ]]; then
-          (( score += 12 ))
-        fi
-        # After separator-ish chars
-        if (( pi > 1 )) && [[ $lp[pi-1] == [-_.] ]]; then
-          (( score += 4 ))
-        fi
-        last=$pi
-        (( pi++ ))
-        break
-      fi
-    done
-    if (( !found )); then
-      reply=(0)
-      return 1
-    fi
-  done
-
-  # Prefer shorter paths slightly
-  (( score += 40 - (plen < 40 ? plen : 40) ))
-  reply=($score)
-  return 0
-}
-
-# Filter _DSEARCH_INDEX into _dsearch_matches (top maxn).
-# Uses globals: _dsearch_matches (array)
-_dsearch_filter() {
-  local query="$1"
-  local maxn="${2:-10}"
-  local -a paths scores
-  local p sc i inserted
-  local qlen=${#query}
-
-  _dsearch_matches=()
-  (( qlen == 0 )) && return 0
-
-  paths=()
-  scores=()
-
-  for p in "$_DSEARCH_INDEX[@]"; do
-    _dsearch_score "$p" "$query" || continue
-    sc=$reply[1]
-    (( sc <= 0 )) && continue
-
-    # Skip if full and not better than current worst
-    if (( $#scores >= maxn )) && (( sc <= scores[-1] )); then
-      continue
-    fi
-
-    # Insert sorted by score descending
-    inserted=0
-    for (( i=1; i <= $#scores; i++ )); do
-      if (( sc > scores[i] )); then
-        scores[i,i-1]=($sc)
-        paths[i,i-1]=("$p")
-        inserted=1
-        break
-      fi
-    done
-    if (( !inserted )); then
-      scores+=($sc)
-      paths+=("$p")
-    fi
-    if (( $#scores > maxn )); then
-      scores=("${scores[@]:0:$maxn}")
-      paths=("${paths[@]:0:$maxn}")
-    fi
-  done
-
-  _dsearch_matches=("${paths[@]}")
-}
-
-# ── UI ────────────────────────────────────────────────────────────────────
-# Expects to run inside an active dnav() (uses _dnav_* helpers, cols, HIGHLIGHT).
-
+# ── Session state (search UI) ─────────────────────────────────────────────
 typeset -ga _dsearch_matches
 typeset -gi _dsearch_sel=0
 typeset -gi _dsearch_extra_lines=0
+typeset -g  _dsearch_tmpdir=""
+typeset -g  _dsearch_prev_query=""
+# Sparse map: length -> candidate file of ALL survivors for that query
+typeset -gA _dsearch_cand_stack
 
+_dsearch_session_cleanup() {
+  if [[ -n $_dsearch_tmpdir && -d $_dsearch_tmpdir ]]; then
+    rm -rf -- "$_dsearch_tmpdir" 2>/dev/null
+  fi
+  _dsearch_tmpdir=""
+  _dsearch_prev_query=""
+  _dsearch_q=""
+  _dsearch_cand_stack=()
+}
+
+# ── awk filter (hot path) ─────────────────────────────────────────────────
+# Args: query, mode (prefix1|fuzzy), maxn, src_file, survivors_out
+# Prints top maxn paths (one per line) to stdout.
+# Writes ALL matching paths to survivors_out.
+_dsearch_awk_filter() {
+  local query="$1" mode="$2" maxn="$3" src="$4" survivors="$5"
+
+  awk -v query="$query" -v mode="$mode" -v maxn="$maxn" -v surv="$survivors" '
+  function consider(sc, path,   i) {
+    # top-N insert (desc)
+    if (maxn > 0) {
+      if (tn == maxn && sc <= tsc[tn]) {
+        # still a survivor overall; just skip top list
+      } else {
+        if (tn < maxn) tn++
+        i = tn
+        while (i > 1 && sc > tsc[i-1]) {
+          tsc[i] = tsc[i-1]
+          tpath[i] = tpath[i-1]
+          i--
+        }
+        tsc[i] = sc
+        tpath[i] = path
+      }
+    }
+  }
+
+  function fuzzy_score(path, q,   lp, qlen, plen, score, run, last, pi, qi, ch, pc, prev, found) {
+    lp = tolower(path)
+    q = tolower(q)
+    qlen = length(q)
+    plen = length(lp)
+    if (qlen == 0) return -1
+    score = 0; run = 0; last = -2; pi = 1
+    for (qi = 1; qi <= qlen; qi++) {
+      ch = substr(q, qi, 1)
+      found = 0
+      for (; pi <= plen; pi++) {
+        pc = substr(lp, pi, 1)
+        if (pc == ch) {
+          found = 1
+          if (pi == last + 1) { run++; score += 8 + run }
+          else { run = 0; score += 2 }
+          prev = (pi == 1) ? "" : substr(lp, pi - 1, 1)
+          if (pi == 1 || prev == "/") score += 12
+          if (prev == "-" || prev == "_" || prev == ".") score += 4
+          last = pi
+          pi++
+          break
+        }
+      }
+      if (!found) return -1
+    }
+    score += 40 - (plen < 40 ? plen : 40)
+    return score
+  }
+
+  # Component-prefix: any path segment starts with the (single) query char
+  function prefix1_score(path, q,   lp, ch, n, i, seg, best, sc, plen) {
+    lp = tolower(path)
+    ch = tolower(substr(q, 1, 1))
+    if (ch == "") return -1
+    n = split(lp, seg, "/")
+    best = -1
+    for (i = 1; i <= n; i++) {
+      if (seg[i] == "") continue
+      if (substr(seg[i], 1, 1) == ch) {
+        sc = 50
+        # Prefer shorter segment / shorter full path
+        sc += 20 - (length(seg[i]) < 20 ? length(seg[i]) : 20)
+        plen = length(lp)
+        sc += 30 - (plen < 30 ? plen : 30)
+        # Prefer last component match
+        if (i == n) sc += 15
+        if (sc > best) best = sc
+      }
+    }
+    return best
+  }
+
+  BEGIN { tn = 0 }
+  {
+    path = $0
+    if (path == "") next
+    if (mode == "prefix1") sc = prefix1_score(path, query)
+    else sc = fuzzy_score(path, query)
+    if (sc < 0) next
+    print path >> surv
+    consider(sc, path)
+  }
+  END {
+    for (i = 1; i <= tn; i++) print tpath[i]
+  }
+  ' "$src"
+}
+
+# Apply filter for $query using incremental candidate stack when possible.
+# Sets _dsearch_matches (top 10). Updates stack for this query length.
+_dsearch_apply_filter() {
+  local query="$1"
+  local maxn="${2:-10}"
+  local qlen=${#query}
+  local idx src mode survivors
+  local -a top
+
+  _dsearch_matches=()
+  idx="$(_dsearch_index_path)"
+
+  if (( qlen == 0 )); then
+    _dsearch_prev_query=""
+    return 0
+  fi
+
+  survivors="$_dsearch_tmpdir/c.${qlen}"
+  : > "$survivors"
+
+  local prev_len=${#_dsearch_prev_query}
+  local i partial
+
+  # Choose source + mode
+  if (( qlen == 1 )); then
+    src="$idx"
+    mode="prefix1"
+  elif (( qlen < prev_len )) && [[ -n ${_dsearch_cand_stack[$qlen]:-} && -s ${_dsearch_cand_stack[$qlen]} ]]; then
+    # Backspace: re-rank existing survivors for this length
+    src="${_dsearch_cand_stack[$qlen]}"
+    mode="fuzzy"
+    (( qlen == 1 )) && mode="prefix1"
+    top=("${(@f)$(_dsearch_awk_filter "$query" "$mode" "$maxn" "$src" "$survivors")}")
+    _dsearch_matches=("${top[@]}")
+    _dsearch_cand_stack[$qlen]="$survivors"
+    _dsearch_prev_query="$query"
+    return 0
+  elif [[ -n $_dsearch_prev_query && $query == "$_dsearch_prev_query"* ]] && (( qlen > prev_len )); then
+    # Query grew (1+ chars) — filter previous survivors only (incremental)
+    if [[ -n ${_dsearch_cand_stack[$prev_len]:-} && -s ${_dsearch_cand_stack[$prev_len]} ]]; then
+      src="${_dsearch_cand_stack[$prev_len]}"
+    else
+      src="$idx"
+    fi
+    mode="fuzzy"
+  elif (( qlen > 1 )) && [[ -z ${_dsearch_cand_stack[1]:-} || ! -s ${_dsearch_cand_stack[1]} ]]; then
+    # Cold multi-char query (e.g. coalesced "proj"): progressive 1..qlen once
+    for (( i=1; i <= qlen; i++ )); do
+      partial="${query[1,i]}"
+      survivors="$_dsearch_tmpdir/c.${i}"
+      : > "$survivors"
+      if (( i == 1 )); then
+        src="$idx"
+        mode="prefix1"
+      else
+        src="${_dsearch_cand_stack[$((i - 1))]}"
+        mode="fuzzy"
+        [[ -s $src ]] || src="$idx"
+      fi
+      if (( i == qlen )); then
+        top=("${(@f)$(_dsearch_awk_filter "$partial" "$mode" "$maxn" "$src" "$survivors")}")
+      else
+        _dsearch_awk_filter "$partial" "$mode" 0 "$src" "$survivors" >/dev/null
+      fi
+      _dsearch_cand_stack[$i]="$survivors"
+    done
+    _dsearch_matches=("${top[@]}")
+    _dsearch_prev_query="$query"
+    return 0
+  else
+    src="$idx"
+    mode="fuzzy"
+    (( qlen == 1 )) && mode="prefix1"
+  fi
+
+  top=("${(@f)$(_dsearch_awk_filter "$query" "$mode" "$maxn" "$src" "$survivors")}")
+  _dsearch_matches=("${top[@]}")
+  _dsearch_cand_stack[$qlen]="$survivors"
+  _dsearch_prev_query="$query"
+}
+
+# ── UI ────────────────────────────────────────────────────────────────────
 _dsearch_hl() {
   print -r -- "${DNAV_HIGHLIGHT:-$HIGHLIGHT}"
 }
@@ -256,7 +338,6 @@ _dsearch_display_path() {
   print -r -- "$p"
 }
 
-# Cursor assumed on the search prompt line. Redraw prompt + dropdown.
 _dsearch_draw() {
   local query="$1"
   local hl rst n p disp i leftover
@@ -264,7 +345,6 @@ _dsearch_draw() {
   hl="$(_dsearch_hl)"
   rst="$(_dsearch_rst)"
 
-  # Clear previously drawn result lines below the prompt
   if (( _dsearch_extra_lines > 0 )); then
     for (( i=0; i < _dsearch_extra_lines; i++ )); do
       printf "\n\e[2K"
@@ -272,7 +352,6 @@ _dsearch_draw() {
     printf "\e[%dA" $_dsearch_extra_lines
   fi
 
-  # Prompt line
   printf "\r\e[2K/%s\e[K" "$query"
 
   n=0
@@ -287,7 +366,6 @@ _dsearch_draw() {
     (( n++ ))
   done
 
-  # If we shrank the list, wipe leftover lines then climb back
   leftover=$(( _dsearch_extra_lines - n ))
   if (( leftover > 0 )); then
     for (( i=0; i < leftover; i++ )); do
@@ -298,14 +376,12 @@ _dsearch_draw() {
 
   _dsearch_extra_lines=$n
 
-  # Return cursor to end of query on the prompt line
   if (( n > 0 )); then
     printf "\e[%dA" $n
   fi
   printf "\r/%s" "$query"
 }
 
-# Erase prompt + results; leave cursor on the cleared prompt line.
 _dsearch_erase_ui() {
   local i
   printf "\r\e[2K"
@@ -319,38 +395,97 @@ _dsearch_erase_ui() {
   _dsearch_extra_lines=0
 }
 
+# Coalesce further keystrokes into $_dsearch_q, then filter once + draw.
+# Main loop keeps query in $_dsearch_q for the session.
+_dsearch_refresh_query() {
+  local maxn=10
+  local k
+  local -i coalescing=1
+
+  # Debounce / drain buffered input so fast typing = one filter
+  while (( coalescing )); do
+    if ! read -t 0.05 -k 1 k 2>/dev/null; then
+      coalescing=0
+      break
+    fi
+    case $k in
+      $'\177'|$'\b')
+        if (( ${#_dsearch_q} > 0 )); then
+          _dsearch_q="${_dsearch_q[1,-2]}"
+        fi
+        ;;
+      $'\x15')
+        _dsearch_q=""
+        ;;
+      $'\e'|$'\n'|$'\r')
+        _DSEARCH_PUSHBACK="$k"
+        coalescing=0
+        ;;
+      j|k)
+        _DSEARCH_PUSHBACK="$k"
+        coalescing=0
+        ;;
+      [[:print:]])
+        _dsearch_q+="$k"
+        ;;
+      *)
+        ;;
+    esac
+  done
+
+  _dsearch_sel=0
+  _dsearch_apply_filter "$_dsearch_q" $maxn
+  _dsearch_draw "$_dsearch_q"
+}
+
 # ── Main entry ────────────────────────────────────────────────────────────
-# Return 0 → dnav should exit (navigated or fatal after cleanup)
+# Return 0 → dnav should exit (navigated or finished with cleanup)
 # Return 1 → cancelled; dnav redraws main bar
 _dsearch_start() {
-  # Later: if dfile is open, jump inside the explorer instead of cd+exit
   if _dfile_available && (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
     _dsearch_in_dfile
     return $?
   fi
 
-  local query=""
   local key key2 key3
   local target
   local maxn=10
+  typeset -g _DSEARCH_PUSHBACK=""
+  typeset -g _dsearch_q=""
 
+  _dsearch_q=""
   _dsearch_matches=()
   _dsearch_sel=0
   _dsearch_extra_lines=0
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+
+  _dsearch_tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/dnav-dsearch.XXXXXX") || {
+    printf "\r\e[2K"
+    printf "\e[?25l"
+    return 1
+  }
 
   # Show cursor for typing
   printf "\e[?25h"
 
+  # Ensure index (braille spinner while rebuilding)
   if ! _dsearch_ensure_index; then
-    printf "\r\e[2KCould not build search index\n"
+    _dsearch_session_cleanup
+    printf "\r\e[2K"
     printf "\e[?25l"
     return 1
   fi
 
-  _dsearch_draw "$query"
+  _dsearch_draw "$_dsearch_q"
 
   while true; do
-    read -k 1 key
+    if [[ -n $_DSEARCH_PUSHBACK ]]; then
+      key="$_DSEARCH_PUSHBACK"
+      _DSEARCH_PUSHBACK=""
+    else
+      read -k 1 key
+    fi
 
     case $key in
       $'\e')  # Esc or arrows
@@ -358,41 +493,39 @@ _dsearch_start() {
           if [[ $key2 == '[' ]]; then
             read -k 1 key3
             case $key3 in
-              A)  # Up
+              A)
                 if (( $#_dsearch_matches && _dsearch_sel > 0 )); then
                   (( _dsearch_sel-- ))
-                  _dsearch_draw "$query"
+                  _dsearch_draw "$_dsearch_q"
                 fi
                 ;;
-              B)  # Down
+              B)
                 if (( $#_dsearch_matches && _dsearch_sel < $#_dsearch_matches - 1 )); then
                   (( _dsearch_sel++ ))
-                  _dsearch_draw "$query"
+                  _dsearch_draw "$_dsearch_q"
                 fi
                 ;;
-              # Ignore left/right in v1
             esac
           fi
         else
-          # Plain Esc → back to main nav
           _dsearch_erase_ui
+          _dsearch_session_cleanup
           printf "\e[?25l"
           return 1
         fi
         ;;
-      $'\n'|$'\r')  # Enter – confirm current highlight (default top)
+      $'\n'|$'\r')
         if (( $#_dsearch_matches == 0 )); then
           continue
         fi
         target="${_dsearch_matches[_dsearch_sel+1]}"
         _dsearch_erase_ui
+        _dsearch_session_cleanup
         printf "\e[?25l"
         if [[ -d $target ]]; then
           cd -- "$target" || {
             printf "Could not change to %s\n" "$target"
-            if (( $+functions[_dnav_cleanup] )); then
-              _dnav_cleanup
-            fi
+            (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
             return 0
           }
           if (( $+functions[_dnav_success_bar] )); then
@@ -400,51 +533,42 @@ _dsearch_start() {
           else
             printf "%s\n" "${target:A}"
           fi
-          if (( $+functions[_dnav_cleanup] )); then
-            _dnav_cleanup
-          fi
+          (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
           return 0
         else
           printf "Folder not found: %s\n" "$target"
-          if (( $+functions[_dnav_cleanup] )); then
-            _dnav_cleanup
-          fi
+          (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
           return 0
         fi
         ;;
-      $'\177'|$'\b')  # Backspace
-        if (( ${#query} > 0 )); then
-          query="${query[1,-2]}"
-          _dsearch_sel=0
-          _dsearch_filter "$query" $maxn
-          _dsearch_draw "$query"
+      $'\177'|$'\b')
+        if (( ${#_dsearch_q} > 0 )); then
+          _dsearch_q="${_dsearch_q[1,-2]}"
+          _dsearch_refresh_query
         fi
         ;;
-      $'\x15')  # Ctrl+U – clear query
-        query=""
+      $'\x15')
+        _dsearch_q=""
         _dsearch_sel=0
         _dsearch_matches=()
-        _dsearch_draw "$query"
+        _dsearch_prev_query=""
+        _dsearch_draw "$_dsearch_q"
         ;;
       j)
         if (( $#_dsearch_matches && _dsearch_sel < $#_dsearch_matches - 1 )); then
           (( _dsearch_sel++ ))
-          _dsearch_draw "$query"
+          _dsearch_draw "$_dsearch_q"
         fi
         ;;
       k)
         if (( $#_dsearch_matches && _dsearch_sel > 0 )); then
           (( _dsearch_sel-- ))
-          _dsearch_draw "$query"
+          _dsearch_draw "$_dsearch_q"
         fi
         ;;
-      # Printable ASCII (space through ~), excluding control already handled
       [[:print:]])
-        # Skip bare slash-only noise at start? Allow all printables for fuzzy
-        query+="$key"
-        _dsearch_sel=0
-        _dsearch_filter "$query" $maxn
-        _dsearch_draw "$query"
+        _dsearch_q+="$key"
+        _dsearch_refresh_query
         ;;
     esac
   done
