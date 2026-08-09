@@ -751,6 +751,7 @@ _dsearch_start() {
             printf "%s\n" "${target:A}"
           fi
           (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
+          (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls
           return 0
         else
           printf "Folder not found: %s\n" "$target"

@@ -4,6 +4,10 @@
 # Optional modules (place next to this file):
 #   dfile   – mini multi-column file explorer (expand below the nav bar)
 #   dsearch – fuzzy path search (type-to-filter, works in both nav and dfile views)
+#
+# Options (env):
+#   DNAV_LS=1   – after a successful select (dnav or dsearch), run `ls -a`
+#                 (not on Esc/cancel). Values: 1, true, yes, on.
 
 # ── Locate this script’s directory (works when sourced or executed) ───────
 typeset -g DNAV_DIR
@@ -25,6 +29,15 @@ fi
 #   _dfile_enter          – open the mini explorer under the current nav selection
 #   _dsearch_start        – open the fuzzy path search overlay
 #   _dsearch_in_dfile     – same, but stay inside the dfile view and navigate there
+
+# After successful navigation (call only once terminal is restored). No-op on cancel paths.
+_dnav_maybe_ls() {
+  case ${DNAV_LS:-0} in
+    1|true|yes|on|TRUE|YES|ON)
+      command ls -a
+      ;;
+  esac
+}
 
 dnav() {
   # ── Configurable highlight ──────────────────────────────────────────────
@@ -155,6 +168,7 @@ dnav() {
     if _dfile_available; then
       print -r -- "f                         file explorer (when available)"
     fi
+    print -r -- "DNAV_LS=1                 ls -a after successful select"
   }
 
   # In-TUI help overlay (same multi-line cyan style as dsearch help)
@@ -300,6 +314,7 @@ dnav() {
           }
           _dnav_success_bar "${target:A}"
           _dnav_cleanup
+          _dnav_maybe_ls
           return 0
         else
           _dnav_clear_menu
