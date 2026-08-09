@@ -1,0 +1,261 @@
+#!/usr/bin/env zsh
+# dnav - quick navigation to common folders (zsh version of the PowerShell dnav)
+#
+# Optional modules (place next to this file):
+#   dfile   – mini multi-column file explorer (expand below the nav bar)
+#   dsearch – fuzzy path search (type-to-filter, works in both nav and dfile views)
+
+# ── Locate this script’s directory (works when sourced or executed) ───────
+typeset -g DNAV_DIR
+if [[ -n ${(%):-%x} ]]; then
+  DNAV_DIR=${${(%):-%x}:A:h}
+else
+  DNAV_DIR=${0:A:h}
+fi
+
+# ── Optional modules ──────────────────────────────────────────────────────
+# Load if present. Real implementations will override the stubs below.
+[[ -f $DNAV_DIR/dfile   ]] && source $DNAV_DIR/dfile
+[[ -f $DNAV_DIR/dsearch ]] && source $DNAV_DIR/dsearch
+
+# Stubs – real modules replace these. Safe to call even when modules are absent.
+(( $+functions[_dfile_available]   )) || _dfile_available()   { return 1 }
+(( $+functions[_dsearch_available] )) || _dsearch_available() { return 1 }
+# Future entry points the modules will provide:
+#   _dfile_enter          – open the mini explorer under the current nav selection
+#   _dsearch_start        – open the fuzzy path search overlay
+#   _dsearch_in_dfile     – same, but stay inside the dfile view and navigate there
+
+dnav() {
+  # ── Configurable highlight ──────────────────────────────────────────────
+  # ANSI color codes: FG=30 (black), BG=46 (cyan). Change these to taste.
+  # Common BGs: 41=red 42=green 43=yellow 44=blue 45=magenta 46=cyan 47=white
+  local HIGHLIGHT_FG=30
+  local HIGHLIGHT_BG=46
+  local HIGHLIGHT="\e[${HIGHLIGHT_FG};${HIGHLIGHT_BG}m"
+  local RESET="\e[0m"
+
+  local -a names paths
+  local selected=0
+  local key key2 key3
+  local i
+  local current
+  local target
+  local cols=${COLUMNS:-80}
+  local -a item_start item_end   # column positions for animation
+  local mode=main                # main | help
+
+  # Common folders + Help
+  names=(Docs Down EbTr Proj Apps Pics Music Vids Help)
+  paths=(
+    "${XDG_DOCUMENTS_DIR:-$HOME/Documents}"
+    "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
+    "${XDG_EBTRANSFER_DIR:-$HOME/Eb_Transfer}"
+    "${XDG_PROJECTS_DIR:-$HOME/Projects}"
+    "${XDG_APPS_DIR:-$HOME/Apps}"
+    "${XDG_PICTURES_DIR:-$HOME/Pictures}"
+    "${XDG_MUSIC_DIR:-$HOME/Music}"
+    "${XDG_VIDEOS_DIR:-$HOME/Videos}"
+    ""   # Help has no path
+  )
+
+  # Pre-select the folder that matches the current directory, if any
+  current="${PWD:A}"
+  for (( i=1; i <= $#paths; i++ )); do
+    if [[ -n ${paths[i]} && "${paths[i]:A}" == "$current" ]]; then
+      selected=$((i - 1))
+      break
+    fi
+  done
+
+  # Save terminal settings
+  local stty_orig
+  stty_orig=$(stty -g 2>/dev/null)
+  local cleaned=0
+
+  _dnav_cleanup() {
+    if (( cleaned == 0 )); then
+      stty "$stty_orig" 2>/dev/null
+      printf "\e[?25h"
+      cleaned=1
+    fi
+  }
+  trap '_dnav_cleanup' EXIT INT TERM
+
+  # Hide cursor, disable echo and line buffering
+  stty -echo -icanon 2>/dev/null
+  printf "\e[?25l"
+
+  # Compute horizontal positions of each item (for animation origin)
+  _dnav_compute_positions() {
+    local col=0
+    item_start=()
+    item_end=()
+    for (( i=1; i <= $#names; i++ )); do
+      item_start[i]=$col
+      (( col += ${#names[i]} + 1 ))   # name + trailing space
+      item_end[i]=$col
+    done
+  }
+
+  _dnav_draw() {
+    printf "\r\e[2K"
+    for (( i=1; i <= $#names; i++ )); do
+      if (( i - 1 == selected )); then
+        printf "${HIGHLIGHT}%s${RESET} " "${names[i]}"
+      else
+        printf "%s " "${names[i]}"
+      fi
+    done
+    printf "\e[K"
+  }
+
+  _dnav_clear_menu() {
+    printf "\r\e[2K"
+  }
+
+  _dnav_move_left() {
+    (( selected > 0 )) && (( selected-- ))
+    _dnav_draw
+  }
+
+  _dnav_move_right() {
+    (( selected < $#names - 1 )) && (( selected++ ))
+    _dnav_draw
+  }
+
+  # In-TUI help view (does not exit dnav)
+  _dnav_show_help() {
+    mode=help
+    printf "\r\e[2K"
+    printf "←/→ or h/l move   Enter select   Esc cancel (or back from Help)"
+    if _dfile_available; then
+      printf "   f files"
+    fi
+    if _dsearch_available; then
+      printf "   / search"
+    fi
+    printf "\e[K"
+  }
+
+  # Expand animation from the selected item outward, then show path left-aligned
+  _dnav_success_bar() {
+    local path="$1"
+    local origin_start=${item_start[selected+1]}
+    local origin_end=${item_end[selected+1]}
+    local origin_mid=$(( (origin_start + origin_end) / 2 ))
+    local max_w=$cols
+    local step
+
+    # Expand highlight from origin to full width (slightly slower)
+    for (( step=1; step <= 10; step++ )); do
+      local half=$(( (max_w * step) / 20 ))
+      local left=$(( origin_mid - half ))
+      local right=$(( origin_mid + half ))
+      (( left < 0 )) && left=0
+      (( right > max_w )) && right=$max_w
+      local width=$(( right - left ))
+
+      printf "\r\e[2K"
+      printf "\e[${left}C${HIGHLIGHT}%*s${RESET}" $width ""
+      sleep 0.03 2>/dev/null
+    done
+
+    # Full-width bar, path on the far left (truncate from the right if needed)
+    local display=$path
+    if (( ${#display} > max_w )); then
+      display="${display:0:$((max_w - 1))}…"
+    fi
+    printf "\r\e[2K"
+    printf "${HIGHLIGHT}%-${max_w}s${RESET}\n" "$display"
+  }
+
+  _dnav_compute_positions
+  _dnav_draw
+
+  while true; do
+    read -k 1 key
+
+    case $key in
+      $'\e')  # Escape or arrow sequence
+        if read -t 0.05 -k 1 key2 2>/dev/null; then
+          if [[ $key2 == '[' && $mode == main ]]; then
+            read -k 1 key3
+            case $key3 in
+              D)  # Left
+                _dnav_move_left
+                ;;
+              C)  # Right
+                _dnav_move_right
+                ;;
+            esac
+          elif [[ $key2 == '[' ]]; then
+            # Consume arrow key byte while in help (ignore)
+            read -k 1 key3
+          fi
+        else
+          # Plain Esc
+          if [[ $mode == help ]]; then
+            mode=main
+            _dnav_draw
+          else
+            _dnav_clear_menu
+            _dnav_cleanup
+            return 0
+          fi
+        fi
+        ;;
+      $'\n'|$'\r')  # Enter
+        # Ignore Enter while viewing help
+        [[ $mode == help ]] && continue
+
+        if (( selected == $#names - 1 )); then
+          # Help – stay in TUI
+          _dnav_show_help
+          continue
+        fi
+
+        target="${paths[selected+1]}"
+        if [[ -d $target ]]; then
+          cd -- "$target" || {
+            _dnav_clear_menu
+            printf "Could not change to %s\n" "${names[selected+1]}"
+            _dnav_cleanup
+            return 1
+          }
+          _dnav_success_bar "${target:A}"
+          _dnav_cleanup
+          return 0
+        else
+          _dnav_clear_menu
+          printf "Folder not found: %s\n" "$target"
+          _dnav_cleanup
+          return 1
+        fi
+        ;;
+      h)
+        [[ $mode == main ]] && _dnav_move_left
+        ;;
+      l)
+        [[ $mode == main ]] && _dnav_move_right
+        ;;
+      # j/k reserved for future multi-row (dfile); no-op on single-row bar
+      # ── Future module hooks (uncomment / flesh out when modules arrive) ──
+      # f|F)
+      #   if _dfile_available; then
+      #     _dfile_enter "${paths[selected+1]}"   # or current selection context
+      #   fi
+      #   ;;
+      # /)
+      #   if _dsearch_available; then
+      #     _dsearch_start
+      #   fi
+      #   ;;
+    esac
+  done
+}
+
+# When sourced the function is available; when run directly it executes
+if [[ "${ZSH_EVAL_CONTEXT:-}" != *:file ]]; then
+  dnav "$@"
+fi
