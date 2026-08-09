@@ -6,8 +6,8 @@
 #   dsearch – fuzzy path search (type-to-filter, works in both nav and dfile views)
 #
 # Options (env):
-#   DNAV_LS=1   – after a successful select (dnav or dsearch), run `ls -a`
-#                 (not on Esc/cancel). Values: 1, true, yes, on.
+#   DNAV_LS=1   – after a successful select (dnav or dsearch), run
+#                 `ls -a --color=auto` (not on Esc/cancel). Values: 1, true, yes, on.
 
 # ── Locate this script’s directory (works when sourced or executed) ───────
 typeset -g DNAV_DIR
@@ -34,7 +34,7 @@ fi
 _dnav_maybe_ls() {
   case ${DNAV_LS:-0} in
     1|true|yes|on|TRUE|YES|ON)
-      command ls -a
+      command ls -a --color=auto
       ;;
   esac
 }
@@ -119,9 +119,10 @@ dnav() {
 
   # Brand always cyan (not selectable); selected item is a cyan chip.
   # Unselected items keep the same column width so the bar doesn't jump.
+  # Avoid \e[2K-before-paint (that flashes unselected text); paint then \e[K.
   _dnav_draw() {
     local i
-    printf "\r\e[2K"
+    printf "\e[?25l\r"
     printf "${HIGHLIGHT} %s ${RESET} " "$brand"
     for (( i=1; i <= $#names; i++ )); do
       if (( i - 1 == selected )); then
@@ -131,6 +132,19 @@ dnav() {
       fi
     done
     printf "\e[K"
+  }
+
+  # Repaint only the two chips that change when selection moves (no full-line wipe).
+  _dnav_paint_item() {
+    local idx="$1"   # 0-based
+    local i=$(( idx + 1 ))
+    # CHA: absolute column (1-based)
+    printf "\e[%dG" $(( item_start[i] + 1 ))
+    if (( idx == selected )); then
+      printf "${HIGHLIGHT} %s ${RESET} " "${names[i]}"
+    else
+      printf " %s  " "${names[i]}"
+    fi
   }
 
   _dnav_clear_menu() {
@@ -147,13 +161,21 @@ dnav() {
   }
 
   _dnav_move_left() {
-    (( selected > 0 )) && (( selected-- ))
-    _dnav_draw
+    local old=$selected
+    (( selected > 0 )) || return
+    (( selected-- ))
+    _dnav_paint_item $old
+    _dnav_paint_item $selected
+    printf "\r"
   }
 
   _dnav_move_right() {
-    (( selected < $#names - 1 )) && (( selected++ ))
-    _dnav_draw
+    local old=$selected
+    (( selected < $#names - 1 )) || return
+    (( selected++ ))
+    _dnav_paint_item $old
+    _dnav_paint_item $selected
+    printf "\r"
   }
 
   _dnav_help_lines() {
@@ -168,7 +190,7 @@ dnav() {
     if _dfile_available; then
       print -r -- "f                         file explorer (when available)"
     fi
-    print -r -- "DNAV_LS=1                 ls -a after successful select"
+    print -r -- "DNAV_LS=1                 ls -a --color=auto after select"
   }
 
   # In-TUI help overlay (same multi-line cyan style as dsearch help)
