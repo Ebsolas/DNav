@@ -104,10 +104,11 @@ dnav() {
     fi
   }
   trap '_dnav_cleanup' EXIT
-  trap '_dnav_cleanup; DNAV_ABORT=1' INT TERM
+  # Restore tty + flag abort. Also keep isig so Ctrl+C still generates SIGINT.
+  trap '_dnav_cleanup; DNAV_ABORT=1' INT TERM QUIT
 
-  # Hide cursor, disable echo and line buffering
-  stty -echo -icanon 2>/dev/null
+  # Hide cursor, disable echo and line buffering (keep isig for Ctrl+C)
+  stty -echo -icanon isig 2>/dev/null
   printf "\e[?25l"
 
   # Compute horizontal positions of each item (for animation origin)
@@ -301,6 +302,12 @@ dnav() {
     (( DNAV_ABORT )) && { _dnav_clear_menu; _dnav_cleanup; return 130; }
     read -k 1 key || true
     (( DNAV_ABORT )) && { _dnav_clear_menu; _dnav_cleanup; return 130; }
+    # Ctrl+C may arrive as a byte in some terminals even with isig
+    if [[ $key == $'\x03' ]]; then
+      _dnav_clear_menu
+      _dnav_cleanup
+      return 130
+    fi
 
     case $key in
       $'\e')  # Escape or arrow sequence

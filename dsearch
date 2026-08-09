@@ -732,7 +732,7 @@ _dsearch_start() {
   _dsearch_draw "$_dsearch_q"
 
   while true; do
-    (( DNAV_ABORT )) && {
+    (( ${DNAV_ABORT:-0} )) && {
       _dsearch_erase_ui
       _dsearch_session_cleanup
       printf "\e[?25l"
@@ -744,12 +744,19 @@ _dsearch_start() {
     else
       read -k 1 key || true
     fi
-    (( DNAV_ABORT )) && {
+    (( ${DNAV_ABORT:-0} )) && {
       _dsearch_erase_ui
       _dsearch_session_cleanup
       printf "\e[?25l"
       return 130
     }
+    if [[ $key == $'\x03' ]]; then
+      _dsearch_erase_ui
+      _dsearch_session_cleanup
+      DNAV_ABORT=1
+      printf "\e[?25h"
+      return 130
+    fi
 
     case $key in
       $'\e')  # Esc or arrows

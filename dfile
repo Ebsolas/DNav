@@ -477,9 +477,15 @@ _dfile_enter() {
   _dfile_draw
 
   while true; do
-    (( DNAV_ABORT )) && { _dfile_erase; _DFILE_OPEN=0; return 130; }
+    (( ${DNAV_ABORT:-0} )) && { _dfile_erase; _DFILE_OPEN=0; return 130; }
     read -k 1 key || true
-    (( DNAV_ABORT )) && { _dfile_erase; _DFILE_OPEN=0; return 130; }
+    (( ${DNAV_ABORT:-0} )) && { _dfile_erase; _DFILE_OPEN=0; return 130; }
+    if [[ $key == $'\x03' ]]; then
+      _dfile_erase
+      _DFILE_OPEN=0
+      DNAV_ABORT=1
+      return 130
+    fi
 
     if [[ $mode == jump ]]; then
       case $key in
