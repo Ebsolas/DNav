@@ -135,7 +135,7 @@ dnav() {
       printf "   f files"
     fi
     if _dsearch_available; then
-      printf "   / search"
+      printf "   / search (↑↓ or C-n/C-p)"
     fi
     printf "\e[K"
   }
@@ -250,7 +250,6 @@ dnav() {
           _dnav_draw
         fi
         ;;
-      # j/k used by dsearch dropdown / future dfile; no-op on main bar
       # ── Future module hooks ──
       # f|F)
       #   if _dfile_available; then

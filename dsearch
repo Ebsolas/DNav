@@ -415,7 +415,7 @@ _dsearch_paint_row() {
   esac
 }
 
-# Full redraw of prompt + dropdown. Cursor stays hidden (no blink on j/k).
+# Full redraw of prompt + dropdown. Cursor stays hidden (less flicker).
 _dsearch_draw() {
   local query="$1"
   local n p disp i leftover
@@ -536,7 +536,7 @@ _dsearch_refresh_query() {
         _DSEARCH_PUSHBACK="$k"
         coalescing=0
         ;;
-      j|k)
+      $'\x0e'|$'\x10')  # Ctrl+N / Ctrl+P — selection, not query text
         _DSEARCH_PUSHBACK="$k"
         coalescing=0
         ;;
@@ -551,6 +551,21 @@ _dsearch_refresh_query() {
   _dsearch_sel=0
   _dsearch_apply_filter "$_dsearch_q" $maxn
   _dsearch_draw "$_dsearch_q"
+}
+
+# Move highlight in the dropdown (arrows / Ctrl+N / Ctrl+P — not j/k, those type)
+_dsearch_sel_up() {
+  (( $#_dsearch_matches && _dsearch_sel > 0 )) || return 1
+  local old=$_dsearch_sel
+  (( _dsearch_sel-- ))
+  _dsearch_draw_sel "$_dsearch_q" $old
+}
+
+_dsearch_sel_down() {
+  (( $#_dsearch_matches && _dsearch_sel < $#_dsearch_matches - 1 )) || return 1
+  local old=$_dsearch_sel
+  (( _dsearch_sel++ ))
+  _dsearch_draw_sel "$_dsearch_q" $old
 }
 
 # ── Main entry ────────────────────────────────────────────────────────────
@@ -581,7 +596,7 @@ _dsearch_start() {
     return 1
   }
 
-  # Keep cursor hidden in search mode (bar shows query; avoids blink on j/k)
+  # Keep cursor hidden in search mode (bar shows query; avoids blink on redraw)
   printf "\e[?25l"
 
   # Ensure index (braille spinner while rebuilding)
@@ -608,20 +623,8 @@ _dsearch_start() {
           if [[ $key2 == '[' ]]; then
             read -k 1 key3
             case $key3 in
-              A)
-                if (( $#_dsearch_matches && _dsearch_sel > 0 )); then
-                  local _old=$_dsearch_sel
-                  (( _dsearch_sel-- ))
-                  _dsearch_draw_sel "$_dsearch_q" $_old
-                fi
-                ;;
-              B)
-                if (( $#_dsearch_matches && _dsearch_sel < $#_dsearch_matches - 1 )); then
-                  local _old=$_dsearch_sel
-                  (( _dsearch_sel++ ))
-                  _dsearch_draw_sel "$_dsearch_q" $_old
-                fi
-                ;;
+              A) _dsearch_sel_up ;;
+              B) _dsearch_sel_down ;;
             esac
           fi
         else
@@ -671,21 +674,14 @@ _dsearch_start() {
         _dsearch_prev_query=""
         _dsearch_draw "$_dsearch_q"
         ;;
-      j)
-        if (( $#_dsearch_matches && _dsearch_sel < $#_dsearch_matches - 1 )); then
-          local _old=$_dsearch_sel
-          (( _dsearch_sel++ ))
-          _dsearch_draw_sel "$_dsearch_q" $_old
-        fi
+      $'\x10')  # Ctrl+P — previous match (works while typing; j/k are query chars)
+        _dsearch_sel_up
         ;;
-      k)
-        if (( $#_dsearch_matches && _dsearch_sel > 0 )); then
-          local _old=$_dsearch_sel
-          (( _dsearch_sel-- ))
-          _dsearch_draw_sel "$_dsearch_q" $_old
-        fi
+      $'\x0e')  # Ctrl+N — next match
+        _dsearch_sel_down
         ;;
       [[:print:]])
+        # j and k type into the query like any other letter
         _dsearch_q+="$key"
         _dsearch_refresh_query
         ;;
