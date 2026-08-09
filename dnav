@@ -91,6 +91,10 @@ dnav() {
   local stty_orig
   stty_orig=$(stty -g 2>/dev/null)
   local cleaned=0
+  # Ctrl+C must restore tty AND leave the TUI (trap alone would only run cleanup
+  # and then continue the read loop — shell felt "stuck").
+  typeset -g DNAV_ABORT=0
+  DNAV_ABORT=0
 
   _dnav_cleanup() {
     if (( cleaned == 0 )); then
@@ -99,7 +103,8 @@ dnav() {
       cleaned=1
     fi
   }
-  trap '_dnav_cleanup' EXIT INT TERM
+  trap '_dnav_cleanup' EXIT
+  trap '_dnav_cleanup; DNAV_ABORT=1' INT TERM
 
   # Hide cursor, disable echo and line buffering
   stty -echo -icanon 2>/dev/null
@@ -293,7 +298,9 @@ dnav() {
   _dnav_draw
 
   while true; do
-    read -k 1 key
+    (( DNAV_ABORT )) && { _dnav_clear_menu; _dnav_cleanup; return 130; }
+    read -k 1 key || true
+    (( DNAV_ABORT )) && { _dnav_clear_menu; _dnav_cleanup; return 130; }
 
     case $key in
       $'\e')  # Escape or arrow sequence
@@ -363,6 +370,7 @@ dnav() {
           if _dsearch_start; then
             return 0   # navigated or finished with cleanup
           fi
+          (( DNAV_ABORT )) && { _dnav_cleanup; return 130; }
           mode=main
           _dnav_draw
         fi
@@ -380,6 +388,7 @@ dnav() {
             # opened a file (cleanup already done)
             return 0
           fi
+          (( DNAV_ABORT )) && { _dnav_cleanup; return 130; }
           # Esc from dfile — still in raw TUI; redraw main
           mode=main
           _dnav_draw

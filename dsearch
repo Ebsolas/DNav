@@ -732,12 +732,24 @@ _dsearch_start() {
   _dsearch_draw "$_dsearch_q"
 
   while true; do
+    (( DNAV_ABORT )) && {
+      _dsearch_erase_ui
+      _dsearch_session_cleanup
+      printf "\e[?25l"
+      return 130
+    }
     if [[ -n $_DSEARCH_PUSHBACK ]]; then
       key="$_DSEARCH_PUSHBACK"
       _DSEARCH_PUSHBACK=""
     else
-      read -k 1 key
+      read -k 1 key || true
     fi
+    (( DNAV_ABORT )) && {
+      _dsearch_erase_ui
+      _dsearch_session_cleanup
+      printf "\e[?25l"
+      return 130
+    }
 
     case $key in
       $'\e')  # Esc or arrows

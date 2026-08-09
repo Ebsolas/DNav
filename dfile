@@ -477,7 +477,9 @@ _dfile_enter() {
   _dfile_draw
 
   while true; do
-    read -k 1 key
+    (( DNAV_ABORT )) && { _dfile_erase; _DFILE_OPEN=0; return 130; }
+    read -k 1 key || true
+    (( DNAV_ABORT )) && { _dfile_erase; _DFILE_OPEN=0; return 130; }
 
     if [[ $mode == jump ]]; then
       case $key in
