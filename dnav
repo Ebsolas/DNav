@@ -5,9 +5,17 @@
 #   dfile   – mini multi-column file explorer (expand below the nav bar)
 #   dsearch – fuzzy path search (type-to-filter, works in both nav and dfile views)
 #
-# Options (env):
-#   DNAV_LS=1   – after a successful select (dnav or dsearch), run
-#                 `ls -a --color=auto` (not on Esc/cancel). Values: 1, true, yes, on.
+# User config (created on first load):
+#   ${XDG_CONFIG_HOME:-~/.config}/dnav/config    – colors, defaults, flags
+#   ${XDG_CONFIG_HOME:-~/.config}/dnav/folders   – main bar labels + paths
+#   ${XDG_CONFIG_HOME:-~/.config}/dnav/jumps     – dKEY jump aliases
+#
+# Env overrides (optional):
+#   DNAV_JUMPS=path        alternate jumps file
+#   DNAV_SEARCH_ROOTS=…    dsearch roots (space-separated)
+#   DNAV_CONFIG_DIR=path   alternate config directory
+#
+# ls after select/jump is config only:  ls_after = 1  in ~/.config/dnav/config
 
 # ── Locate this script’s directory (works when sourced or executed) ───────
 typeset -g DNAV_DIR
@@ -16,6 +24,298 @@ if [[ -n ${(%):-%x} ]]; then
 else
   DNAV_DIR=${0:A:h}
 fi
+
+# ── Config globals (filled by _dnav_config_load) ──────────────────────────
+typeset -g DNAV_CONFIG_DIR
+typeset -g DNAV_CFG_COLOR_FG=30 DNAV_CFG_COLOR_BG=46
+typeset -g DNAV_CFG_LS=0 DNAV_CFG_SHOW_HIDDEN=0
+typeset -g DNAV_CFG_SUCCESS_ANIM=1 DNAV_CFG_BRAND=DNav
+typeset -g DNAV_CFG_SEARCH_ROOTS=""
+typeset -ga DNAV_FOLDER_NAMES DNAV_FOLDER_PATHS
+typeset -g DNAV_HIGHLIGHT DNAV_RESET
+DNAV_HIGHLIGHT=$'\e[30;46m'
+DNAV_RESET=$'\e[0m'
+
+# ── Config helpers ────────────────────────────────────────────────────────
+_dnav_config_dir() {
+  if [[ -n ${DNAV_CONFIG_DIR:-} ]]; then
+    print -r -- "$DNAV_CONFIG_DIR"
+  else
+    print -r -- "${XDG_CONFIG_HOME:-$HOME/.config}/dnav"
+  fi
+}
+
+_dnav_truthy() {
+  case ${(L)1} in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Map color names → ANSI numbers (fg 30–37 / 90–97, bg 40–47 / 100–107).
+_dnav_color_num() {
+  local kind="$1" name="${(L)2}" n
+  # bare number
+  if [[ $name == <-> ]]; then
+    print -rn -- "$name"
+    return 0
+  fi
+  case $kind in
+    fg)
+      case $name in
+        black) n=30 ;; red) n=31 ;; green) n=32 ;; yellow) n=33 ;;
+        blue) n=34 ;; magenta|purple) n=35 ;; cyan) n=36 ;; white) n=37 ;;
+        bright-black|gray|grey) n=90 ;; bright-red) n=91 ;; bright-green) n=92 ;;
+        bright-yellow) n=93 ;; bright-blue) n=94 ;; bright-magenta) n=95 ;;
+        bright-cyan) n=96 ;; bright-white) n=97 ;;
+        *) n=30 ;;
+      esac
+      ;;
+    bg)
+      case $name in
+        black) n=40 ;; red) n=41 ;; green) n=42 ;; yellow) n=43 ;;
+        blue) n=44 ;; magenta|purple) n=45 ;; cyan) n=46 ;; white) n=47 ;;
+        bright-black|gray|grey) n=100 ;; bright-red) n=101 ;; bright-green) n=102 ;;
+        bright-yellow) n=103 ;; bright-blue) n=104 ;; bright-magenta) n=105 ;;
+        bright-cyan) n=106 ;; bright-white) n=107 ;;
+        *) n=46 ;;
+      esac
+      ;;
+    *) n=0 ;;
+  esac
+  print -rn -- "$n"
+}
+
+_dnav_apply_colors() {
+  DNAV_CFG_COLOR_FG="$(_dnav_color_num fg "${DNAV_CFG_COLOR_FG:-30}")"
+  DNAV_CFG_COLOR_BG="$(_dnav_color_num bg "${DNAV_CFG_COLOR_BG:-46}")"
+  # If user gave a fg name for bg by mistake with 30–37, map to bg 40–47
+  if (( DNAV_CFG_COLOR_BG >= 30 && DNAV_CFG_COLOR_BG <= 37 )); then
+    DNAV_CFG_COLOR_BG=$(( DNAV_CFG_COLOR_BG + 10 ))
+  fi
+  DNAV_HIGHLIGHT=$'\e['"${DNAV_CFG_COLOR_FG}"';'"${DNAV_CFG_COLOR_BG}"'m'
+  DNAV_RESET=$'\e[0m'
+}
+
+# Expand ~ in a path; empty stays empty.
+_dnav_expand_path() {
+  local path="$1"
+  [[ -z $path || $path == - ]] && { print -r -- ""; return 0 }
+  if [[ $path == '~' || $path == '~/'* ]]; then
+    path="${path/#\~/$HOME}"
+  fi
+  print -r -- "$path"
+}
+
+# Write default user config files (first run).
+_dnav_config_seed() {
+  local dir="$1"
+  mkdir -p "$dir" 2>/dev/null || return 1
+
+  if [[ ! -f $dir/config ]]; then
+    cat > "$dir/config" <<'EOF'
+# DNav settings — edit freely, then run: dconfig -r
+# (or open a new shell / re-source dnav)
+#
+# Colors: names (cyan, blue, …) or ANSI numbers
+#   fg: 30–37 / 90–97    bg: 40–47 / 100–107
+#   names: black red green yellow blue magenta cyan white
+#          bright-red bright-cyan …
+color_fg = black
+color_bg = cyan
+
+# Brand chip label on the main bar
+brand = DNav
+
+# ls -a after a successful select/jump
+ls_after = 0
+
+# dfile: show hidden files/dirs by default (toggle still works with .)
+show_hidden = 0
+
+# Animate the expand-to-path success bar (0 = instant bar)
+success_anim = 1
+
+# dsearch roots (space-separated). Empty = built-in defaults ($HOME + …)
+# search_roots = $HOME /opt /mnt
+EOF
+  fi
+
+  if [[ ! -f $dir/folders ]]; then
+    cat > "$dir/folders" <<'EOF'
+# Main dnav bar — one entry per line:  Label   path
+# Use a lone Label (or path "-") for About (opens help/settings).
+# Paths: ~ expands.
+#
+# Label     path
+Home        ~
+Docs        ~/Documents
+Down        ~/Downloads
+EbSync      ~/Eb_Transfer
+Projects    ~/Projects
+Config      ~/.config
+Apps        ~/Apps
+Share       ~/.local/share
+About
+EOF
+  fi
+
+  if [[ ! -f $dir/jumps ]]; then
+    if [[ -f $DNAV_DIR/jumps ]]; then
+      cp -- "$DNAV_DIR/jumps" "$dir/jumps" 2>/dev/null || true
+    fi
+    if [[ ! -f $dir/jumps ]]; then
+      cat > "$dir/jumps" <<'EOF'
+# djump table — key becomes shell command dKEY (home → dhome)
+# Format:  key   path
+# Reload: djump -r   or   dconfig -r
+#
+# key     path
+home      ~
+bk        ..
+etc       /etc
+con       ~/.config
+doc       ~/Documents
+down      ~/Downloads
+proj      ~/Projects
+share     ~/.local/share
+EOF
+    fi
+  fi
+}
+
+_dnav_config_load_kv() {
+  local f="$1" line key val
+  [[ -f $f ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line ]] && continue
+    if [[ $line != *=* ]]; then
+      continue
+    fi
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    # strip optional quotes
+    if [[ $val == \"*\" || $val == \'*\' ]]; then
+      val="${val[2,-2]}"
+    fi
+    key="${(L)key}"
+    case $key in
+      color_fg|highlight_fg|fg)     DNAV_CFG_COLOR_FG="$val" ;;
+      color_bg|highlight_bg|bg)     DNAV_CFG_COLOR_BG="$val" ;;
+      brand)                        DNAV_CFG_BRAND="$val" ;;
+      ls_after|ls)                  _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
+      show_hidden|hidden)           _dnav_truthy "$val" && DNAV_CFG_SHOW_HIDDEN=1 || DNAV_CFG_SHOW_HIDDEN=0 ;;
+      success_anim|anim)            _dnav_truthy "$val" && DNAV_CFG_SUCCESS_ANIM=1 || DNAV_CFG_SUCCESS_ANIM=0 ;;
+      search_roots)                 DNAV_CFG_SEARCH_ROOTS="$val" ;;
+    esac
+  done < "$f"
+}
+
+_dnav_config_load_folders() {
+  local f="$1" line label path
+  DNAV_FOLDER_NAMES=()
+  DNAV_FOLDER_PATHS=()
+  [[ -f $f ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line ]] && continue
+    label="${line%%[[:space:]]*}"
+    path="${line#"$label"}"
+    path="${path#"${path%%[![:space:]]*}"}"
+    [[ -z $label ]] && continue
+    # Help / no-path entries
+    if [[ -z $path || $path == - ]]; then
+      DNAV_FOLDER_NAMES+=("$label")
+      DNAV_FOLDER_PATHS+=("")
+      continue
+    fi
+    DNAV_FOLDER_NAMES+=("$label")
+    DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$path")")
+  done < "$f"
+  (( ${#DNAV_FOLDER_NAMES} > 0 ))
+}
+
+# Load (and seed) user config. Safe to call multiple times (dconfig -r).
+_dnav_config_load() {
+  DNAV_CONFIG_DIR="$(_dnav_config_dir)"
+  # Defaults before file overlay
+  DNAV_CFG_COLOR_FG=30
+  DNAV_CFG_COLOR_BG=46
+  DNAV_CFG_LS=0
+  DNAV_CFG_SHOW_HIDDEN=0
+  DNAV_CFG_SUCCESS_ANIM=1
+  DNAV_CFG_BRAND=DNav
+  DNAV_CFG_SEARCH_ROOTS=""
+  DNAV_FOLDER_NAMES=()
+  DNAV_FOLDER_PATHS=()
+
+  if [[ ! -d $DNAV_CONFIG_DIR ]]; then
+    _dnav_config_seed "$DNAV_CONFIG_DIR"
+  else
+    # Ensure missing pieces exist without clobbering user edits
+    _dnav_config_seed "$DNAV_CONFIG_DIR"
+  fi
+
+  _dnav_config_load_kv "$DNAV_CONFIG_DIR/config"
+  _dnav_apply_colors
+  _dnav_config_load_folders "$DNAV_CONFIG_DIR/folders" || true
+
+  # Export search roots for dsearch if config set and env not already set
+  if [[ -n $DNAV_CFG_SEARCH_ROOTS && ! -v DNAV_SEARCH_ROOTS ]]; then
+    # expand $HOME in config value
+    DNAV_SEARCH_ROOTS="${DNAV_CFG_SEARCH_ROOTS//\$HOME/$HOME}"
+  fi
+}
+
+# Reload config + jump commands.
+dconfig() {
+  case ${1:-} in
+    -r|--reload|'')
+      _dnav_config_load
+      if (( $+functions[_djump_load] )); then
+        _DJUMP_LOADED=0
+        _djump_load 2>/dev/null || true
+      fi
+      if [[ -n ${1:-} || -o interactive ]]; then
+        print -r -- "dconfig: ${DNAV_CONFIG_DIR}"
+        print -r -- "  color  fg=${DNAV_CFG_COLOR_FG} bg=${DNAV_CFG_COLOR_BG}"
+        print -r -- "  brand  ${DNAV_CFG_BRAND}"
+        print -r -- "  ls_after=${DNAV_CFG_LS}  show_hidden=${DNAV_CFG_SHOW_HIDDEN}  success_anim=${DNAV_CFG_SUCCESS_ANIM}"
+        print -r -- "  folders ${#DNAV_FOLDER_NAMES}  jumps ${#_DJUMP_KEYS:-0}"
+      fi
+      ;;
+    -e|--edit)
+      local ed="${EDITOR:-${VISUAL:-vi}}"
+      ${=ed} "$(_dnav_config_dir)/config" "$(_dnav_config_dir)/folders" "$(_dnav_config_dir)/jumps"
+      ;;
+    -p|--path)
+      print -r -- "$(_dnav_config_dir)"
+      ;;
+    -h|--help)
+      print -r -- "usage: dconfig [-r|-e|-p]"
+      print -r -- "  -r, --reload   reload config + jumps (default)"
+      print -r -- "  -e, --edit     open config files in \$EDITOR"
+      print -r -- "  -p, --path     print config directory"
+      print -r -- "files: config  folders  jumps  under \$XDG_CONFIG_HOME/dnav"
+      ;;
+    *)
+      print -u2 -- "dconfig: unknown option: $1 (try dconfig -h)"
+      return 1
+      ;;
+  esac
+}
+
+# Load config before plugins so jumps path / colors / flags are ready.
+_dnav_config_load
 
 # ── Optional modules ──────────────────────────────────────────────────────
 # Load if present. Real implementations will override the stubs below.
@@ -33,23 +333,119 @@ fi
 #   _djump_resolve / _djump_match_query
 
 # After successful navigation (call only once terminal is restored). No-op on cancel paths.
+# Controlled by config ls_after (DNAV_CFG_LS).
 _dnav_maybe_ls() {
-  case ${DNAV_LS:-0} in
+  case ${DNAV_CFG_LS:-0} in
     1|true|yes|on|TRUE|YES|ON)
       command ls -a --color=auto
       ;;
   esac
 }
 
+# Set a key=value in ~/.config/dnav/config (preserves other lines / comments).
+_dnav_config_set() {
+  local key="$1" val="$2"
+  local f="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}/config"
+  local tmp line k found=0 stripped
+  local key_l="${(L)key}"
+  [[ -f $f ]] || return 1
+  tmp="${f}.tmp.$$"
+  while IFS= read -r line || [[ -n $line ]]; do
+    stripped="${line#"${line%%[![:space:]]*}"}"
+    if [[ -z $stripped || $stripped == \#* ]]; then
+      print -r -- "$line"
+      continue
+    fi
+    if [[ $line == *=* ]]; then
+      k="${line%%=*}"
+      k="${k%"${k##*[![:space:]]}"}"
+      k="${k#"${k%%[![:space:]]*}"}"
+      if [[ ${(L)k} == $key_l ]]; then
+        print -r -- "$key = $val"
+        found=1
+        continue
+      fi
+    fi
+    print -r -- "$line"
+  done < "$f" > "$tmp"
+  (( found )) || print -r -- "$key = $val" >> "$tmp"
+  mv -f -- "$tmp" "$f"
+}
+
+# Shared location bar (TUI select, dsearch, and shell djump/dKEY).
+# $1 = path to show; $2 = optional expand origin column (default: center).
+_dnav_success_bar() {
+  local path="$1"
+  local origin_mid="${2:-}"
+  local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
+  local rst="${DNAV_RESET:-\e[0m}"
+  local max_w=${COLUMNS:-80}
+  local step left right width half display
+  local anim=${DNAV_CFG_SUCCESS_ANIM:-1}
+
+  (( max_w < 20 )) && max_w=80
+  if [[ -z $origin_mid ]]; then
+    origin_mid=$(( max_w / 2 ))
+  fi
+
+  if (( anim )); then
+    for (( step=1; step <= 10; step++ )); do
+      half=$(( (max_w * step) / 20 ))
+      left=$(( origin_mid - half ))
+      right=$(( origin_mid + half ))
+      (( left < 0 )) && left=0
+      (( right > max_w )) && right=$max_w
+      width=$(( right - left ))
+      printf "\r\e[2K"
+      printf "\e[${left}C${hl}%*s${rst}" $width ""
+      sleep 0.03 2>/dev/null
+    done
+  fi
+
+  display=$path
+  if (( ${#display} > max_w )); then
+    display="${display:0:$((max_w - 1))}…"
+  fi
+  printf "\r\e[2K"
+  printf "${hl}%-${max_w}s${rst}\n" "$display"
+}
+
+# List shell-facing DNav commands (not in-TUI plugins).
+dhelp() {
+  local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
+  local rst="${DNAV_RESET:-\e[0m}"
+  local k path
+
+  print -r -- "${hl} DNav ${rst}"
+  print -r -- "  dnav                 open the folder navigator"
+  print -r -- "  dhelp                this command list"
+  print -r -- "  dconfig              reload/edit config (~/.config/dnav)"
+  print -r -- "  djump                list jump aliases (djump -l)"
+  print -r -- "  djump KEY            jump to KEY (same as dKEY)"
+  print -r -- "  djump -r             reload jumps file + dKEY commands"
+  print -r -- "  config dir           ${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
+  print -r -- "  ls_after             set in config (not an env var)"
+
+  if (( $+functions[_djump_available] )) && _djump_available 2>/dev/null; then
+    if _djump_ensure 2>/dev/null; then
+      print -r -- ""
+      print -r -- "${hl} DJump aliases ${rst}"
+      local cmd
+      for k in "${_DJUMP_KEYS[@]}"; do
+        cmd="d${k}"
+        path="${_DJUMP_MAP[$k]}"
+        print -r -- "  ${(r:18:)cmd}  $path"
+      done
+    fi
+  fi
+}
+
 dnav() {
-  # ── Configurable highlight ──────────────────────────────────────────────
-  # ANSI color codes: FG=30 (black), BG=46 (cyan). Change these to taste.
-  # Common BGs: 41=red 42=green 43=yellow 44=blue 45=magenta 46=cyan 47=white
-  local HIGHLIGHT_FG=30
-  local HIGHLIGHT_BG=46
-  local HIGHLIGHT="\e[${HIGHLIGHT_FG};${HIGHLIGHT_BG}m"
-  local RESET="\e[0m"
-  # Expose style to plugins (dsearch, etc.)
+  # ── Style from config (~/.config/dnav/config) ───────────────────────────
+  local HIGHLIGHT_FG=${DNAV_CFG_COLOR_FG:-30}
+  local HIGHLIGHT_BG=${DNAV_CFG_COLOR_BG:-46}
+  local HIGHLIGHT=$'\e['"${HIGHLIGHT_FG}"';'"${HIGHLIGHT_BG}"'m'
+  local RESET=$'\e[0m'
   typeset -g DNAV_HIGHLIGHT=$HIGHLIGHT DNAV_RESET=$RESET
 
   local -a names paths
@@ -60,23 +456,28 @@ dnav() {
   local target
   local cols=${COLUMNS:-80}
   local -a item_start item_end   # column positions for animation
-  local mode=main                # main | help
-  local brand="DNav"             # always-on chip; not selectable
-  local help_extra=0             # lines below bar while in help overlay
+  local mode=main                # main | about
+  local brand="${DNAV_CFG_BRAND:-DNav}"
+  local help_extra=0             # lines below top while in about overlay
 
-  # Common folders + Help
-  names=(Home Docs Down EbSync Projects Config Apps Share Help)
-  paths=(
-    "${XDG_DOCUMENTS_DIR:-$HOME}"
-    "${XDG_DOCUMENTS_DIR:-$HOME/Documents}"
-    "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
-    "${XDG_EBTRANSFER_DIR:-$HOME/Eb_Transfer}"
-    "${XDG_PROJECTS_DIR:-$HOME/Projects}"
-    "${XDG_APPS_DIR:-$HOME/.config}"
-    "${XDG_APPS_DIR:-$HOME/Apps}"
-    "${XDG_APPS_DIR:-$HOME/.local/share}"
-    ""   # Help has no path
-  )
+  # Folder list from ~/.config/dnav/folders (fallback: built-in defaults)
+  if (( ${#DNAV_FOLDER_NAMES} > 0 )); then
+    names=("${DNAV_FOLDER_NAMES[@]}")
+    paths=("${DNAV_FOLDER_PATHS[@]}")
+  else
+    names=(Home Docs Down EbSync Projects Config Apps Share About)
+    paths=(
+      "$HOME"
+      "${XDG_DOCUMENTS_DIR:-$HOME/Documents}"
+      "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
+      "${XDG_EBTRANSFER_DIR:-$HOME/Eb_Transfer}"
+      "${XDG_PROJECTS_DIR:-$HOME/Projects}"
+      "${XDG_CONFIG_HOME:-$HOME/.config}"
+      "${XDG_APPS_DIR:-$HOME/Apps}"
+      "${XDG_DATA_HOME:-$HOME/.local/share}"
+      ""
+    )
+  fi
 
   # Pre-select the folder that matches the current directory, if any
   current="${PWD:A}"
@@ -87,25 +488,65 @@ dnav() {
     fi
   done
 
-  # Save terminal settings
-  local stty_orig
-  stty_orig=$(stty -g 2>/dev/null)
-  local cleaned=0
+  # Save terminal settings (globals: EXIT trap may run after function locals die)
+  typeset -g _DNAV_STTY_ORIG _DNAV_CLEANED
+  _DNAV_STTY_ORIG=$(stty -g 2>/dev/null)
+  _DNAV_CLEANED=0
   # Ctrl+C must restore tty AND leave the TUI (trap alone would only run cleanup
   # and then continue the read loop — shell felt "stuck").
+  #
+  # LOCAL_TRAPS is required: without it, INT/TERM/QUIT traps set here leak into
+  # the interactive shell after dnav returns, so Ctrl+C no longer interrupts
+  # (it only runs our trap body). With localtraps, EXIT also runs on function
+  # return (not only shell exit), which is what we want for tty restore.
+  setopt localoptions localtraps
   typeset -g DNAV_ABORT=0
   DNAV_ABORT=0
 
   _dnav_cleanup() {
-    if (( cleaned == 0 )); then
-      stty "$stty_orig" 2>/dev/null
-      printf "\e[?25h"
-      cleaned=1
-    fi
+    (( _DNAV_CLEANED )) && return
+    [[ -n $_DNAV_STTY_ORIG ]] && stty "$_DNAV_STTY_ORIG" 2>/dev/null
+    printf "\e[?25h"
+    _DNAV_CLEANED=1
   }
+
+  # Wipe the main bar / help overlay (not plugin body lines).
+  _dnav_clear_menu() {
+    local i
+    printf "\r\e[2K"
+    for (( i=0; i < help_extra; i++ )); do
+      printf "\n\e[2K"
+    done
+    if (( help_extra > 0 )); then
+      printf "\e[%dA" $help_extra
+    fi
+    printf "\r\e[2K"
+    help_extra=0
+  }
+
+  # Full abort: tear down plugin UIs, clear the bar, restore tty.
+  # Used by INT/TERM/QUIT and by Ctrl+C as a byte ($'\x03').
+  _dnav_abort() {
+    DNAV_ABORT=1
+    # Innermost plugin UIs first (dsearch may sit on dfile or main).
+    if (( $+functions[_dsearch_erase_ui] )) && {
+         (( ${_dsearch_extra_lines:-0} > 0 )) || [[ -n ${_dsearch_tmpdir:-} ]]
+       }; then
+      _dsearch_erase_ui
+      (( $+functions[_dsearch_session_cleanup] )) && _dsearch_session_cleanup
+    fi
+    if (( ${+_DFILE_OPEN} && _DFILE_OPEN )); then
+      (( $+functions[_dfile_erase] )) && _dfile_erase
+      _DFILE_OPEN=0
+    fi
+    _dnav_clear_menu
+    _dnav_cleanup
+  }
+
   trap '_dnav_cleanup' EXIT
-  # Restore tty + flag abort. Also keep isig so Ctrl+C still generates SIGINT.
-  trap '_dnav_cleanup; DNAV_ABORT=1' INT TERM QUIT
+  # return 130 exits the interrupted function (dnav / nested plugin loop).
+  # Parents check DNAV_ABORT and propagate so we fully leave the TUI.
+  trap '_dnav_abort; return 130' INT TERM QUIT
 
   # Hide cursor, disable echo and line buffering (keep isig for Ctrl+C)
   stty -echo -icanon isig 2>/dev/null
@@ -155,19 +596,6 @@ dnav() {
     fi
   }
 
-  _dnav_clear_menu() {
-    local i
-    printf "\r\e[2K"
-    for (( i=0; i < help_extra; i++ )); do
-      printf "\n\e[2K"
-    done
-    if (( help_extra > 0 )); then
-      printf "\e[%dA" $help_extra
-    fi
-    printf "\r\e[2K"
-    help_extra=0
-  }
-
   _dnav_move_left() {
     local old=$selected
     (( selected > 0 )) || return
@@ -186,71 +614,390 @@ dnav() {
     printf "\r"
   }
 
-  _dnav_help_lines() {
-    print -r -- "←/→  or  h/l              move between folders"
-    print -r -- "Enter                     open folder (or open Help)"
-    print -r -- "Esc                       cancel / leave Help"
-    if _dsearch_available; then
-      print -r -- "/                         fuzzy directory search"
-      print -r -- "  in search: ↑↓  C-n/C-p   move results"
-      print -r -- "  in search: → Help        search help; Esc back"
-    fi
-    if _dfile_available; then
-      print -r -- "f                         file explorer"
-      print -r -- "  in files: hjkl Tab .     nav / focus / hidden"
-      print -r -- "  in files: d Jump  s Search"
-    fi
-    if _djump_available; then
-      print -r -- "jumps                     ~/.local/share/dnav/jumps"
-    fi
-    print -r -- "DNAV_LS=1                 ls -a --color=auto after select"
+  # ── About mode ─────────────────────────────────────────────────────────
+  # Layout:
+  #   [ DNav About:] [ Help ] Settings   Tab to switch   ← brand + tab chips
+  #   [ Move ] Search Files … >                          ← section strip
+  #   detail / settings rows…                            ← body
+  #
+  # Tab toggles Help ↔ Settings. Settings has its own tabs: General Folders Jumps.
+  local about_tab=help              # help | settings
+  local -a help_topics settings_tabs
+  local help_sel=0 help_win=0
+  local settings_sel=0 settings_win=0
+  local settings_row=0              # row within General settings list
+  local -a about_color_names
+  about_color_names=(black red green yellow blue magenta cyan white)
+
+  _dnav_about_init() {
+    help_topics=(Move)
+    _dsearch_available && help_topics+=(Search)
+    _dfile_available && help_topics+=(Files)
+    _djump_available && help_topics+=(DJump DKEY)
+    help_topics+=(DHelp DConfig)
+    help_sel=0
+    help_win=0
+    settings_tabs=(General Folders Jumps)
+    settings_sel=0
+    settings_win=0
+    settings_row=0
+    about_tab=help
   }
 
-  # In-TUI help overlay (same multi-line cyan style as dsearch help)
-  _dnav_show_help() {
-    local -a hlines
-    local line n=0 i leftover
-    mode=help
+  # Help-tab topic bodies (Move includes former Navigate).
+  _dnav_help_topic_body() {
+    case $1 in
+      Move)
+        print -r -- "h / l   or   ← / →          move selection on the main bar"
+        print -r -- "Enter                         open selected folder"
+        print -r -- "Enter on About                open this About view"
+        print -r -- "Esc                           leave dnav / leave About"
+        print -r -- "After open                    cyan path bar (+ ls if ls_after=1)"
+        print -r -- "Brand chip is not selectable; folders are cyan when focused"
+        ;;
+      Search)
+        print -r -- "/  or  s                       fuzzy directory search"
+        print -r -- "In search: ↑↓  or  C-n / C-p   move through results"
+        print -r -- "In search: →                   focus Help chip; Esc back"
+        print -r -- "Enter                          jump to selected path"
+        ;;
+      Files)
+        print -r -- "f                              open file explorer (dfile)"
+        print -r -- "hjkl / arrows                  move; j/↓ drill in; k/↑ up"
+        print -r -- "Tab / f                        toggle directories ↔ files"
+        print -r -- "Enter                          exit to folder / open file"
+        print -r -- "s  or  /                       search   ·   d Jump   ·   . hidden"
+        print -r -- "Esc                            leave explorer (back to dnav)"
+        ;;
+      DJump)
+        print -r -- "In dfile: d                    Jump mode (type dKEY)"
+        print -r -- "jumps file                     ~/.config/dnav/jumps"
+        print -r -- "djump -l / djump -r            list / reload jump table"
+        print -r -- "djump KEY                      cd without opening dnav"
+        ;;
+      DKEY)
+        print -r -- "Each jumps key installs dKEY   e.g. home → dhome"
+        print -r -- "dhome, dproj, …                shell jump + cyan path bar"
+        print -r -- "Works outside dnav             after dnav is sourced"
+        print -r -- "Reload after edits             djump -r  or  dconfig -r"
+        ;;
+      DHelp)
+        print -r -- "dhelp                          list shell d-commands"
+        print -r -- "Shows dnav, dhelp, dconfig, djump, and all dKEY aliases"
+        print -r -- "Does not list dfile/dsearch    (those are in-TUI only)"
+        ;;
+      DConfig)
+        print -r -- "Config dir                     ~/.config/dnav/"
+        print -r -- "  config                       colors, brand, ls_after, hidden…"
+        print -r -- "  folders                      main bar labels + paths"
+        print -r -- "  jumps                        dKEY aliases"
+        print -r -- "In About → Settings            edit from inside dnav"
+        print -r -- "dconfig -r / -e                reload / open in \$EDITOR"
+        print -r -- "ls_after=1 in config           ls after select/jump"
+        ;;
+    esac
+  }
 
-    # Clear any previous help body
+  # Fill about_body_lines + about_interactive_rows for current settings tab.
+  local -a about_body_lines
+  local about_interactive_rows=0
+
+  _dnav_settings_fill_body() {
+    local tab="${settings_tabs[settings_sel+1]}"
+    local onoff i k path
+    about_body_lines=()
+    about_interactive_rows=0
+    case $tab in
+      General)
+        (( DNAV_CFG_LS )) && onoff=on || onoff=off
+        about_body_lines+=("ls_after          $onoff          Enter toggle · ls after jump/select")
+        (( DNAV_CFG_SHOW_HIDDEN )) && onoff=on || onoff=off
+        about_body_lines+=("show_hidden       $onoff          Enter toggle · dfile default")
+        (( DNAV_CFG_SUCCESS_ANIM )) && onoff=on || onoff=off
+        about_body_lines+=("success_anim      $onoff          Enter toggle · path bar animation")
+        about_body_lines+=("color_fg          ${DNAV_CFG_COLOR_FG}          Enter cycle · text color")
+        about_body_lines+=("color_bg          ${DNAV_CFG_COLOR_BG}          Enter cycle · chip color")
+        about_body_lines+=("brand             ${DNAV_CFG_BRAND}          Enter/e · edit config file")
+        about_interactive_rows=6
+        ;;
+      Folders)
+        about_body_lines+=("Main bar entries (~/.config/dnav/folders)")
+        about_body_lines+=("Enter or e                     edit folders in \$EDITOR")
+        about_body_lines+=("────────────────────────────")
+        if (( ${#DNAV_FOLDER_NAMES} )); then
+          for (( i=1; i <= $#DNAV_FOLDER_NAMES; i++ )); do
+            path="${DNAV_FOLDER_PATHS[i]}"
+            [[ -z $path ]] && path="(About)"
+            about_body_lines+=("  ${(r:12:)DNAV_FOLDER_NAMES[i]}  $path")
+          done
+        else
+          about_body_lines+=("  (none loaded)")
+        fi
+        ;;
+      Jumps)
+        about_body_lines+=("Jump aliases (~/.config/dnav/jumps) → shell dKEY")
+        about_body_lines+=("Enter or e                     edit jumps in \$EDITOR")
+        about_body_lines+=("────────────────────────────")
+        if (( $+functions[_djump_ensure] )) && _djump_ensure 2>/dev/null; then
+          for k in "${_DJUMP_KEYS[@]}"; do
+            about_body_lines+=("  d${(r:12:)k}  ${_DJUMP_MAP[$k]}")
+          done
+        else
+          about_body_lines+=("  (no jumps loaded)")
+        fi
+        ;;
+    esac
+  }
+
+  # Paint a named chip strip; reply=(new_win).
+  _dnav_about_paint_strip() {
+    local aname="$1" sel="$2" win="$3" maxw="$4"
+    if (( $+functions[_dfile_paint_strip] )); then
+      _dfile_paint_strip "$aname" $sel $win 1 $maxw
+      return
+    fi
+    local -a items
+    items=("${(@P)aname}")
+    local i label used=0 n=$#items cell_w
+    local more_l=0 more_r=0
+    (( win > 0 )) && more_l=1
+    (( more_l )) && printf "\e[2m<\e[22m "
+    for (( i=win; i < n; i++ )); do
+      label="${items[i+1]}"
+      cell_w=$(( ${#label} + 3 ))
+      if (( used > 0 && used + cell_w > maxw )); then
+        more_r=1
+        break
+      fi
+      if (( i == sel )); then
+        printf "${HIGHLIGHT} %s ${RESET} " "$label"
+      else
+        printf " %s  " "$label"
+      fi
+      (( used += cell_w ))
+    done
+    (( more_r )) && printf " \e[2m>\e[22m"
+    printf "\e[K"
+    reply=($win)
+  }
+
+  _dnav_about_refresh_style() {
+    HIGHLIGHT_FG=${DNAV_CFG_COLOR_FG:-30}
+    HIGHLIGHT_BG=${DNAV_CFG_COLOR_BG:-46}
+    HIGHLIGHT=$'\e['"${HIGHLIGHT_FG}"';'"${HIGHLIGHT_BG}"'m'
+    RESET=$'\e[0m'
+    DNAV_HIGHLIGHT=$HIGHLIGHT
+    DNAV_RESET=$RESET
+    brand="${DNAV_CFG_BRAND:-DNav}"
+  }
+
+  # Temporarily leave raw mode, edit a file, restore TUI.
+  _dnav_about_edit_file() {
+    local file="$1"
+    local ed="${EDITOR:-${VISUAL:-vi}}"
+    [[ -n $file ]] || return 1
+    # Clear about UI to a clean line
+    printf "\r\e[2K"
+    local i
+    for (( i=0; i < help_extra; i++ )); do
+      printf "\n\e[2K"
+    done
     if (( help_extra > 0 )); then
-      for (( i=0; i < help_extra; i++ )); do
-        printf "\n\e[2K"
-      done
       printf "\e[%dA" $help_extra
     fi
+    help_extra=0
+    printf "\r\e[2K\e[?25h"
+    stty "$_DNAV_STTY_ORIG" 2>/dev/null
+    ${=ed} -- "$file"
+    stty -echo -icanon isig 2>/dev/null
+    printf "\e[?25l"
+    _dnav_config_load
+    _dnav_about_refresh_style
+    if [[ $file == */jumps ]] && (( $+functions[_djump_load] )); then
+      _DJUMP_LOADED=0
+      _djump_load 2>/dev/null || true
+    fi
+    # Reload folder names into about if main bar changed — re-read arrays
+    if (( ${#DNAV_FOLDER_NAMES} > 0 )); then
+      names=("${DNAV_FOLDER_NAMES[@]}")
+      paths=("${DNAV_FOLDER_PATHS[@]}")
+      _dnav_compute_positions
+    fi
+    _dnav_draw_about
+  }
 
-    # Top bar: brand + Help chip selected
-    printf "\r\e[2K"
-    printf "${HIGHLIGHT} %s ${RESET} " "$brand"
-    printf "${HIGHLIGHT} %s ${RESET}" "Help"
-    printf "\e[K"
+  _dnav_settings_toggle_or_edit() {
+    local tab="${settings_tabs[settings_sel+1]}"
+    local cfg="${DNAV_CONFIG_DIR}/config"
+    local idx name i
+    case $tab in
+      General)
+        case $settings_row in
+          0)
+            DNAV_CFG_LS=$(( 1 - DNAV_CFG_LS ))
+            _dnav_config_set ls_after "$DNAV_CFG_LS"
+            ;;
+          1)
+            DNAV_CFG_SHOW_HIDDEN=$(( 1 - DNAV_CFG_SHOW_HIDDEN ))
+            _dnav_config_set show_hidden "$DNAV_CFG_SHOW_HIDDEN"
+            ;;
+          2)
+            DNAV_CFG_SUCCESS_ANIM=$(( 1 - DNAV_CFG_SUCCESS_ANIM ))
+            _dnav_config_set success_anim "$DNAV_CFG_SUCCESS_ANIM"
+            ;;
+          3)
+            idx=1
+            for (( i=1; i <= $#about_color_names; i++ )); do
+              if [[ $(_dnav_color_num fg "${about_color_names[i]}") == "$DNAV_CFG_COLOR_FG" ]]; then
+                idx=$(( i % $#about_color_names + 1 ))
+                break
+              fi
+            done
+            name="${about_color_names[idx]}"
+            _dnav_config_set color_fg "$name"
+            DNAV_CFG_COLOR_FG="$(_dnav_color_num fg "$name")"
+            _dnav_apply_colors
+            _dnav_about_refresh_style
+            ;;
+          4)
+            idx=1
+            for (( i=1; i <= $#about_color_names; i++ )); do
+              if [[ $(_dnav_color_num bg "${about_color_names[i]}") == "$DNAV_CFG_COLOR_BG" ]]; then
+                idx=$(( i % $#about_color_names + 1 ))
+                break
+              fi
+            done
+            name="${about_color_names[idx]}"
+            _dnav_config_set color_bg "$name"
+            DNAV_CFG_COLOR_BG="$(_dnav_color_num bg "$name")"
+            _dnav_apply_colors
+            _dnav_about_refresh_style
+            ;;
+          5)
+            _dnav_about_edit_file "$cfg"
+            return
+            ;;
+        esac
+        _dnav_draw_about
+        ;;
+      Folders)
+        _dnav_about_edit_file "${DNAV_CONFIG_DIR}/folders"
+        ;;
+      Jumps)
+        _dnav_about_edit_file "${DNAV_CONFIG_DIR}/jumps"
+        ;;
+    esac
+  }
 
-    hlines=("${(@f)$(_dnav_help_lines)}")
-    for line in "${hlines[@]}"; do
-      printf "\n\r"
-      printf "${HIGHLIGHT}%-${cols}s${RESET}" " $line"
-      (( n++ ))
-    done
+  _dnav_draw_about() {
+    local -a blines
+    local line n=0 i leftover old_extra=$help_extra
+    local maxw=$cols topic
+    mode=about
+    printf "\e[?25l\r"
 
-    leftover=$(( help_extra - n ))
+    # Row 0: [ DNav About:] [ Help ] Settings   Tab to switch
+    printf "${HIGHLIGHT} DNav About:${RESET} "
+    if [[ $about_tab == help ]]; then
+      printf "${HIGHLIGHT} Help ${RESET} "
+      printf " Settings  "
+    else
+      printf " Help  "
+      printf "${HIGHLIGHT} Settings ${RESET} "
+    fi
+    printf "\e[2mTab to switch\e[22m\e[K"
+
+    # Row 1: section strip
+    printf "\n\r"
+    if [[ $about_tab == help ]]; then
+      _dnav_about_paint_strip help_topics $help_sel $help_win $maxw
+      help_win=$reply[1]
+    else
+      _dnav_about_paint_strip settings_tabs $settings_sel $settings_win $maxw
+      settings_win=$reply[1]
+    fi
+
+    # Rows 2…: body
+    if [[ $about_tab == help ]]; then
+      topic="${help_topics[help_sel+1]}"
+      blines=("${(@f)$(_dnav_help_topic_body "$topic")}")
+      for line in "${blines[@]}"; do
+        printf "\n\r"
+        printf "${HIGHLIGHT}%-${maxw}s${RESET}" " $line"
+        (( n++ ))
+      done
+    else
+      _dnav_settings_fill_body
+      blines=("${about_body_lines[@]}")
+      for (( i=1; i <= $#blines; i++ )); do
+        line="${blines[i]}"
+        printf "\n\r"
+        if (( about_interactive_rows > 0 && (i - 1) < about_interactive_rows && (i - 1) == settings_row )); then
+          printf "${HIGHLIGHT}%-${maxw}s${RESET}" " $line"
+        elif (( about_interactive_rows > 0 && (i - 1) < about_interactive_rows )); then
+          printf "\e[2m%-${maxw}s\e[22m" " $line"
+        else
+          printf "${HIGHLIGHT}%-${maxw}s${RESET}" " $line"
+        fi
+        (( n++ ))
+      done
+    fi
+
+    leftover=$(( old_extra - 1 - n ))
     for (( i=0; i < leftover; i++ )); do
-      printf "\n\e[2K"
+      printf "\n\r\e[2K"
     done
     if (( leftover > 0 )); then
       printf "\e[%dA" $leftover
     fi
-    help_extra=$n
-    if (( n > 0 )); then
-      printf "\e[%dA" $n
+
+    help_extra=$(( 1 + n ))
+    if (( help_extra > 0 )); then
+      printf "\e[%dA" $help_extra
     fi
     printf "\r"
   }
 
-  _dnav_leave_help() {
+  _dnav_show_about() {
+    _dnav_about_init
+    help_extra=0
+    _dnav_draw_about
+  }
+
+  _dnav_about_move_h() {
+    local dir="$1"
+    if [[ $about_tab == help ]]; then
+      local n=$#help_topics
+      (( n == 0 )) && return
+      (( help_sel += dir ))
+      (( help_sel < 0 )) && help_sel=0
+      (( help_sel >= n )) && help_sel=$(( n - 1 ))
+    else
+      local n=$#settings_tabs
+      (( n == 0 )) && return
+      (( settings_sel += dir ))
+      (( settings_sel < 0 )) && settings_sel=0
+      (( settings_sel >= n )) && settings_sel=$(( n - 1 ))
+      settings_row=0
+    fi
+    _dnav_draw_about
+  }
+
+  _dnav_about_move_v() {
+    local dir="$1" maxr=0
+    [[ $about_tab == settings ]] || return
+    [[ ${settings_tabs[settings_sel+1]} == General ]] || return
+    (( about_interactive_rows <= 0 )) && _dnav_settings_fill_body
+    maxr=$(( about_interactive_rows > 0 ? about_interactive_rows - 1 : 5 ))
+    (( settings_row += dir ))
+    (( settings_row < 0 )) && settings_row=0
+    (( settings_row > maxr )) && settings_row=$maxr
+    _dnav_draw_about
+  }
+
+  _dnav_leave_about() {
     local i
     mode=main
-    # Wipe help body then restore nav bar
     printf "\r\e[2K"
     for (( i=0; i < help_extra; i++ )); do
       printf "\n\e[2K"
@@ -260,76 +1007,74 @@ dnav() {
     fi
     help_extra=0
     printf "\r"
+    # Re-apply style after possible settings changes
+    _dnav_about_refresh_style
+    if (( ${#DNAV_FOLDER_NAMES} > 0 )); then
+      names=("${DNAV_FOLDER_NAMES[@]}")
+      paths=("${DNAV_FOLDER_PATHS[@]}")
+      _dnav_compute_positions
+      # keep selection in range
+      (( selected >= $#names )) && selected=$(( $#names - 1 ))
+      (( selected < 0 )) && selected=0
+    fi
     _dnav_draw
   }
 
-  # Expand animation from the selected item outward, then show path left-aligned
-  _dnav_success_bar() {
+  # Expand from selected chip, then full-width path bar (shared _dnav_success_bar).
+  _dnav_success_from_sel() {
     local path="$1"
-    local origin_start=${item_start[selected+1]}
-    local origin_end=${item_end[selected+1]}
+    local origin_start=${item_start[selected+1]:-0}
+    local origin_end=${item_end[selected+1]:-$cols}
     local origin_mid=$(( (origin_start + origin_end) / 2 ))
-    local max_w=$cols
-    local step
-
-    # Expand highlight from origin to full width (slightly slower)
-    for (( step=1; step <= 10; step++ )); do
-      local half=$(( (max_w * step) / 20 ))
-      local left=$(( origin_mid - half ))
-      local right=$(( origin_mid + half ))
-      (( left < 0 )) && left=0
-      (( right > max_w )) && right=$max_w
-      local width=$(( right - left ))
-
-      printf "\r\e[2K"
-      printf "\e[${left}C${HIGHLIGHT}%*s${RESET}" $width ""
-      sleep 0.03 2>/dev/null
-    done
-
-    # Full-width bar, path on the far left (truncate from the right if needed)
-    local display=$path
-    if (( ${#display} > max_w )); then
-      display="${display:0:$((max_w - 1))}…"
-    fi
-    printf "\r\e[2K"
-    printf "${HIGHLIGHT}%-${max_w}s${RESET}\n" "$display"
+    _dnav_success_bar "$path" "$origin_mid"
   }
 
   _dnav_compute_positions
   _dnav_draw
 
   while true; do
-    (( DNAV_ABORT )) && { _dnav_clear_menu; _dnav_cleanup; return 130; }
+    # DNAV_ABORT: full UI teardown already done by _dnav_abort (trap or \x03)
+    (( DNAV_ABORT )) && return 130
     read -k 1 key || true
-    (( DNAV_ABORT )) && { _dnav_clear_menu; _dnav_cleanup; return 130; }
+    (( DNAV_ABORT )) && return 130
     # Ctrl+C may arrive as a byte in some terminals even with isig
     if [[ $key == $'\x03' ]]; then
-      _dnav_clear_menu
-      _dnav_cleanup
+      _dnav_abort
       return 130
     fi
 
     case $key in
       $'\e')  # Escape or arrow sequence
         if read -t 0.05 -k 1 key2 2>/dev/null; then
-          if [[ $key2 == '[' && $mode == main ]]; then
+          if [[ $key2 == '[' ]]; then
             read -k 1 key3
             case $key3 in
               D)  # Left
-                _dnav_move_left
+                if [[ $mode == about ]]; then
+                  _dnav_about_move_h -1
+                elif [[ $mode == main ]]; then
+                  _dnav_move_left
+                fi
                 ;;
               C)  # Right
-                _dnav_move_right
+                if [[ $mode == about ]]; then
+                  _dnav_about_move_h 1
+                elif [[ $mode == main ]]; then
+                  _dnav_move_right
+                fi
+                ;;
+              A)  # Up
+                [[ $mode == about ]] && _dnav_about_move_v -1
+                ;;
+              B)  # Down
+                [[ $mode == about ]] && _dnav_about_move_v 1
                 ;;
             esac
-          elif [[ $key2 == '[' ]]; then
-            # Consume arrow key byte while in help (ignore)
-            read -k 1 key3
           fi
         else
           # Plain Esc
-          if [[ $mode == help ]]; then
-            _dnav_leave_help
+          if [[ $mode == about ]]; then
+            _dnav_leave_about
           else
             _dnav_clear_menu
             _dnav_cleanup
@@ -338,12 +1083,16 @@ dnav() {
         fi
         ;;
       $'\n'|$'\r')  # Enter
-        # Ignore Enter while viewing help
-        [[ $mode == help ]] && continue
+        if [[ $mode == about ]]; then
+          if [[ $about_tab == settings ]]; then
+            _dnav_settings_toggle_or_edit
+          fi
+          continue
+        fi
 
-        if (( selected == $#names - 1 )); then
-          # Help – multi-line overlay (Esc returns to main)
-          _dnav_show_help
+        # Empty path (About chip) → About overlay
+        if [[ -z ${paths[selected+1]} ]]; then
+          _dnav_show_about
           continue
         fi
 
@@ -355,7 +1104,7 @@ dnav() {
             _dnav_cleanup
             return 1
           }
-          _dnav_success_bar "${target:A}"
+          _dnav_success_from_sel "${target:A}"
           _dnav_cleanup
           _dnav_maybe_ls
           return 0
@@ -366,36 +1115,71 @@ dnav() {
           return 1
         fi
         ;;
+      $'\t')
+        if [[ $mode == about ]]; then
+          if [[ $about_tab == help ]]; then
+            about_tab=settings
+          else
+            about_tab=help
+          fi
+          _dnav_draw_about
+        fi
+        ;;
       h)
-        [[ $mode == main ]] && _dnav_move_left
+        if [[ $mode == about ]]; then
+          _dnav_about_move_h -1
+        elif [[ $mode == main ]]; then
+          _dnav_move_left
+        fi
         ;;
       l)
-        [[ $mode == main ]] && _dnav_move_right
+        if [[ $mode == about ]]; then
+          _dnav_about_move_h 1
+        elif [[ $mode == main ]]; then
+          _dnav_move_right
+        fi
         ;;
-      /)
+      k)
+        [[ $mode == about ]] && _dnav_about_move_v -1
+        ;;
+      j)
+        [[ $mode == about ]] && _dnav_about_move_v 1
+        ;;
+      e|E)
+        if [[ $mode == about && $about_tab == settings ]]; then
+          case ${settings_tabs[settings_sel+1]} in
+            General) _dnav_about_edit_file "${DNAV_CONFIG_DIR}/config" ;;
+            Folders) _dnav_about_edit_file "${DNAV_CONFIG_DIR}/folders" ;;
+            Jumps)   _dnav_about_edit_file "${DNAV_CONFIG_DIR}/jumps" ;;
+          esac
+        fi
+        ;;
+      /|s|S)
+        [[ $mode == about ]] && continue
         if [[ $mode == main ]] && _dsearch_available; then
           if _dsearch_start; then
             return 0   # navigated or finished with cleanup
           fi
-          (( DNAV_ABORT )) && { _dnav_cleanup; return 130; }
+          (( DNAV_ABORT )) && return 130
           mode=main
           _dnav_draw
         fi
         ;;
       f|F)
+        [[ $mode == about ]] && continue
         if [[ $mode == main ]] && _dfile_available; then
           local fpath=""
-          if (( selected < $#names - 1 )); then
+          if [[ -n ${paths[selected+1]} && -d ${paths[selected+1]} ]]; then
             fpath="${paths[selected+1]}"
           fi
           [[ -z $fpath || ! -d $fpath ]] && fpath="$PWD"
           # Clear main bar line before explorer
           _dnav_clear_menu
           if _dfile_enter "$fpath"; then
-            # opened a file (cleanup already done)
+            # exited to a folder or opened a file (cleanup already done)
             return 0
           fi
-          (( DNAV_ABORT )) && { _dnav_cleanup; return 130; }
+          (( DNAV_ABORT )) && return 130
           # Esc from dfile — still in raw TUI; redraw main
           mode=main
           _dnav_draw

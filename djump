@@ -1,8 +1,10 @@
 #!/usr/bin/env zsh
 # djump — editable directory jump table for dnav plugins
 #
-# Data file (next to this script, or DNAV_JUMPS path):
-#   jumps   — lines:  key   path
+# Data file (first match wins):
+#   $DNAV_JUMPS
+#   $DNAV_CONFIG_DIR/jumps     (~/.config/dnav/jumps)
+#   $DNAV_DIR/jumps            (package default)
 #
 # API:
 #   _djump_available
@@ -10,23 +12,54 @@
 #   _djump_resolve KEY     → prints absolute path, return 0/1
 #   _djump_list_keys
 #   _djump_match_query S   → keys matching s / ds (for typeahead / search pin)
+#   _djump_goto KEY        → cd to jump (for shell cmds)
+#   djump [-r|-l|KEY]      → reload / list / go
 #
-# Does not install shell aliases or edit zshrc.
+# When sourced (via dnav), each jump key is also installed as a shell command
+# `dKEY` (e.g. key "home" → `dhome`) so you can jump without opening dnav.
 
 _djump_available() { return 0 }
 
 typeset -gA _DJUMP_MAP
 typeset -ga _DJUMP_KEYS
+typeset -ga _DJUMP_SHELL_CMDS
 typeset -g  _DJUMP_LOADED=0
 
 _djump_data_path() {
+  local cfg="${DNAV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dnav}"
   if [[ -n ${DNAV_JUMPS:-} ]]; then
     print -r -- "$DNAV_JUMPS"
-  elif [[ -n ${DNAV_DIR:-} ]]; then
+  elif [[ -f $cfg/jumps ]]; then
+    print -r -- "$cfg/jumps"
+  elif [[ -n ${DNAV_DIR:-} && -f $DNAV_DIR/jumps ]]; then
     print -r -- "$DNAV_DIR/jumps"
   else
     print -r -- "${0:A:h}/jumps"
   fi
+}
+
+# Remove previously installed dKEY shell functions.
+_djump_uninstall_cmds() {
+  local cmd
+  for cmd in "${_DJUMP_SHELL_CMDS[@]}"; do
+    (( $+functions[$cmd] )) && unfunction "$cmd"
+  done
+  _DJUMP_SHELL_CMDS=()
+}
+
+# Install one shell function per jump: dhome, dproj, …
+# Only safe identifier keys (letters/digits/_) become commands.
+_djump_install_cmds() {
+  local key cmd
+  _djump_uninstall_cmds
+  for key in "${_DJUMP_KEYS[@]}"; do
+    # Require a valid shell function name body (no extendedglob needed)
+    [[ $key =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
+    cmd="d${key}"
+    # Capture key by value so each function keeps its own target.
+    eval "${cmd}() { _djump_goto ${(q)key}; }"
+    _DJUMP_SHELL_CMDS+=("$cmd")
+  done
 }
 
 _djump_load() {
@@ -35,7 +68,10 @@ _djump_load() {
   _DJUMP_MAP=()
   _DJUMP_KEYS=()
   _DJUMP_LOADED=0
-  [[ -f $f ]] || return 1
+  if [[ ! -f $f ]]; then
+    _djump_uninstall_cmds
+    return 1
+  fi
   while IFS= read -r line || [[ -n $line ]]; do
     line="${line%%#*}"
     line="${line%"${line##*[![:space:]]}"}"
@@ -49,6 +85,7 @@ _djump_load() {
     _DJUMP_KEYS+=("$key")
   done < "$f"
   _DJUMP_LOADED=1
+  _djump_install_cmds
   return 0
 }
 
@@ -93,6 +130,41 @@ _djump_resolve() {
   _djump_expand "$path"
 }
 
+# cd to a jump target (used by dKEY shell commands and `djump KEY`).
+# Uses the same cyan success bar as dnav when available.
+_djump_goto() {
+  local key="$1" dest
+  [[ -n $key ]] || return 1
+  dest="$(_djump_resolve "$key")" || {
+    print -u2 -- "djump: unknown key: $key"
+    return 1
+  }
+  if [[ ! -d $dest ]]; then
+    print -u2 -- "djump: not a directory: $dest"
+    return 1
+  fi
+  cd -- "$dest" || {
+    print -u2 -- "djump: could not cd to $dest"
+    return 1
+  }
+  dest="${dest:A}"
+  if (( $+functions[_dnav_success_bar] )); then
+    _dnav_success_bar "$dest"
+  elif [[ -o interactive ]]; then
+    print -r -- "$dest"
+  fi
+  if (( $+functions[_dnav_maybe_ls] )); then
+    _dnav_maybe_ls
+  else
+    case ${DNAV_CFG_LS:-0} in
+      1|true|yes|on|TRUE|YES|ON)
+        command ls -a --color=auto
+        ;;
+    esac
+  fi
+  return 0
+}
+
 _djump_list_keys() {
   _djump_ensure || return 1
   print -l -- "${_DJUMP_KEYS[@]}"
@@ -114,5 +186,45 @@ _djump_match_query() {
   (( $#hits )) && print -l -- "${hits[@]}"
 }
 
-# Load once when sourced
+# User-facing helper: list, reload, or jump.
+#   djump            list keys as dKEY → path
+#   djump -l         same
+#   djump -r         reload jumps file + reinstall dKEY cmds
+#   djump home       cd to key "home" (same as dhome)
+djump() {
+  case ${1:-} in
+    -r|--reload)
+      _DJUMP_LOADED=0
+      if _djump_load; then
+        print -r -- "djump: loaded ${#_DJUMP_KEYS} jumps (${#_DJUMP_SHELL_CMDS} commands)"
+        return 0
+      fi
+      print -u2 -- "djump: failed to load $(_djump_data_path)"
+      return 1
+      ;;
+    -l|--list|'')
+      _djump_ensure || {
+        print -u2 -- "djump: no jumps file at $(_djump_data_path)"
+        return 1
+      }
+      local k
+      for k in "${_DJUMP_KEYS[@]}"; do
+        print -r -- "d${k}	${_DJUMP_MAP[$k]}"
+      done
+      return 0
+      ;;
+    -h|--help)
+      print -r -- "usage: djump [-r|-l|KEY]"
+      print -r -- "  -r, --reload   reload jumps file and dKEY commands"
+      print -r -- "  -l, --list     list dKEY → path"
+      print -r -- "  KEY            cd to jump (also: dKEY e.g. dhome)"
+      return 0
+      ;;
+    *)
+      _djump_goto "$1"
+      ;;
+  esac
+}
+
+# Load once when sourced (installs dKEY commands into the shell)
 _djump_load 2>/dev/null || true

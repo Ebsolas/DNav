@@ -1,6 +1,7 @@
-# djump table — edit freely (one entry per line)
-# Format:  key   path
-# Used as dKEY in Jump mode (e.g. key "home" → type dhome)
+# Package default jumps — prefer editing user config:
+#   ~/.config/dnav/jumps
+# Format:  key   path   → shell command dKEY (home → dhome)
+# Reload: djump -r  or  dconfig -r
 # Paths: ~ expands; relative paths (e.g. ..) are relative to current $PWD
 #
 # key     path

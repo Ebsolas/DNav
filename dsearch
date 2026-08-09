@@ -732,29 +732,24 @@ _dsearch_start() {
   _dsearch_draw "$_dsearch_q"
 
   while true; do
-    (( ${DNAV_ABORT:-0} )) && {
-      _dsearch_erase_ui
-      _dsearch_session_cleanup
-      printf "\e[?25l"
-      return 130
-    }
+    # Abort already tore down UI + tty (via _dnav_abort); just leave search
+    (( ${DNAV_ABORT:-0} )) && return 130
     if [[ -n $_DSEARCH_PUSHBACK ]]; then
       key="$_DSEARCH_PUSHBACK"
       _DSEARCH_PUSHBACK=""
     else
       read -k 1 key || true
     fi
-    (( ${DNAV_ABORT:-0} )) && {
-      _dsearch_erase_ui
-      _dsearch_session_cleanup
-      printf "\e[?25l"
-      return 130
-    }
+    (( ${DNAV_ABORT:-0} )) && return 130
     if [[ $key == $'\x03' ]]; then
-      _dsearch_erase_ui
-      _dsearch_session_cleanup
-      DNAV_ABORT=1
-      printf "\e[?25h"
+      if (( $+functions[_dnav_abort] )); then
+        _dnav_abort
+      else
+        _dsearch_erase_ui
+        _dsearch_session_cleanup
+        DNAV_ABORT=1
+        printf "\e[?25h"
+      fi
       return 130
     fi
 
