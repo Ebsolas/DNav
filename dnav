@@ -46,6 +46,8 @@ dnav() {
   local cols=${COLUMNS:-80}
   local -a item_start item_end   # column positions for animation
   local mode=main                # main | help
+  local brand="DNav"             # always-on chip; not selectable
+  local help_extra=0             # lines below bar while in help overlay
 
   # Common folders + Help
   names=(Home Docs Down EbSync Projects Config Apps Share Help)
@@ -90,30 +92,45 @@ dnav() {
 
   # Compute horizontal positions of each item (for animation origin)
   _dnav_compute_positions() {
-    local col=0
+    # Brand chip visual width: " DNav " + trailing space → brand+3
+    local col=$(( ${#brand} + 3 ))
     item_start=()
     item_end=()
     for (( i=1; i <= $#names; i++ )); do
       item_start[i]=$col
-      (( col += ${#names[i]} + 1 ))   # name + trailing space
+      # Each item: " name " + trailing space → name+3
+      (( col += ${#names[i]} + 3 ))
       item_end[i]=$col
     done
   }
 
+  # Brand always cyan (not selectable); selected item is a cyan chip.
+  # Unselected items keep the same column width so the bar doesn't jump.
   _dnav_draw() {
+    local i
     printf "\r\e[2K"
+    printf "${HIGHLIGHT} %s ${RESET} " "$brand"
     for (( i=1; i <= $#names; i++ )); do
       if (( i - 1 == selected )); then
-        printf "${HIGHLIGHT}%s${RESET} " "${names[i]}"
+        printf "${HIGHLIGHT} %s ${RESET} " "${names[i]}"
       else
-        printf "%s " "${names[i]}"
+        printf " %s  " "${names[i]}"
       fi
     done
     printf "\e[K"
   }
 
   _dnav_clear_menu() {
+    local i
     printf "\r\e[2K"
+    for (( i=0; i < help_extra; i++ )); do
+      printf "\n\e[2K"
+    done
+    if (( help_extra > 0 )); then
+      printf "\e[%dA" $help_extra
+    fi
+    printf "\r\e[2K"
+    help_extra=0
   }
 
   _dnav_move_left() {
@@ -126,18 +143,75 @@ dnav() {
     _dnav_draw
   }
 
-  # In-TUI help view (does not exit dnav)
-  _dnav_show_help() {
-    mode=help
-    printf "\r\e[2K"
-    printf "←/→ or h/l move   Enter select   Esc cancel (or back from Help)"
-    if _dfile_available; then
-      printf "   f files"
-    fi
+  _dnav_help_lines() {
+    print -r -- "←/→  or  h/l              move between folders"
+    print -r -- "Enter                     open folder (or open Help)"
+    print -r -- "Esc                       cancel / leave Help"
     if _dsearch_available; then
-      printf "   / search (↑↓ or C-n/C-p)"
+      print -r -- "/                         fuzzy directory search"
+      print -r -- "  in search: ↑↓  C-n/C-p   move results"
+      print -r -- "  in search: → Help        search help; Esc back"
     fi
+    if _dfile_available; then
+      print -r -- "f                         file explorer (when available)"
+    fi
+  }
+
+  # In-TUI help overlay (same multi-line cyan style as dsearch help)
+  _dnav_show_help() {
+    local -a hlines
+    local line n=0 i leftover
+    mode=help
+
+    # Clear any previous help body
+    if (( help_extra > 0 )); then
+      for (( i=0; i < help_extra; i++ )); do
+        printf "\n\e[2K"
+      done
+      printf "\e[%dA" $help_extra
+    fi
+
+    # Top bar: brand + Help chip selected
+    printf "\r\e[2K"
+    printf "${HIGHLIGHT} %s ${RESET} " "$brand"
+    printf "${HIGHLIGHT} %s ${RESET}" "Help"
     printf "\e[K"
+
+    hlines=("${(@f)$(_dnav_help_lines)}")
+    for line in "${hlines[@]}"; do
+      printf "\n\r"
+      printf "${HIGHLIGHT}%-${cols}s${RESET}" " $line"
+      (( n++ ))
+    done
+
+    leftover=$(( help_extra - n ))
+    for (( i=0; i < leftover; i++ )); do
+      printf "\n\e[2K"
+    done
+    if (( leftover > 0 )); then
+      printf "\e[%dA" $leftover
+    fi
+    help_extra=$n
+    if (( n > 0 )); then
+      printf "\e[%dA" $n
+    fi
+    printf "\r"
+  }
+
+  _dnav_leave_help() {
+    local i
+    mode=main
+    # Wipe help body then restore nav bar
+    printf "\r\e[2K"
+    for (( i=0; i < help_extra; i++ )); do
+      printf "\n\e[2K"
+    done
+    if (( help_extra > 0 )); then
+      printf "\e[%dA" $help_extra
+    fi
+    help_extra=0
+    printf "\r"
+    _dnav_draw
   }
 
   # Expand animation from the selected item outward, then show path left-aligned
@@ -198,8 +272,7 @@ dnav() {
         else
           # Plain Esc
           if [[ $mode == help ]]; then
-            mode=main
-            _dnav_draw
+            _dnav_leave_help
           else
             _dnav_clear_menu
             _dnav_cleanup
@@ -212,7 +285,7 @@ dnav() {
         [[ $mode == help ]] && continue
 
         if (( selected == $#names - 1 )); then
-          # Help – stay in TUI
+          # Help – multi-line overlay (Esc returns to main)
           _dnav_show_help
           continue
         fi

@@ -384,7 +384,7 @@ _dsearch_help_lines() {
   print -r -- "Backspace                   delete character"
 }
 
-# Paint one full-width row at the current line (no prior clear → less flicker).
+# Paint one row. Bar uses chip styling (not a full-width cyan fill).
 # $1 = mode: bar | sel | row | blank | help_row
 # $2 = text (ignored for blank)
 _dsearch_paint_row() {
@@ -396,37 +396,39 @@ _dsearch_paint_row() {
 
   case $mode in
     bar)
-      # Full-width cyan: query left, optional count, Help chip on the right
-      local left count helpchip gap avail mid
-      left="/${text}"
+      # [DNav Search: ] query…          count  [Help]
+      local label count helpchip gap avail qshow
+      label=" DNav Search: "
       helpchip=" Help "
       if (( $#_dsearch_matches > 0 )) && [[ ${_dsearch_focus:-list} == list ]]; then
         count=" $(( _dsearch_sel + 1 ))/$#_dsearch_matches "
       else
         count=""
       fi
-      avail=$(( maxw - ${#count} - ${#helpchip} ))
+      # Room for query between label and count+Help
+      avail=$(( maxw - ${#label} - ${#count} - ${#helpchip} ))
       (( avail < 1 )) && avail=1
-      if (( ${#left} > avail )); then
+      qshow="$text"
+      if (( ${#qshow} > avail )); then
         if (( avail <= 1 )); then
-          left="${left[1,avail]}"
+          qshow="${qshow[1,avail]}"
         else
-          left="${left[1,avail-1]}…"
+          qshow="${qshow[1,avail-1]}…"
         fi
       fi
-      gap=$(( maxw - ${#left} - ${#count} - ${#helpchip} ))
+      gap=$(( maxw - ${#label} - ${#qshow} - ${#count} - ${#helpchip} ))
       (( gap < 0 )) && gap=0
+      # Label chip always cyan; query normal; Help cyan when focused
+      printf "\r${hl}%s${rst}%s%*s%s" "$label" "$qshow" $gap "" "$count"
       if [[ ${_dsearch_focus:-list} == help ]]; then
-        # Query+count in cyan; Help chip reverse so it reads as the focused button
-        printf "\r${hl}%s%*s%s${rst}\e[7m%s${rst}" \
-          "$left" $gap "" "$count" "$helpchip"
+        printf "${hl}%s${rst}" "$helpchip"
       else
-        printf "\r${hl}%s%*s%s%s${rst}" \
-          "$left" $gap "" "$count" "$helpchip"
+        printf "%s" "$helpchip"
       fi
+      printf "\e[K"
       ;;
     sel)
-      # Selected match: full-width cyan + pointer
+      # Selected match: cyan chip-style row (full width for clean overwrite)
       inner=$(( maxw - 2 ))
       (( inner < 1 )) && inner=1
       printf "\r${hl}▶ %s${rst}" "$(_dsearch_fit "$text" $inner)"
@@ -438,7 +440,7 @@ _dsearch_paint_row() {
       printf "\r\e[2m  %s${rst}" "$(_dsearch_fit "$text" $inner)"
       ;;
     help_row)
-      # Help overlay body line
+      # Help overlay body line (cyan bar, matches main dnav help)
       printf "\r${hl}%-${maxw}s${rst}" "$(_dsearch_fit " $text" $maxw)"
       ;;
     blank)
