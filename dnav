@@ -34,6 +34,8 @@ dnav() {
   local HIGHLIGHT_BG=46
   local HIGHLIGHT="\e[${HIGHLIGHT_FG};${HIGHLIGHT_BG}m"
   local RESET="\e[0m"
+  # Expose style to plugins (dsearch, etc.)
+  typeset -g DNAV_HIGHLIGHT=$HIGHLIGHT DNAV_RESET=$RESET
 
   local -a names paths
   local selected=0
@@ -46,16 +48,16 @@ dnav() {
   local mode=main                # main | help
 
   # Common folders + Help
-  names=(Docs Down EbTr Proj Apps Pics Music Vids Help)
+  names=(Home Docs Down EbSync Projects Config Apps Share Help)
   paths=(
+    "${XDG_DOCUMENTS_DIR:-$HOME}"
     "${XDG_DOCUMENTS_DIR:-$HOME/Documents}"
     "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
     "${XDG_EBTRANSFER_DIR:-$HOME/Eb_Transfer}"
     "${XDG_PROJECTS_DIR:-$HOME/Projects}"
+    "${XDG_APPS_DIR:-$HOME/.config}"
     "${XDG_APPS_DIR:-$HOME/Apps}"
-    "${XDG_PICTURES_DIR:-$HOME/Pictures}"
-    "${XDG_MUSIC_DIR:-$HOME/Music}"
-    "${XDG_VIDEOS_DIR:-$HOME/Videos}"
+    "${XDG_APPS_DIR:-$HOME/.local/share}"
     ""   # Help has no path
   )
 
@@ -239,16 +241,20 @@ dnav() {
       l)
         [[ $mode == main ]] && _dnav_move_right
         ;;
-      # j/k reserved for future multi-row (dfile); no-op on single-row bar
-      # ── Future module hooks (uncomment / flesh out when modules arrive) ──
+      /)
+        if [[ $mode == main ]] && _dsearch_available; then
+          if _dsearch_start; then
+            return 0   # navigated or finished with cleanup
+          fi
+          mode=main
+          _dnav_draw
+        fi
+        ;;
+      # j/k used by dsearch dropdown / future dfile; no-op on main bar
+      # ── Future module hooks ──
       # f|F)
       #   if _dfile_available; then
-      #     _dfile_enter "${paths[selected+1]}"   # or current selection context
-      #   fi
-      #   ;;
-      # /)
-      #   if _dsearch_available; then
-      #     _dsearch_start
+      #     _dfile_enter "${paths[selected+1]}"
       #   fi
       #   ;;
     esac
