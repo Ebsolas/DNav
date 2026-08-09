@@ -19,16 +19,18 @@ fi
 
 # ── Optional modules ──────────────────────────────────────────────────────
 # Load if present. Real implementations will override the stubs below.
+[[ -f $DNAV_DIR/djump   ]] && source $DNAV_DIR/djump
 [[ -f $DNAV_DIR/dfile   ]] && source $DNAV_DIR/dfile
 [[ -f $DNAV_DIR/dsearch ]] && source $DNAV_DIR/dsearch
 
 # Stubs – real modules replace these. Safe to call even when modules are absent.
 (( $+functions[_dfile_available]   )) || _dfile_available()   { return 1 }
 (( $+functions[_dsearch_available] )) || _dsearch_available() { return 1 }
-# Future entry points the modules will provide:
-#   _dfile_enter          – open the mini explorer under the current nav selection
-#   _dsearch_start        – open the fuzzy path search overlay
-#   _dsearch_in_dfile     – same, but stay inside the dfile view and navigate there
+(( $+functions[_djump_available]   )) || _djump_available()   { return 1 }
+# Entry points modules provide:
+#   _dfile_enter / _dfile_is_open
+#   _dsearch_start / _dsearch_start_for_dfile
+#   _djump_resolve / _djump_match_query
 
 # After successful navigation (call only once terminal is restored). No-op on cancel paths.
 _dnav_maybe_ls() {
@@ -188,7 +190,12 @@ dnav() {
       print -r -- "  in search: → Help        search help; Esc back"
     fi
     if _dfile_available; then
-      print -r -- "f                         file explorer (when available)"
+      print -r -- "f                         file explorer"
+      print -r -- "  in files: hjkl Tab .     nav / focus / hidden"
+      print -r -- "  in files: d Jump  s Search"
+    fi
+    if _djump_available; then
+      print -r -- "jumps                     ~/.local/share/dnav/jumps"
     fi
     print -r -- "DNAV_LS=1                 ls -a --color=auto after select"
   }
@@ -360,12 +367,24 @@ dnav() {
           _dnav_draw
         fi
         ;;
-      # ── Future module hooks ──
-      # f|F)
-      #   if _dfile_available; then
-      #     _dfile_enter "${paths[selected+1]}"
-      #   fi
-      #   ;;
+      f|F)
+        if [[ $mode == main ]] && _dfile_available; then
+          local fpath=""
+          if (( selected < $#names - 1 )); then
+            fpath="${paths[selected+1]}"
+          fi
+          [[ -z $fpath || ! -d $fpath ]] && fpath="$PWD"
+          # Clear main bar line before explorer
+          _dnav_clear_menu
+          if _dfile_enter "$fpath"; then
+            # opened a file (cleanup already done)
+            return 0
+          fi
+          # Esc from dfile — still in raw TUI; redraw main
+          mode=main
+          _dnav_draw
+        fi
+        ;;
     esac
   done
 }

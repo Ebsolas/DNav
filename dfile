@@ -1,0 +1,553 @@
+#!/usr/bin/env zsh
+# dfile — mini file explorer for dnav
+#
+# Layout:
+#   [ DNav Files:]  Show Hidden: ○/●
+#   sibling dirs (parent's children)     ← single line, scroll
+#   child dirs of cwd                    ← single line, scroll
+#   files of cwd                         ← single line, scroll
+#
+# Keys (browse): hjkl / arrows, Tab focus, . hidden, Enter, Esc
+#   d → Jump mode   s → Search mode (stay in dfile on select)
+#
+# API: _dfile_available  _dfile_enter [path]  _dfile_is_open
+
+_dfile_available() { return 0 }
+
+typeset -gi _DFILE_OPEN=0
+typeset -ga _dfile_vis
+
+_dfile_is_open() { (( _DFILE_OPEN )) }
+
+# ── helpers ───────────────────────────────────────────────────────────────
+_dfile_hl() { print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}" }
+_dfile_rst() { print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}" }
+_dfile_cols() {
+  local w=${cols:-${COLUMNS:-80}}
+  (( w < 20 )) && w=80
+  print -rn -- "$w"
+}
+
+# List directory basenames. kind=dirs|files
+_dfile_list() {
+  local dir="$1" kind="$2" show_hidden="$3"
+  local -a raw names
+  local e b
+  names=()
+  [[ -d $dir ]] || return 0
+  setopt localoptions nullglob
+
+  if [[ $kind == dirs ]]; then
+    if (( show_hidden )); then
+      raw=("$dir"/*(/) "$dir"/.*(/))
+    else
+      raw=("$dir"/*(/))
+    fi
+  else
+    if (( show_hidden )); then
+      raw=("$dir"/*(.) "$dir"/.*(.))
+    else
+      raw=("$dir"/*(.))
+    fi
+  fi
+
+  for e in "$raw[@]"; do
+    b="${e:t}"
+    [[ $b == . || $b == .. ]] && continue
+    names+=("$b")
+  done
+  (( $#names )) && names=("${(@o)names}")
+  print -l -- "${names[@]}"
+}
+
+# Compute how many items fit starting at win_start with selection visible.
+# Uses second-to-last scroll preference when adjusting win_start.
+# Sets reply=(win_start) and prints nothing; caller uses arrays.
+# Actually returns new win_start via reply[1], and fills _dfile_vis with labels.
+_dfile_window() {
+  # $1 = name of array holding all items
+  # $2 = selected index 0-based
+  # $3 = current win_start
+  # $4 = max columns
+  # sets: reply win_start; global _dfile_vis_idx start count via nameref-like globals
+  local aname="$1"
+  local sel="$2"
+  local win="$3"
+  local maxw="$4"
+  local -a all
+  all=("${(@P)aname}")
+  local n=$#all
+  (( n == 0 )) && { reply=(0); _dfile_vis=(); return 0 }
+
+  (( sel < 0 )) && sel=0
+  (( sel >= n )) && sel=$(( n - 1 ))
+  (( win < 0 )) && win=0
+  (( win >= n )) && win=$(( n - 1 ))
+
+  # Ensure selection is inside window conceptually; adjust win with 2nd-last policy
+  # First, build a window that includes sel
+  if (( sel < win )); then
+    # scrolled left of window — prefer sel at slot 1 if possible
+    if (( sel <= 0 )); then
+      win=0
+    else
+      win=$(( sel - 1 ))
+      (( win < 0 )) && win=0
+    fi
+  fi
+
+  # Grow/shrink window to fit width; if sel past second-to-last slot, scroll
+  local -a vis
+  local i w used label
+  local changed=1
+  local guard=0
+  while (( changed && guard < 50 )); do
+    (( guard++ ))
+    changed=0
+    vis=()
+    used=0
+    for (( i=win; i < n; i++ )); do
+      label="${all[i+1]}"
+      w=$(( ${#label} + 3 ))  # " name " style
+      if (( $#vis > 0 && used + w > maxw )); then
+        break
+      fi
+      if (( $#vis == 0 && w > maxw )); then
+        vis+=("$label")
+        used=$maxw
+        break
+      fi
+      vis+=("$label")
+      (( used += w ))
+    done
+    local vcount=$#vis
+    (( vcount == 0 )) && break
+    local sel_slot=$(( sel - win ))
+    # If selection not in visible range (too far right), scroll
+    if (( sel_slot >= vcount )); then
+      # scroll so sel is second-to-last if vcount>=2
+      if (( vcount >= 2 )); then
+        win=$(( sel - (vcount - 2) ))
+      else
+        win=$sel
+      fi
+      (( win < 0 )) && win=0
+      changed=1
+      continue
+    fi
+    # If we can scroll right more and sel is at last slot while more items exist — keep second-to-last
+    if (( sel_slot == vcount - 1 && sel < n - 1 && vcount >= 2 )); then
+      # User landed on last visible but not end of list → pull window so sel is 2nd last
+      win=$(( sel - (vcount - 2) ))
+      (( win < 0 )) && win=0
+      # only if this actually changes and still shows sel
+      if (( sel - win == vcount - 2 || sel - win < vcount - 1 )); then
+        changed=1
+        continue
+      fi
+    fi
+  done
+
+  _dfile_vis=("${vis[@]}")
+  reply=($win)
+}
+
+_dfile_paint_strip() {
+  # active=1 use cyan chip for selection
+  local -a items=(${(@P)1})
+  local sel="$2" win="$3" active="$4"
+  local maxw="$(_dfile_cols)"
+  local hl rst
+  hl="$(_dfile_hl)"
+  rst="$(_dfile_rst)"
+
+  _dfile_window "$1" "$sel" "$win" "$maxw"
+  win=$reply[1]
+  # store win back? caller updates
+
+  local i label slot=0
+  local start=$win
+  local n=$#items
+  local used=0
+  printf "\r"
+  for (( i=start; i < n; i++ )); do
+    label="${items[i+1]}"
+    local cell_w=$(( ${#label} + 3 ))
+    if (( used > 0 && used + cell_w > maxw )); then
+      break
+    fi
+    if (( used == 0 && cell_w > maxw )); then
+      label="${label[1,maxw-2]}…"
+    fi
+    if (( active && i == sel )); then
+      printf "${hl} %s ${rst} " "$label"
+    else
+      printf " %s  " "$label"
+    fi
+    (( used += cell_w ))
+    (( slot++ ))
+  done
+  printf "\e[K"
+  reply=($win)
+}
+
+# ── main enter ────────────────────────────────────────────────────────────
+_dfile_enter() {
+  local start="${1:-}"
+  local hl rst maxw
+  local key key2 key3
+  local show_hidden=0
+  local focus=siblings   # siblings | children | files
+  local mode=browse      # browse | jump | search
+  local jump_buf=""
+  local -a siblings children files
+  local sel_s=0 sel_c=0 sel_f=0
+  local win_s=0 win_c=0 win_f=0
+  local extra=0
+  local cwd parent
+
+  _DFILE_OPEN=1
+  hl="$(_dfile_hl)"
+  rst="$(_dfile_rst)"
+  maxw="$(_dfile_cols)"
+
+  if [[ -n $start && -d $start ]]; then
+    cd -- "$start" 2>/dev/null || true
+  fi
+  cwd="${PWD:A}"
+
+  _dfile_refresh() {
+    cwd="${PWD:A}"
+    parent="${cwd:h}"
+    [[ -z $parent ]] && parent="/"
+    siblings=("${(@f)$(_dfile_list "$parent" dirs $show_hidden)}")
+    children=("${(@f)$(_dfile_list "$cwd" dirs $show_hidden)}")
+    files=("${(@f)$(_dfile_list "$cwd" files $show_hidden)}")
+
+    # select current dir name in siblings
+    local base="${cwd:t}"
+    local i
+    sel_s=0
+    for (( i=1; i <= $#siblings; i++ )); do
+      if [[ ${siblings[i]} == $base ]]; then
+        sel_s=$(( i - 1 ))
+        break
+      fi
+    done
+    (( sel_c >= $#children )) && sel_c=0
+    (( sel_f >= $#files )) && sel_f=0
+    (( $#children == 0 )) && sel_c=0
+    (( $#files == 0 )) && sel_f=0
+  }
+
+  _dfile_draw() {
+    local hid_mark i n leftover
+    local -a lines
+    maxw="$(_dfile_cols)"
+    printf "\e[?25l"
+
+    # wipe previous body
+    if (( extra > 0 )); then
+      for (( i=0; i < extra; i++ )); do
+        printf "\n\r%*s" $maxw ""
+      done
+      printf "\e[%dA" $extra
+    fi
+
+    if [[ $mode == jump ]]; then
+      printf "\r${hl} DNav Jump: ${rst} %s\e[K" "$jump_buf"
+      n=0
+      # matching keys
+      if _djump_available 2>/dev/null; then
+        local -a hits
+        hits=("${(@f)$(_djump_match_query "$jump_buf")}")
+        local k
+        for k in "${hits[@]:0:8}"; do
+          printf "\n\r"
+          printf "\e[2m  d%s → %s${rst}\e[K" "$k" "$(_djump_resolve "d$k" 2>/dev/null || true)"
+          (( n++ ))
+        done
+      fi
+      leftover=$(( extra - n ))
+      for (( i=0; i < leftover; i++ )); do
+        printf "\n\r%*s" $maxw ""
+      done
+      (( leftover > 0 )) && printf "\e[%dA" $leftover
+      extra=$n
+      (( n > 0 )) && printf "\e[%dA" $n
+      printf "\r"
+      return
+    fi
+
+    # browse header
+    if (( show_hidden )); then hid_mark="●"; else hid_mark="○"; fi
+    printf "\r${hl} DNav Files: ${rst}  Show Hidden: %s\e[K" "$hid_mark"
+
+    # siblings
+    printf "\n"
+    _dfile_paint_strip siblings $sel_s $win_s $([[ $focus == siblings ]] && echo 1 || echo 0)
+    win_s=$reply[1]
+
+    # children
+    printf "\n"
+    _dfile_paint_strip children $sel_c $win_c $([[ $focus == children ]] && echo 1 || echo 0)
+    win_c=$reply[1]
+
+    # files
+    printf "\n"
+    _dfile_paint_strip files $sel_f $win_f $([[ $focus == files ]] && echo 1 || echo 0)
+    win_f=$reply[1]
+
+    n=3
+    leftover=$(( extra - n ))
+    for (( i=0; i < leftover; i++ )); do
+      printf "\n\r%*s" $maxw ""
+    done
+    (( leftover > 0 )) && printf "\e[%dA" $leftover
+    extra=$n
+    printf "\e[%dA" $n
+    printf "\r"
+  }
+
+  _dfile_erase() {
+    local i
+    maxw="$(_dfile_cols)"
+    printf "\r%*s" $maxw ""
+    for (( i=0; i < extra; i++ )); do
+      printf "\n\r%*s" $maxw ""
+    done
+    (( extra > 0 )) && printf "\e[%dA" $extra
+    printf "\r%*s\r" $maxw ""
+    extra=0
+  }
+
+  _dfile_go() {
+    local dest="$1"
+    [[ -d $dest ]] || return 1
+    cd -- "$dest" || return 1
+    _dfile_refresh
+    win_c=0; win_f=0; sel_c=0; sel_f=0
+    _dfile_draw
+  }
+
+  _dfile_enter_sel_dir() {
+    local name dest
+    case $focus in
+      siblings)
+        (( $#siblings )) || return 1
+        name="${siblings[sel_s+1]}"
+        if [[ $parent == / ]]; then dest="/$name"; else dest="$parent/$name"; fi
+        ;;
+      children)
+        (( $#children )) || return 1
+        name="${children[sel_c+1]}"
+        dest="$cwd/$name"
+        ;;
+      files)
+        return 1
+        ;;
+    esac
+    _dfile_go "$dest"
+  }
+
+  _dfile_open_file() {
+    (( $#files )) || return 1
+    local fpath="$cwd/${files[sel_f+1]}"
+    [[ -e $fpath ]] || return 1
+    _dfile_erase
+    _DFILE_OPEN=0
+    if (( $+functions[_dnav_cleanup] )); then
+      _dnav_cleanup
+    else
+      printf "\e[?25h"
+    fi
+    if [[ -n ${EDITOR:-} ]]; then
+      ${=EDITOR} -- "$fpath"
+    elif command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$fpath" >/dev/null 2>&1 &
+    else
+      printf "No EDITOR/xdg-open for %s\n" "$fpath"
+    fi
+    return 0
+  }
+
+  # Adjust win so selection prefers second-to-last (right) / second (left).
+  _dfile_scroll_to_sel() {
+    local aname="$1" sel="$2" win="$3" dir="$4"
+    local -a all
+    all=("${(@P)aname}")
+    local n=$#all maxw="$(_dfile_cols)" vc
+    (( n == 0 )) && { reply=(0); return }
+    _dfile_window "$aname" $sel $win $maxw
+    win=$reply[1]
+    vc=$#_dfile_vis
+    if (( dir > 0 && sel < n - 1 && vc >= 2 )); then
+      # Keep sel on second-to-last visible when more items remain
+      win=$(( sel - (vc - 2) ))
+      (( win < 0 )) && win=0
+    elif (( dir < 0 && sel > 0 && vc >= 2 )); then
+      # Prefer sel on second visible when not at start
+      if (( sel - win == 0 )); then
+        win=$(( sel - 1 ))
+        (( win < 0 )) && win=0
+      fi
+    fi
+    # Clamp: sel must remain visible
+    _dfile_window "$aname" $sel $win $maxw
+    reply=($reply[1])
+  }
+
+  _dfile_move_h() {
+    local dir="$1"  # -1 or +1
+    local n
+    case $focus in
+      siblings)
+        n=$#siblings; (( n == 0 )) && return
+        (( sel_s += dir ))
+        (( sel_s < 0 )) && sel_s=0
+        (( sel_s >= n )) && sel_s=$(( n - 1 ))
+        _dfile_scroll_to_sel siblings $sel_s $win_s $dir
+        win_s=$reply[1]
+        ;;
+      children)
+        n=$#children; (( n == 0 )) && return
+        (( sel_c += dir ))
+        (( sel_c < 0 )) && sel_c=0
+        (( sel_c >= n )) && sel_c=$(( n - 1 ))
+        _dfile_scroll_to_sel children $sel_c $win_c $dir
+        win_c=$reply[1]
+        ;;
+      files)
+        n=$#files; (( n == 0 )) && return
+        (( sel_f += dir ))
+        (( sel_f < 0 )) && sel_f=0
+        (( sel_f >= n )) && sel_f=$(( n - 1 ))
+        _dfile_scroll_to_sel files $sel_f $win_f $dir
+        win_f=$reply[1]
+        ;;
+    esac
+    _dfile_draw
+  }
+
+  _dfile_refresh
+  _dfile_draw
+
+  while true; do
+    read -k 1 key
+
+    if [[ $mode == jump ]]; then
+      case $key in
+        $'\e')
+          if read -t 0.05 -k 1 key2 2>/dev/null; then
+            [[ $key2 == '[' ]] && read -k 1 key3
+          else
+            mode=browse
+            jump_buf=""
+            _dfile_draw
+          fi
+          ;;
+        $'\n'|$'\r')
+          if _djump_available 2>/dev/null; then
+            local dest
+            dest="$(_djump_resolve "$jump_buf" 2>/dev/null)" || dest=""
+            if [[ -z $dest && $jump_buf != d* ]]; then
+              dest="$(_djump_resolve "d$jump_buf" 2>/dev/null)" || dest=""
+            fi
+            if [[ -n $dest && -d $dest ]]; then
+              mode=browse
+              jump_buf=""
+              _dfile_go "$dest"
+            fi
+          fi
+          ;;
+        $'\177'|$'\b')
+          (( ${#jump_buf} > 0 )) && jump_buf="${jump_buf[1,-2]}"
+          _dfile_draw
+          ;;
+        [[:print:]])
+          jump_buf+="$key"
+          _dfile_draw
+          ;;
+      esac
+      continue
+    fi
+
+    case $key in
+      $'\e')
+        if read -t 0.05 -k 1 key2 2>/dev/null; then
+          if [[ $key2 == '[' ]]; then
+            read -k 1 key3
+            case $key3 in
+              A)  # up = parent
+                [[ $cwd != / ]] && _dfile_go "${cwd:h}"
+                ;;
+              B)  # down = enter dir
+                _dfile_enter_sel_dir
+                ;;
+              C) _dfile_move_h 1 ;;
+              D) _dfile_move_h -1 ;;
+            esac
+          fi
+        else
+          # Esc → main
+          _dfile_erase
+          _DFILE_OPEN=0
+          return 1
+        fi
+        ;;
+      h) _dfile_move_h -1 ;;
+      l) _dfile_move_h 1 ;;
+      k)
+        [[ $cwd != / ]] && _dfile_go "${cwd:h}"
+        ;;
+      j)
+        _dfile_enter_sel_dir
+        ;;
+      $'\t')
+        case $focus in
+          siblings) focus=children ;;
+          children) focus=files ;;
+          files) focus=siblings ;;
+        esac
+        _dfile_draw
+        ;;
+      .)
+        show_hidden=$(( 1 - show_hidden ))
+        _dfile_refresh
+        _dfile_draw
+        ;;
+      d)
+        if _djump_available 2>/dev/null; then
+          mode=jump
+          jump_buf="d"
+          _dfile_draw
+        fi
+        ;;
+      s)
+        # In-dfile search: select path, stay in dfile
+        if _dsearch_available 2>/dev/null; then
+          local spath
+          if _dsearch_start_for_dfile; then
+            spath="${DNAV_SEARCH_RESULT:-}"
+            if [[ -n $spath && -d $spath ]]; then
+              _dfile_go "$spath"
+            else
+              _dfile_draw
+            fi
+          else
+            _dfile_draw
+          fi
+        fi
+        ;;
+      $'\n'|$'\r')
+        if [[ $focus == files ]]; then
+          if _dfile_open_file; then
+            return 0
+          fi
+        else
+          _dfile_enter_sel_dir
+        fi
+        ;;
+    esac
+  done
+}

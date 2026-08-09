@@ -1,0 +1,118 @@
+#!/usr/bin/env zsh
+# djump — editable directory jump table for dnav plugins
+#
+# Data file (next to this script, or DNAV_JUMPS path):
+#   jumps   — lines:  key   path
+#
+# API:
+#   _djump_available
+#   _djump_load
+#   _djump_resolve KEY     → prints absolute path, return 0/1
+#   _djump_list_keys
+#   _djump_match_query S   → keys matching s / ds (for typeahead / search pin)
+#
+# Does not install shell aliases or edit zshrc.
+
+_djump_available() { return 0 }
+
+typeset -gA _DJUMP_MAP
+typeset -ga _DJUMP_KEYS
+typeset -g  _DJUMP_LOADED=0
+
+_djump_data_path() {
+  if [[ -n ${DNAV_JUMPS:-} ]]; then
+    print -r -- "$DNAV_JUMPS"
+  elif [[ -n ${DNAV_DIR:-} ]]; then
+    print -r -- "$DNAV_DIR/jumps"
+  else
+    print -r -- "${0:A:h}/jumps"
+  fi
+}
+
+_djump_load() {
+  local f line key path
+  f="$(_djump_data_path)"
+  _DJUMP_MAP=()
+  _DJUMP_KEYS=()
+  _DJUMP_LOADED=0
+  [[ -f $f ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line ]] && continue
+    key="${line%%[[:space:]]*}"
+    path="${line#"$key"}"
+    path="${path#"${path%%[![:space:]]*}"}"
+    [[ -z $key || -z $path ]] && continue
+    _DJUMP_MAP[$key]="$path"
+    _DJUMP_KEYS+=("$key")
+  done < "$f"
+  _DJUMP_LOADED=1
+  return 0
+}
+
+_djump_ensure() {
+  (( _DJUMP_LOADED )) || _djump_load
+}
+
+# Expand path: ~ and relatives against $PWD; print absolute if possible.
+_djump_expand() {
+  local path="$1" out
+  if [[ $path == '~' || $path == '~/'* ]]; then
+    path="${path/#\~/$HOME}"
+  fi
+  if [[ $path == /* ]]; then
+    print -r -- "${path:a}"
+    return 0
+  fi
+  out="$(cd -- "$PWD" && cd -- "$path" 2>/dev/null && pwd -P)" || out=""
+  if [[ -n $out ]]; then
+    print -r -- "$out"
+  else
+    print -r -- "${PWD:a}/$path"
+  fi
+}
+
+# Resolve jump key (without leading d). Also accepts dKEY → KEY.
+_djump_resolve() {
+  local raw="$1" key path
+  _djump_ensure || return 1
+  key="${raw#d}"
+  # if user passed "dhome", key becomes "home"; if "home", stays
+  if [[ $raw == d* && -n ${_DJUMP_MAP[$key]:-} ]]; then
+    :
+  elif [[ -n ${_DJUMP_MAP[$raw]:-} ]]; then
+    key="$raw"
+  elif [[ -n ${_DJUMP_MAP[$key]:-} ]]; then
+    :
+  else
+    return 1
+  fi
+  path="${_DJUMP_MAP[$key]}"
+  _djump_expand "$path"
+}
+
+_djump_list_keys() {
+  _djump_ensure || return 1
+  print -l -- "${_DJUMP_KEYS[@]}"
+}
+
+# Print matching keys for query (case-insensitive). Query may be "dhome", "home", "ho".
+_djump_match_query() {
+  local q="${(L)1}" k kl dkl
+  local -a hits
+  _djump_ensure || return 1
+  [[ -z $q ]] && return 0
+  for k in "${_DJUMP_KEYS[@]}"; do
+    kl="${(L)k}"
+    dkl="d${kl}"
+    if [[ $kl == ${q}* || $dkl == ${q}* || $q == $kl || $q == $dkl ]]; then
+      hits+=("$k")
+    fi
+  done
+  (( $#hits )) && print -l -- "${hits[@]}"
+}
+
+# Load once when sourced
+_djump_load 2>/dev/null || true

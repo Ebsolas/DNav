@@ -279,6 +279,7 @@ _dsearch_apply_filter() {
     _dsearch_matches=("${top[@]}")
     _dsearch_cand_stack[$qlen]="$survivors"
     _dsearch_prev_query="$query"
+    _dsearch_pin_jumps "$query" "$maxn"
     return 0
   elif [[ -n $_dsearch_prev_query && $query == "$_dsearch_prev_query"* ]] && (( qlen > prev_len )); then
     # Query grew (1+ chars) — filter previous survivors only (incremental)
@@ -311,6 +312,7 @@ _dsearch_apply_filter() {
     done
     _dsearch_matches=("${top[@]}")
     _dsearch_prev_query="$query"
+    _dsearch_pin_jumps "$query" "$maxn"
     return 0
   else
     src="$idx"
@@ -322,6 +324,37 @@ _dsearch_apply_filter() {
   _dsearch_matches=("${top[@]}")
   _dsearch_cand_stack[$qlen]="$survivors"
   _dsearch_prev_query="$query"
+  _dsearch_pin_jumps "$query" "$maxn"
+}
+
+# Prepend djump matches for the query (dirs only), then cap to maxn.
+_dsearch_pin_jumps() {
+  local query="$1" maxn="${2:-10}"
+  (( $+functions[_djump_available] )) && _djump_available || return 0
+  local -a keys pinned out
+  local k p m found
+  keys=("${(@f)$(_djump_match_query "$query")}")
+  pinned=()
+  for k in "${keys[@]}"; do
+    p="$(_djump_resolve "$k" 2>/dev/null)" || continue
+    [[ -d $p ]] || continue
+    p="${p:a}"
+    found=0
+    for m in "${pinned[@]}"; do
+      [[ $m == $p ]] && { found=1; break }
+    done
+    (( found )) || pinned+=("$p")
+  done
+  (( $#pinned == 0 )) && return 0
+  out=("${pinned[@]}")
+  for m in "${_dsearch_matches[@]}"; do
+    found=0
+    for p in "${pinned[@]}"; do
+      [[ $m == $p ]] && { found=1; break }
+    done
+    (( found )) || out+=("$m")
+  done
+  _dsearch_matches=("${out[@]:0:$maxn}")
 }
 
 # ── UI ────────────────────────────────────────────────────────────────────
@@ -640,12 +673,28 @@ _dsearch_sel_down() {
 }
 
 # ── Main entry ────────────────────────────────────────────────────────────
-# Return 0 → dnav should exit (navigated or finished with cleanup)
-# Return 1 → cancelled; dnav redraws main bar
+# Return 0 → navigated/done (or for_dfile: path in DNAV_SEARCH_RESULT)
+# Return 1 → cancelled
+typeset -gi _DSEARCH_FOR_DFILE=0
+typeset -g  DNAV_SEARCH_RESULT=""
+
+# Search while dfile is open: confirm stays in explorer (no dnav exit/cleanup).
+_dsearch_start_for_dfile() {
+  _DSEARCH_FOR_DFILE=1
+  DNAV_SEARCH_RESULT=""
+  _dsearch_start
+  local ret=$?
+  _DSEARCH_FOR_DFILE=0
+  return $ret
+}
+
 _dsearch_start() {
-  if _dfile_available && (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
-    _dsearch_in_dfile
-    return $?
+  # Legacy stub path only if for_dfile not set
+  if (( ! _DSEARCH_FOR_DFILE )) && _dfile_available && (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
+    if (( $+functions[_dsearch_start_for_dfile] )); then
+      _dsearch_start_for_dfile
+      return $?
+    fi
   fi
 
   local key key2 key3
@@ -740,6 +789,12 @@ _dsearch_start() {
         _dsearch_session_cleanup
         printf "\e[?25l"
         if [[ -d $target ]]; then
+          # In-dfile: report path and cd; do not tear down dnav or ls
+          if (( _DSEARCH_FOR_DFILE )); then
+            cd -- "$target" 2>/dev/null || true
+            DNAV_SEARCH_RESULT="${target:a}"
+            return 0
+          fi
           cd -- "$target" || {
             printf "Could not change to %s\n" "$target"
             (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
@@ -754,6 +809,9 @@ _dsearch_start() {
           (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls
           return 0
         else
+          if (( _DSEARCH_FOR_DFILE )); then
+            return 1
+          fi
           printf "Folder not found: %s\n" "$target"
           (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
           return 0
