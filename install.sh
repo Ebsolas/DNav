@@ -14,6 +14,8 @@ set -euo pipefail
 
 VERSION="1.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Shell-specific package lives under zsh/ (install.sh stays at repo root)
+PACKAGE_DIR="$SCRIPT_DIR/zsh"
 
 # Defaults
 PREFIX="${XDG_DATA_HOME:-$HOME/.local/share}/dnav"
@@ -23,8 +25,8 @@ DO_RC=1
 FORCE_CONFIG=0
 UNINSTALL=0
 
-# Files shipped with the package
-PACKAGE_FILES=(dnav dfile djump dsearch jumps)
+# Files shipped with the package (relative to PACKAGE_DIR)
+PACKAGE_FILES=(dnav djump dsearch jumps)
 
 # Markers for idempotent .zshrc edits
 RC_BEGIN="# >>> dnav >>>"
@@ -68,9 +70,10 @@ require_zsh() {
 }
 
 check_package() {
+  [[ -d "$PACKAGE_DIR" ]] || die "missing package directory: $PACKAGE_DIR"
   local f
   for f in "${PACKAGE_FILES[@]}"; do
-    [[ -f "$SCRIPT_DIR/$f" ]] || die "missing package file: $SCRIPT_DIR/$f"
+    [[ -f "$PACKAGE_DIR/$f" ]] || die "missing package file: $PACKAGE_DIR/$f"
   done
 }
 
@@ -79,7 +82,7 @@ install_scripts() {
   mkdir -p -- "$PREFIX"
   local f
   for f in "${PACKAGE_FILES[@]}"; do
-    install -m 0644 -- "$SCRIPT_DIR/$f" "$PREFIX/$f"
+    install -m 0644 -- "$PACKAGE_DIR/$f" "$PREFIX/$f"
   done
   # dnav can be executed directly; modules are sourced
   chmod 0755 -- "$PREFIX/dnav"
@@ -157,8 +160,8 @@ seed_config() {
   fi
 
   if [[ $FORCE_CONFIG -eq 1 || ! -f "$CONFIG_DIR/jumps" ]]; then
-    if [[ -f "$SCRIPT_DIR/jumps" ]]; then
-      install -m 0644 -- "$SCRIPT_DIR/jumps" "$CONFIG_DIR/jumps"
+    if [[ -f "$PACKAGE_DIR/jumps" ]]; then
+      install -m 0644 -- "$PACKAGE_DIR/jumps" "$CONFIG_DIR/jumps"
     else
       cat > "$CONFIG_DIR/jumps" <<'EOF'
 # djump table — key becomes shell command dKEY (home → dhome)
@@ -291,7 +294,7 @@ main() {
   check_package
 
   printf 'Installing DNav %s…\n' "$VERSION"
-  info "source  $SCRIPT_DIR"
+  info "source  $PACKAGE_DIR"
   info "prefix  $PREFIX"
   info "config  $CONFIG_DIR"
   printf '\n'
