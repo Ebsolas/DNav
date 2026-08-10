@@ -2,13 +2,26 @@
 #
 # Dot-source into your session:
 #   . .\powershell\dnav.ps1
+#   . .\powershell\dsearch.ps1   # optional fuzzy search
 #   dnav
 #
-# Keys: Left/Right or h/l  move | Enter open | Esc cancel
+# Keys: Left/Right or h/l  move | Enter open | Esc cancel | / or s  search
 #
 # Config (created on first run):
 #   $env:APPDATA\dnav\folders   - Label  Path  (one per line)
 #   $env:APPDATA\dnav\config    - simple key = value settings
+
+# Auto-load dsearch.ps1 from the same directory if present and not already loaded
+$__dnavDir = $PSScriptRoot
+if (-not $__dnavDir -and $MyInvocation.MyCommand.Path) {
+    $__dnavDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ($__dnavDir) {
+    $__dsearchPath = Join-Path $__dnavDir 'dsearch.ps1'
+    if ((Test-Path -LiteralPath $__dsearchPath) -and -not (Get-Command dsearch -ErrorAction SilentlyContinue)) {
+        . $__dsearchPath
+    }
+}
 
 function Get-DnavConfigDir {
     if ($env:DNAV_CONFIG_DIR) { return $env:DNAV_CONFIG_DIR }
@@ -91,7 +104,6 @@ function Get-DnavFolders {
         )
     }
 
-    # Always append About (empty path = help overlay)
     $list += [pscustomobject]@{ Name = 'About'; Path = $null }
     return $list
 }
@@ -127,6 +139,7 @@ function Show-DnavAbout {
     Write-Host '  Left/Right or h/l   move on the bar'
     Write-Host '  Enter               open selected folder'
     Write-Host '  Enter on About      this help'
+    Write-Host '  / or s              fuzzy directory search'
     Write-Host '  Esc                 cancel / leave'
     Write-Host '  Config dir          ' -NoNewline
     Write-Host (Get-DnavConfigDir) -ForegroundColor DarkGray
@@ -135,7 +148,6 @@ function Show-DnavAbout {
 }
 
 function dnav {
-    # P/Invoke console input (keyboard only - no mouse)
     if (-not ([System.Management.Automation.PSTypeName]'ConsoleInput').Type) {
         Add-Type @"
 using System;
@@ -175,6 +187,7 @@ public static class ConsoleInput {
     $items = @(Get-DnavFolders)
     $brand = Get-DnavBrand
     $selected = 0
+    $hasSearch = [bool](Get-Command dsearch -ErrorAction SilentlyContinue)
 
     try {
         $currentPath = [System.IO.Path]::GetFullPath((Get-Location).Path)
@@ -192,7 +205,6 @@ public static class ConsoleInput {
     $handle = [ConsoleInput]::GetStdHandle([ConsoleInput]::STD_INPUT_HANDLE)
     $mode = 0
     [ConsoleInput]::GetConsoleMode($handle, [ref]$mode) | Out-Null
-    # Disable Quick Edit so keyboard stays responsive; do not enable mouse
     $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
     [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
 
@@ -208,12 +220,22 @@ public static class ConsoleInput {
     $record = New-Object ConsoleInput+INPUT_RECORD
     $eventsRead = 0
 
+    function Clear-Bar {
+        $winW = [Console]::WindowWidth
+        for ($r = 0; $r -lt 3; $r++) {
+            [Console]::SetCursorPosition(0, $startRow + $r)
+            [Console]::Write((' ' * $winW))
+        }
+        [Console]::SetCursorPosition(0, $startRow)
+    }
+
     function Redraw {
         $winW = [Console]::WindowWidth
         [Console]::SetCursorPosition(0, $startRow)
         $header = " $brand "
         Write-Host $header -ForegroundColor Black -BackgroundColor Cyan -NoNewline
-        Write-Host '  (h/l or arrows  Enter  Esc)' -ForegroundColor DarkGray -NoNewline
+        $hint = if ($hasSearch) { '  (h/l arrows  Enter  / search  Esc)' } else { '  (h/l arrows  Enter  Esc)' }
+        Write-Host $hint -ForegroundColor DarkGray -NoNewline
         $clearLen = $winW - [Console]::CursorLeft
         if ($clearLen -gt 0) { [Console]::Write((' ' * $clearLen)) }
 
@@ -238,13 +260,7 @@ public static class ConsoleInput {
     function Navigate-Selected {
         $item = $items[$selected]
         if (-not $item.Path) {
-            # About
-            [Console]::SetCursorPosition(0, $startRow)
-            for ($r = 0; $r -lt 3; $r++) {
-                [Console]::Write((' ' * [Console]::WindowWidth))
-                if ($r -lt 2) { [Console]::WriteLine() }
-            }
-            [Console]::SetCursorPosition(0, $startRow)
+            Clear-Bar
             Show-DnavAbout
             return
         }
@@ -252,12 +268,7 @@ public static class ConsoleInput {
         if (Test-Path -LiteralPath $path -PathType Container) {
             Set-Location -LiteralPath $path
             $full = (Get-Location).Path
-            [Console]::SetCursorPosition(0, $startRow)
-            for ($r = 0; $r -lt 3; $r++) {
-                [Console]::Write((' ' * [Console]::WindowWidth))
-                if ($r -lt 2) { [Console]::WriteLine() }
-            }
-            [Console]::SetCursorPosition(0, $startRow)
+            Clear-Bar
             Show-DnavSuccessBar $full
         } else {
             Write-Host "`nFolder not found: $path" -ForegroundColor Red
@@ -275,50 +286,61 @@ public static class ConsoleInput {
             $ch = $record.KeyEvent.UnicodeChar
 
             switch ($vk) {
-                37 { # Left
+                37 {
                     if ($selected -gt 0) { $selected--; Redraw }
                 }
-                39 { # Right
+                39 {
                     if ($selected -lt ($items.Count - 1)) { $selected++; Redraw }
                 }
-                13 { # Enter
+                13 {
                     Navigate-Selected
                     return
                 }
-                27 { # Esc
-                    [Console]::SetCursorPosition(0, $startRow)
-                    for ($r = 0; $r -lt 3; $r++) {
-                        [Console]::Write((' ' * [Console]::WindowWidth))
-                        if ($r -lt 2) { [Console]::WriteLine() }
-                    }
-                    [Console]::SetCursorPosition(0, $startRow)
+                27 {
+                    Clear-Bar
                     return
                 }
                 default {
-                    # h / l as vim-style alternatives
                     if ($ch -eq 'h' -or $ch -eq 'H') {
                         if ($selected -gt 0) { $selected--; Redraw }
                     }
                     elseif ($ch -eq 'l' -or $ch -eq 'L') {
                         if ($selected -lt ($items.Count - 1)) { $selected++; Redraw }
                     }
+                    elseif ($ch -eq '/' -or $ch -eq 's' -or $ch -eq 'S') {
+                        if ($hasSearch) {
+                            Clear-Bar
+                            [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
+                            $navigated = dsearch
+                            if ($navigated) { return }
+                            $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
+                            [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
+                            [Console]::WriteLine()
+                            [Console]::WriteLine()
+                            $startRow = [Console]::CursorTop - 2
+                            Redraw
+                        }
+                    }
                 }
             }
         }
     }
     finally {
-        # Restore previous console mode
         [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
     }
 }
 
-# Optional: quick help
 function dhelp {
     Write-Host 'DNav (PowerShell)' -ForegroundColor Cyan
-    Write-Host '  dnav          open the folder bar'
-    Write-Host '  dhelp         this text'
-    Write-Host "  config dir    $(Get-DnavConfigDir)"
-    Write-Host '  folders file  (Get-DnavConfigDir)\folders'
+    Write-Host '  dnav              open the folder bar'
+    Write-Host '  dsearch           fuzzy directory search'
+    Write-Host '  dsearch-reindex   rebuild directory index'
+    Write-Host '  dhelp             this text'
+    Write-Host "  config dir        $(Get-DnavConfigDir)"
+    if (Get-Command Get-DsearchCacheDir -ErrorAction SilentlyContinue) {
+        Write-Host "  cache dir         $(Get-DsearchCacheDir)"
+    }
+    Write-Host '  folders file      (Get-DnavConfigDir)\folders'
 }
 
 Initialize-DnavConfig
