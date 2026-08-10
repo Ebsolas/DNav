@@ -31,9 +31,26 @@ function Get-DnavInstallDir {
 
 $script:DnavInstallDir = Get-DnavInstallDir
 
-$__djumpPath = Join-Path $script:DnavInstallDir 'djump.ps1'
-if ((Test-Path -LiteralPath $__djumpPath) -and -not (Get-Command djump -ErrorAction SilentlyContinue)) {
-    . $__djumpPath
+# Load djump from install dir (try several candidates)
+$__djumpCandidates = @(
+    (Join-Path $script:DnavInstallDir 'djump.ps1')
+)
+if ($PSScriptRoot) {
+    $__djumpCandidates += (Join-Path $PSScriptRoot 'djump.ps1')
+}
+if ($MyInvocation.MyCommand.Path) {
+    $__djumpCandidates += (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'djump.ps1')
+}
+$__djumpLoaded = $false
+foreach ($__djumpPath in ($__djumpCandidates | Select-Object -Unique)) {
+    if ($__djumpPath -and (Test-Path -LiteralPath $__djumpPath)) {
+        . $__djumpPath
+        $__djumpLoaded = $true
+        break
+    }
+}
+if (-not $__djumpLoaded) {
+    Write-Warning "dnav: djump.ps1 not found (looked in $($script:DnavInstallDir)). djump/dfavorite unavailable."
 }
 
 function Get-DnavConfigDir {
@@ -167,7 +184,6 @@ function Show-DnavAbout {
 }
 
 function dnav {
-    # Inline single-line bar (zsh parity): brand + scrolling chips + < >
     $items = @(Get-DnavFolders)
     $brand = Get-DnavBrand
     $selected = 0
