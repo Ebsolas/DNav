@@ -1,1 +1,359 @@
-PLACEHOLDER
+#!/usr/bin/env bash
+# djump - editable directory jump table for dnav plugins (bash port)
+#
+# Data file (first match wins):
+#   $DNAV_JUMPS
+#   $DNAV_CONFIG_DIR/jumps     (~/.config/dnav/jumps)
+#   $DNAV_DIR/jumps            (package default)
+#
+# API:
+#   _djump_available
+#   _djump_load / _djump_save
+#   _djump_resolve KEY     -> prints absolute path, return 0/1
+#   _djump_list_keys
+#   _djump_match_query S   -> keys matching s / ds
+#   _djump_goto KEY        -> cd to jump
+#   djump [-r|-l|KEY]
+#   dfavorite add|edit|remove|list
+
+_djump_available() { return 0; }
+
+declare -gA _DJUMP_MAP=()
+declare -ga _DJUMP_KEYS=()
+declare -ga _DJUMP_SHELL_CMDS=()
+declare -gi _DJUMP_LOADED=0
+
+_djump_data_path() {
+  local cfg="${DNAV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dnav}"
+  if [[ -n ${DNAV_JUMPS:-} ]]; then
+    printf '%s\n' "$DNAV_JUMPS"
+  elif [[ -f $cfg/jumps ]]; then
+    printf '%s\n' "$cfg/jumps"
+  elif [[ -n ${DNAV_DIR:-} && -f $DNAV_DIR/jumps ]]; then
+    printf '%s\n' "$DNAV_DIR/jumps"
+  else
+    local here
+    here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    printf '%s\n' "$here/jumps"
+  fi
+}
+
+_djump_user_path() {
+  if [[ -n ${DNAV_JUMPS:-} ]]; then
+    printf '%s\n' "$DNAV_JUMPS"
+    return
+  fi
+  local cfg="${DNAV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dnav}"
+  mkdir -p -- "$cfg" 2>/dev/null || true
+  printf '%s\n' "$cfg/jumps"
+}
+
+_djump_abspath() {
+  local path="$1" out
+  if [[ $path == '~' || $path == '~/'* ]]; then
+    path="${path/#\~/$HOME}"
+  fi
+  if [[ $path == /* ]]; then
+    if command -v realpath >/dev/null 2>&1; then
+      realpath -m -- "$path" 2>/dev/null && return
+    fi
+    printf '%s\n' "$path"
+    return
+  fi
+  out="$(cd -- "$PWD" && cd -- "$path" 2>/dev/null && pwd -P)" || out=""
+  if [[ -n $out ]]; then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$PWD/$path"
+  fi
+}
+
+_djump_store_path() {
+  local path="$1" store
+  if [[ $path == '~' ]]; then
+    store="$HOME"
+  elif [[ $path == '~/'* ]]; then
+    store="${path/#\~/$HOME}"
+  elif [[ $path == /* ]]; then
+    store="$(_djump_abspath "$path")"
+  else
+    store="$(cd -- "$PWD" && cd -- "$path" 2>/dev/null && pwd -P)" || store="$PWD/$path"
+  fi
+  if [[ $store == "$HOME" ]]; then
+    store="~"
+  elif [[ $store == "$HOME/"* ]]; then
+    store="~${store#$HOME}"
+  fi
+  printf '%s\n' "$store"
+}
+
+_djump_save() {
+  local f k path
+  f="$(_djump_user_path)"
+  {
+    printf '%s\n' "# djump table - key becomes dKEY (home -> dhome)"
+    printf '%s\n' "# Format:  key   path"
+    printf '%s\n' "#"
+    for k in "${_DJUMP_KEYS[@]}"; do
+      path="${_DJUMP_MAP[$k]}"
+      [[ -n $path ]] || continue
+      printf '%s  %s\n' "$k" "$(_djump_store_path "$path")"
+    done
+  } > "$f"
+  _DJUMP_LOADED=0
+  _djump_load 2>/dev/null || {
+    _DJUMP_LOADED=1
+    _djump_install_cmds
+  }
+  return 0
+}
+
+_djump_valid_label() {
+  local key="${1#d}"
+  [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+_djump_uninstall_cmds() {
+  local cmd
+  for cmd in "${_DJUMP_SHELL_CMDS[@]}"; do
+    unset -f "$cmd" 2>/dev/null || true
+  done
+  _DJUMP_SHELL_CMDS=()
+}
+
+_djump_install_cmds() {
+  local key cmd
+  _djump_uninstall_cmds
+  for key in "${_DJUMP_KEYS[@]}"; do
+    [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    cmd="d${key}"
+    eval "${cmd}() { _djump_goto $(printf '%q' "$key"); }"
+    _DJUMP_SHELL_CMDS+=("$cmd")
+  done
+}
+
+_djump_load() {
+  local f line key path
+  f="$(_djump_data_path)"
+  _DJUMP_MAP=()
+  _DJUMP_KEYS=()
+  _DJUMP_LOADED=0
+  if [[ ! -f $f ]]; then
+    _djump_uninstall_cmds
+    return 1
+  fi
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line ]] && continue
+    key="${line%%[[:space:]]*}"
+    path="${line#"$key"}"
+    path="${path#"${path%%[![:space:]]*}"}"
+    [[ -z $key || -z $path ]] && continue
+    _DJUMP_MAP[$key]="$path"
+    _DJUMP_KEYS+=("$key")
+  done < "$f"
+  _DJUMP_LOADED=1
+  _djump_install_cmds
+  return 0
+}
+
+_djump_ensure() {
+  (( _DJUMP_LOADED )) || _djump_load
+}
+
+_djump_expand() {
+  _djump_abspath "$1"
+}
+
+_djump_resolve() {
+  local raw="$1" key path
+  _djump_ensure || return 1
+  key="${raw#d}"
+  if [[ $raw == d* && -n ${_DJUMP_MAP[$key]:-} ]]; then
+    :
+  elif [[ -n ${_DJUMP_MAP[$raw]:-} ]]; then
+    key="$raw"
+  elif [[ -n ${_DJUMP_MAP[$key]:-} ]]; then
+    :
+  else
+    return 1
+  fi
+  path="${_DJUMP_MAP[$key]}"
+  _djump_expand "$path"
+}
+
+_djump_goto() {
+  local key="$1" dest
+  [[ -n $key ]] || return 1
+  dest="$(_djump_resolve "$key")" || {
+    printf 'djump: unknown key: %s\n' "$key" >&2
+    return 1
+  }
+  if [[ ! -d $dest ]]; then
+    printf 'djump: not a directory: %s\n' "$dest" >&2
+    return 1
+  fi
+  cd -- "$dest" || {
+    printf 'djump: could not cd to %s\n' "$dest" >&2
+    return 1
+  }
+  dest="$(_djump_abspath "$dest")"
+  if declare -f _dnav_success_bar >/dev/null 2>&1; then
+    _dnav_success_bar "$dest"
+  elif [[ $- == *i* ]]; then
+    printf '%s\n' "$dest"
+  fi
+  if declare -f _dnav_maybe_ls >/dev/null 2>&1; then
+    _dnav_maybe_ls
+  else
+    case ${DNAV_CFG_LS:-0} in
+      1|true|yes|on|TRUE|YES|ON) command ls -a --color=auto ;;
+    esac
+  fi
+  return 0
+}
+
+_djump_list_keys() {
+  _djump_ensure || return 1
+  local k
+  for k in "${_DJUMP_KEYS[@]}"; do printf '%s\n' "$k"; done
+}
+
+_djump_match_query() {
+  local q="${1,,}" k kl dkl
+  local -a hits=()
+  _djump_ensure || return 1
+  [[ -z $q ]] && return 0
+  for k in "${_DJUMP_KEYS[@]}"; do
+    kl="${k,,}"
+    dkl="d${kl}"
+    if [[ $kl == "$q"* || $dkl == "$q"* || $q == "$kl" || $q == "$dkl" ]]; then
+      hits+=("$k")
+    fi
+  done
+  (( ${#hits[@]} )) && printf '%s\n' "${hits[@]}"
+}
+
+djump() {
+  case ${1:-} in
+    -r|--reload)
+      _DJUMP_LOADED=0
+      if _djump_load; then
+        printf 'djump: loaded %d jumps (%d commands)\n' "${#_DJUMP_KEYS[@]}" "${#_DJUMP_SHELL_CMDS[@]}"
+        return 0
+      fi
+      printf 'djump: failed to load %s\n' "$(_djump_data_path)" >&2
+      return 1
+      ;;
+    -l|--list|'')
+      _djump_ensure || {
+        printf 'djump: no jumps file at %s\n' "$(_djump_data_path)" >&2
+        return 1
+      }
+      local k
+      for k in "${_DJUMP_KEYS[@]}"; do
+        printf 'd%s\t%s\n' "$k" "${_DJUMP_MAP[$k]}"
+      done
+      return 0
+      ;;
+    -h|--help)
+      printf '%s\n' "usage: djump [-r|-l|KEY]"
+      printf '%s\n' "  -r, --reload   reload jumps file and dKEY commands"
+      printf '%s\n' "  -l, --list     list dKEY -> path"
+      printf '%s\n' "  KEY            cd to jump (also: dKEY e.g. dhome)"
+      printf '%s\n' "favorites: dfavorite add|edit|remove|list"
+      return 0
+      ;;
+    *)
+      _djump_goto "$1"
+      ;;
+  esac
+}
+
+dfavorite() {
+  local cmd="${1:-}" label path dest k
+  local hl="${DNAV_HIGHLIGHT:-$'\e[30;46m'}"
+  local rst="${DNAV_RESET:-$'\e[0m'}"
+  _djump_ensure 2>/dev/null || {
+    _DJUMP_MAP=()
+    _DJUMP_KEYS=()
+    _DJUMP_LOADED=1
+  }
+  case $cmd in
+    ''|-h|--help|help)
+      printf '%s\n' "${hl} dfavorite ${rst}"
+      printf '%s\n' "  dfavorite add LABEL [PATH]     add jump (default path: \$PWD)"
+      printf '%s\n' "  dfavorite edit LABEL [PATH]    set path (default: \$PWD)"
+      printf '%s\n' "  dfavorite remove LABEL         remove jump + dLABEL command"
+      printf '%s\n' "  dfavorite list                 list favorites"
+      return 0
+      ;;
+    list|-l|--list)
+      if (( ${#_DJUMP_KEYS[@]} == 0 )); then
+        printf '%s\n' "dfavorite: no favorites yet (try: dfavorite add <label>)"
+        return 0
+      fi
+      for k in "${_DJUMP_KEYS[@]}"; do
+        printf 'd%-14s  %s\n' "$k" "${_DJUMP_MAP[$k]}"
+      done
+      return 0
+      ;;
+    add)
+      label="$2"; path="${3:-$PWD}"
+      if [[ -z $label ]]; then printf 'usage: dfavorite add LABEL [PATH]\n' >&2; return 1; fi
+      if ! _djump_valid_label "$label"; then
+        printf "dfavorite: invalid label '%s' (use letters, digits, _)\n" "$label" >&2; return 1
+      fi
+      dest="$(_djump_expand "$path")"
+      if [[ ! -d $dest ]]; then printf 'dfavorite: not a directory: %s\n' "$path" >&2; return 1; fi
+      if [[ -n ${_DJUMP_MAP[$label]:-} ]]; then
+        printf "dfavorite: '%s' exists (use: dfavorite edit %s ...)\n" "$label" "$label" >&2; return 1
+      fi
+      _DJUMP_KEYS+=("$label")
+      _DJUMP_MAP[$label]="$dest"
+      _djump_save
+      printf 'dfavorite: added d%s -> %s\n' "$label" "$(_djump_store_path "$dest")"
+      return 0
+      ;;
+    edit)
+      label="$2"; path="${3:-$PWD}"
+      if [[ -z $label ]]; then printf 'usage: dfavorite edit LABEL [PATH]\n' >&2; return 1; fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} && $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then label="${label#d}"; fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} ]]; then
+        printf "dfavorite: unknown label '%s'\n" "$label" >&2; return 1
+      fi
+      dest="$(_djump_expand "$path")"
+      if [[ ! -d $dest ]]; then printf 'dfavorite: not a directory: %s\n' "$path" >&2; return 1; fi
+      _DJUMP_MAP[$label]="$dest"
+      _djump_save
+      printf 'dfavorite: updated d%s -> %s\n' "$label" "$(_djump_store_path "$dest")"
+      return 0
+      ;;
+    remove|rm|delete|del)
+      label="$2"
+      if [[ -z $label ]]; then printf 'usage: dfavorite remove LABEL\n' >&2; return 1; fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} && $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then label="${label#d}"; fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} ]]; then
+        printf "dfavorite: unknown label '%s'\n" "$label" >&2; return 1
+      fi
+      unset "_DJUMP_MAP[$label]"
+      local -a nkeys=()
+      for k in "${_DJUMP_KEYS[@]}"; do
+        [[ $k == "$label" ]] && continue
+        nkeys+=("$k")
+      done
+      _DJUMP_KEYS=("${nkeys[@]}")
+      _djump_save
+      printf 'dfavorite: removed d%s\n' "$label"
+      return 0
+      ;;
+    *)
+      printf "dfavorite: unknown command '%s' (try: dfavorite --help)\n" "$cmd" >&2
+      return 1
+      ;;
+  esac
+}
+
+_djump_load 2>/dev/null || true
