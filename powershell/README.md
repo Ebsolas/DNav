@@ -1,24 +1,31 @@
 # PowerShell port of DNav
 
-Windows-first folder navigation, fuzzy search, file explorer, and jump aliases.
+Windows-first folder navigation and jump aliases.
 
-## Try it
+## Core vs optional (EDR)
+
+| Module | Auto-loaded | Notes |
+|--------|-------------|--------|
+| `dnav.ps1` | — (entry) | **Low signal:** `[Console]::ReadKey` only, no `Add-Type` / kernel32 |
+| `djump.ps1` | Yes | **Low signal:** config files + functions |
+| `dsearch.ps1` | **No** | Higher signal: deep directory walk + console input APIs |
+| `dfile.ps1` | **No** | Higher signal: console input APIs |
+
+For SentinelOne / strict EDR environments, load only the core:
 
 ```powershell
-cd path\to\DNav
-. .\powershell\dnav.ps1      # loads dsearch, dfile, djump
+. .\powershell\dnav.ps1   # includes djump / dfavorite / dKEY
 dnav
+dhome
+dfavorite add work
 ```
+
+Optional modules (explicit):
 
 ```powershell
-dhome                 # jump alias
-djump -l              # list
-dfavorite add work C:\Projects\work
-dsearch
-dfile
+. .\powershell\dsearch.ps1
+. .\powershell\dfile.ps1
 ```
-
-Add the dot-source line to `$PROFILE` to load on every shell.
 
 ## Keys (dnav)
 
@@ -26,63 +33,22 @@ Add the dot-source line to `$PROFILE` to load on every shell.
 |-----|--------|
 | Left / Right or `h` / `l` | Move selection |
 | Enter | Open folder (or About) |
-| `/` or `s` | Fuzzy directory search |
-| `f` | File explorer |
 | Esc | Cancel |
+| `/` or `s` | Search (only if `dsearch` loaded) |
+| `f` | Files (only if `dfile` loaded) |
 
-## Keys (dsearch)
-
-| Key | Action |
-|-----|--------|
-| Type | Filter directories |
-| Up / Down or Ctrl+P / Ctrl+N | Move selection |
-| Enter | Jump to folder |
-| Backspace | Delete character |
-| Ctrl+U | Clear query |
-| Esc | Cancel |
-
-## Keys (dfile)
-
-| Key | Action |
-|-----|--------|
-| Left / Right or `h` / `l` | Move on current row |
-| Up / `k` | Go to parent |
-| Down / `j` | Enter selected subdirectory |
-| Tab or `f` | Toggle focus: dirs ↔ files |
-| `.` | Toggle show hidden |
-| Enter | Exit to dir, or open file |
-| `/` or `s` | Search |
-| Esc | Cancel |
-
-## Jumps (`djump` / `dfavorite`)
+## Jumps
 
 | Command | Action |
 |---------|--------|
-| `djump -l` | List aliases |
-| `djump -r` | Reload from disk |
-| `djump KEY` or `dKEY` | `cd` to jump |
-| `dfavorite add LABEL [PATH]` | Add (default path: `$PWD`) |
-| `dfavorite edit LABEL [PATH]` | Update path |
-| `dfavorite remove LABEL` | Remove |
-| `dfavorite list` | List |
+| `djump -l` | List |
+| `djump -r` | Reload |
+| `dKEY` / `djump KEY` | Go |
+| `dfavorite add\|edit\|remove\|list` | Manage |
 
-User file: `%APPDATA%\dnav\jumps` (seeded from package `powershell\jumps` on first run).
-
-## Config / cache
-
-| Path | Purpose |
-|------|---------|
-| `%APPDATA%\dnav\folders` | Bar labels + paths |
-| `%APPDATA%\dnav\config` | `brand`, etc. |
-| `%APPDATA%\dnav\jumps` | Jump table |
-| `%LOCALAPPDATA%\dnav\dirs.idx` | Search index (24h TTL) |
-
-```powershell
-$env:DNAV_SEARCH_ROOTS = "C:\Users\you;D:\Projects"
-dsearch-reindex
-```
+Config: `%APPDATA%\dnav\` (`folders`, `config`, `jumps`).
 
 ## Status
 
-- **Done:** `dnav`, `dsearch`, `dfile`, `djump` / `dKEY` / `dfavorite`
-- Mouse support was intentionally omitted.
+- **Core (EDR-friendlier):** `dnav`, `djump`, `dfavorite`
+- **Optional:** `dsearch`, `dfile` (still use lower-level console input)
