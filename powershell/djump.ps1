@@ -3,7 +3,7 @@
 # Data file (first match wins):
 #   $env:DNAV_JUMPS
 #   %APPDATA%\dnav\jumps
-#   package powershell\jumps
+#   Documents\WindowsPowerShell\dnav\jumps  (package install)
 #
 # Commands:
 #   djump [-r|-l|KEY]     reload / list / go
@@ -16,11 +16,20 @@ $script:DjumpLoaded = $false
 $script:DjumpInstalled = [System.Collections.Generic.List[string]]::new()
 
 function Get-DjumpPackageDir {
+    if ($script:DnavInstallDir -and (Test-Path -LiteralPath $script:DnavInstallDir)) {
+        return $script:DnavInstallDir
+    }
+    if ($env:DNAV_HOME -and (Test-Path -LiteralPath $env:DNAV_HOME)) {
+        return [System.IO.Path]::GetFullPath($env:DNAV_HOME)
+    }
     if ($PSScriptRoot) { return $PSScriptRoot }
     if ($MyInvocation.MyCommand.Path) {
-        return (Split-Path -Parent $MyInvocation.MyCommand.Path)
+        $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+        if ($here) { return $here }
     }
-    return (Get-Location).Path
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
+    return (Join-Path $docs 'WindowsPowerShell\dnav')
 }
 
 function Get-DjumpUserPath {
