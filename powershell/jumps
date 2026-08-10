@@ -1,0 +1,17 @@
+# Package default jumps — prefer editing user config:
+#   %APPDATA%\dnav\jumps
+# Format:  key   path   → shell command dKEY (home → dhome)
+# Reload: djump -r
+# Paths: ~ expands; .. is parent of $PWD
+#
+# key     path
+home      ~
+doc       ~/Documents
+down      ~/Downloads
+pic       ~/Pictures
+desk      ~/Desktop
+music     ~/Music
+vid       ~/Videos
+proj      ~/Projects
+con       ~/.config
+bk        ..

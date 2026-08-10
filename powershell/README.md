@@ -1,22 +1,21 @@
 # PowerShell port of DNav
 
-Windows-first folder navigation, fuzzy search, and file explorer.
+Windows-first folder navigation, fuzzy search, file explorer, and jump aliases.
 
 ## Try it
 
 ```powershell
 cd path\to\DNav
-. .\powershell\dnav.ps1      # auto-loads dsearch.ps1 + dfile.ps1
+. .\powershell\dnav.ps1      # loads dsearch, dfile, djump
 dnav
 ```
 
-Standalone:
-
 ```powershell
+dhome                 # jump alias
+djump -l              # list
+dfavorite add work C:\Projects\work
 dsearch
-dsearch-reindex
 dfile
-dfile -StartPath C:\Users
 ```
 
 Add the dot-source line to `$PROFILE` to load on every shell.
@@ -52,17 +51,22 @@ Add the dot-source line to `$PROFILE` to load on every shell.
 | Tab or `f` | Toggle focus: dirs ↔ files |
 | `.` | Toggle show hidden |
 | Enter | Exit to dir, or open file |
-| `/` or `s` | Search (returns into explorer) |
+| `/` or `s` | Search |
 | Esc | Cancel |
 
-Layout:
+## Jumps (`djump` / `dfavorite`)
 
-```
- DNav Files:  [siblings in parent]
- [child directories]
- ---- Show Hidden ○ ----
- [files]
-```
+| Command | Action |
+|---------|--------|
+| `djump -l` | List aliases |
+| `djump -r` | Reload from disk |
+| `djump KEY` or `dKEY` | `cd` to jump |
+| `dfavorite add LABEL [PATH]` | Add (default path: `$PWD`) |
+| `dfavorite edit LABEL [PATH]` | Update path |
+| `dfavorite remove LABEL` | Remove |
+| `dfavorite list` | List |
+
+User file: `%APPDATA%\dnav\jumps` (seeded from package `powershell\jumps` on first run).
 
 ## Config / cache
 
@@ -70,9 +74,8 @@ Layout:
 |------|---------|
 | `%APPDATA%\dnav\folders` | Bar labels + paths |
 | `%APPDATA%\dnav\config` | `brand`, etc. |
+| `%APPDATA%\dnav\jumps` | Jump table |
 | `%LOCALAPPDATA%\dnav\dirs.idx` | Search index (24h TTL) |
-
-Override search roots:
 
 ```powershell
 $env:DNAV_SEARCH_ROOTS = "C:\Users\you;D:\Projects"
@@ -81,7 +84,5 @@ dsearch-reindex
 
 ## Status
 
-- **Done:** `dnav`, `dsearch`, `dfile`
-- **Not yet:** djump / dKEY favorites
-
-Mouse support was intentionally omitted.
+- **Done:** `dnav`, `dsearch`, `dfile`, `djump` / `dKEY` / `dfavorite`
+- Mouse support was intentionally omitted.
