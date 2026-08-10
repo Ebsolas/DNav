@@ -1,27 +1,47 @@
 # dnav.ps1 - folder navigation bar for PowerShell (Windows)
 #
+# Install location (canonical):
+#   $HOME\Documents\WindowsPowerShell\dnav\
+#   (i.e. [Environment]::GetFolderPath('MyDocuments')\WindowsPowerShell\dnav)
+#
 # SentinelOne-friendly core: no Add-Type, no kernel32 P/Invoke.
 # Keyboard via [Console]::ReadKey only. Optional modules (dfile/dsearch)
-# are NOT auto-loaded — they use lower-level console APIs and may be noisier.
+# are NOT auto-loaded.
 #
-# Dot-source:
-#   . .\powershell\dnav.ps1          # loads djump/dfavorite automatically
-#   . .\powershell\dsearch.ps1       # optional, higher EDR signal
-#   . .\powershell\dfile.ps1         # optional, higher EDR signal
+# Dot-source from profile or by path:
+#   . "$HOME\Documents\WindowsPowerShell\dnav\dnav.ps1"
+#   . "$HOME\Documents\WindowsPowerShell\dnav\dsearch.ps1"   # optional
+#   . "$HOME\Documents\WindowsPowerShell\dnav\dfile.ps1"     # optional
 #
 # Keys: Left/Right or h/l  move | Enter open | Esc cancel
 #       / or s  search (if dsearch loaded) | f  files (if dfile loaded)
 
-# Auto-load only djump (low signal: file I/O + functions, no P/Invoke)
-$__dnavDir = $PSScriptRoot
-if (-not $__dnavDir -and $MyInvocation.MyCommand.Path) {
-    $__dnavDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-}
-if ($__dnavDir) {
-    $__djumpPath = Join-Path $__dnavDir 'djump.ps1'
-    if ((Test-Path -LiteralPath $__djumpPath) -and -not (Get-Command djump -ErrorAction SilentlyContinue)) {
-        . $__djumpPath
+function Get-DnavInstallDir {
+    if ($env:DNAV_HOME -and (Test-Path -LiteralPath $env:DNAV_HOME)) {
+        return [System.IO.Path]::GetFullPath($env:DNAV_HOME)
     }
+    if ($PSScriptRoot) {
+        return $PSScriptRoot
+    }
+    if ($MyInvocation.MyCommand.Path) {
+        $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+        if ($here) { return $here }
+    }
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
+    $canonical = Join-Path $docs 'WindowsPowerShell\dnav'
+    if (Test-Path -LiteralPath $canonical) {
+        return $canonical
+    }
+    return $canonical
+}
+
+$script:DnavInstallDir = Get-DnavInstallDir
+
+# Auto-load only djump from the install directory
+$__djumpPath = Join-Path $script:DnavInstallDir 'djump.ps1'
+if ((Test-Path -LiteralPath $__djumpPath) -and -not (Get-Command djump -ErrorAction SilentlyContinue)) {
+    . $__djumpPath
 }
 
 function Get-DnavConfigDir {
@@ -148,13 +168,14 @@ function Show-DnavAbout {
         Write-Host '  f                   file explorer (optional module)'
     }
     Write-Host '  dKEY / djump        jump aliases (dfavorite to manage)'
+    Write-Host '  Install dir         ' -NoNewline
+    Write-Host $script:DnavInstallDir -ForegroundColor DarkGray
     Write-Host '  Config dir          ' -NoNewline
     Write-Host (Get-DnavConfigDir) -ForegroundColor DarkGray
     Write-Host ''
 }
 
 function dnav {
-    # No Add-Type / kernel32 — use managed [Console]::ReadKey only.
     $items = @(Get-DnavFolders)
     $brand = Get-DnavBrand
     $selected = 0
@@ -314,9 +335,11 @@ function dhelp {
     Write-Host '  dfavorite         manage jumps'
     Write-Host '  dhelp             this text'
     Write-Host ''
+    Write-Host 'Install dir:' -ForegroundColor DarkGray
+    Write-Host "  $script:DnavInstallDir"
     Write-Host 'Optional (higher EDR signal - load only if needed):' -ForegroundColor DarkYellow
-    Write-Host '  . .\powershell\dsearch.ps1'
-    Write-Host '  . .\powershell\dfile.ps1'
+    Write-Host "  . `"$script:DnavInstallDir\dsearch.ps1`""
+    Write-Host "  . `"$script:DnavInstallDir\dfile.ps1`""
     Write-Host "  config dir        $(Get-DnavConfigDir)"
 }
 
