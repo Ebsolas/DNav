@@ -16,10 +16,13 @@ if (-not $__dnavDir -and $MyInvocation.MyCommand.Path) {
     $__dnavDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 if ($__dnavDir) {
-    foreach ($__mod in @('dsearch.ps1', 'dfile.ps1')) {
-        $__p = Join-Path $__dnavDir $__mod
-        $__cmd = if ($__mod -eq 'dsearch.ps1') { 'dsearch' } else { 'dfile' }
-        if ((Test-Path -LiteralPath $__p) -and -not (Get-Command $__cmd -ErrorAction SilentlyContinue)) {
+    foreach ($__pair in @(
+        @{ File = 'dsearch.ps1'; Cmd = 'dsearch' },
+        @{ File = 'dfile.ps1';   Cmd = 'dfile' },
+        @{ File = 'djump.ps1';   Cmd = 'djump' }
+    )) {
+        $__p = Join-Path $__dnavDir $__pair.File
+        if ((Test-Path -LiteralPath $__p) -and -not (Get-Command $__pair.Cmd -ErrorAction SilentlyContinue)) {
             . $__p
         }
     }
@@ -363,6 +366,8 @@ function dhelp {
     Write-Host '  dnav              open the folder bar'
     Write-Host '  dsearch           fuzzy directory search'
     Write-Host '  dfile             file explorer'
+    Write-Host '  djump / dKEY      jump aliases'
+    Write-Host '  dfavorite         manage jumps'
     Write-Host '  dsearch-reindex   rebuild directory index'
     Write-Host '  dhelp             this text'
     Write-Host "  config dir        $(Get-DnavConfigDir)"
