@@ -1,0 +1,476 @@
+#!/usr/bin/env bash
+# dsearch - fuzzy directory search plugin for dnav (bash port)
+
+_dsearch_available() { return 0; }
+_dsearch_in_dfile() { return 1; }
+
+declare -gi _DSEARCH_INDEX_PID=0
+declare -g  _DSEARCH_INDEX_COUNT_FILE=""
+declare -g  _DSEARCH_INDEX_TMP=""
+declare -g  _DSEARCH_INDEX_STATE=idle
+declare -ga _dsearch_matches=()
+declare -gi _dsearch_sel=0
+declare -gi _dsearch_extra_lines=0
+declare -g  _dsearch_tmpdir=""
+declare -g  _dsearch_prev_query=""
+declare -gA _dsearch_cand_stack=()
+declare -g  _dsearch_q=""
+declare -g  _dsearch_focus=list
+declare -g  _dsearch_view=search
+declare -g  _DSEARCH_PUSHBACK=""
+declare -gi _DSEARCH_FOR_DFILE=0
+declare -g  DNAV_SEARCH_RESULT=""
+
+_dsearch_index_path() {
+  printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx"
+}
+
+_dsearch_index_stale() {
+  local idx="$1"
+  [[ ! -f $idx || ! -s $idx ]] && return 0
+  local now mtime age
+  now=$(date +%s)
+  mtime=$(stat -c %Y -- "$idx" 2>/dev/null) || return 0
+  age=$(( now - mtime )); (( age > 86400 ))
+}
+
+_dsearch_index_count() {
+  local n=0
+  [[ -n $_DSEARCH_INDEX_COUNT_FILE && -f $_DSEARCH_INDEX_COUNT_FILE ]] && \
+    n=$(<"$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null) || n=0
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+  printf '%s' "$n"
+}
+
+_dsearch_index_running() {
+  (( _DSEARCH_INDEX_PID > 0 )) || return 1
+  kill -0 $_DSEARCH_INDEX_PID 2>/dev/null && return 0
+  wait $_DSEARCH_INDEX_PID 2>/dev/null || true
+  _DSEARCH_INDEX_PID=0; return 1
+}
+
+_dsearch_skip_root() {
+  case $1 in
+    /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/user/*|/run/systemd/*) return 0 ;;
+    /boot|/boot/*|/tmp|/var/tmp|/var/log|/var/cache|/var/lib/docker/*) return 0 ;;
+    /snap|/var/lib/snapd/snap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_dsearch_collect_roots() {
+  local -a roots=(); local -A seen=(); local r m p
+  _dsearch_add_root() {
+    local p="$1"
+    [[ -n $p && -d $p && -r $p ]] || return
+    _dsearch_skip_root "$p" && return
+    command -v realpath >/dev/null 2>&1 && p="$(realpath -m -- "$p" 2>/dev/null)" || true
+    [[ -n ${seen[$p]:-} ]] && return
+    seen[$p]=1; roots+=("$p")
+  }
+  if [[ -n ${DNAV_SEARCH_ROOTS:-} ]]; then
+    for r in $DNAV_SEARCH_ROOTS; do _dsearch_add_root "$r"; done
+    printf '%s\n' "${roots[@]}"; return 0
+  fi
+  _dsearch_add_root "$HOME"
+  shopt -s nullglob
+  for r in /home/*/; do _dsearch_add_root "${r%/}"; done
+  for r in /media/*/ /mnt/*/ /run/media/*/*/; do _dsearch_add_root "${r%/}"; done
+  shopt -u nullglob
+  for r in /opt /usr/local /usr/share /srv /var/www /var/lib/flatpak/app /Applications /System/Applications; do
+    _dsearch_add_root "$r"
+  done
+  if command -v findmnt >/dev/null 2>&1; then
+    while IFS= read -r m; do
+      [[ -z $m || $m == / ]] && continue
+      _dsearch_skip_root "$m" && continue
+      _dsearch_add_root "$m"
+    done < <(findmnt -n -o TARGET -t notmpfs,noproc,nosysfs,nodevtmpfs,nocgroup,nocgroup2,nofuse.portal 2>/dev/null)
+  fi
+  printf '%s\n' "${roots[@]}"
+}
+
+_dsearch_build_index_with_count() {
+  local idx="$1" countfile="$2"
+  local tmp="${idx}.tmp.$$"
+  local -a roots=(); local r n=0 line
+  mkdir -p "$(dirname -- "$idx")" 2>/dev/null || return 1
+  mapfile -t roots < <(_dsearch_collect_roots)
+  printf '0' > "$countfile"; : > "$tmp"
+  {
+    for r in "${roots[@]}"; do
+      [[ -d $r && -r $r ]] || continue
+      find "$r" -xdev \
+        \( -name .git -o -name node_modules -o -name target -o -name __pycache__ -o \
+           -name .npm -o -name .cargo -o -name .cache -o -path '*/.cache/*' -o \
+           -path '*/.local/share/Trash' -o -path '*/.local/share/Trash/*' -o \
+           -name Trash -o -name .Trash -o -name Caches -o -name .gradle -o -name .m2 -o \
+           -name vendor -o -name .tox -o -name .venv -o -name venv -o -name '.Trash-*' \) -prune -o \
+        -type d -readable -print 2>/dev/null
+    done
+  } | while IFS= read -r line; do
+      printf '%s\n' "$line"; (( n++ ))
+      (( n % 25 == 0 )) && printf '%s' "$n" > "$countfile"
+    done > "$tmp"
+  if [[ -f $tmp ]]; then
+    n=$(wc -l < "$tmp" 2>/dev/null) || n=0; n=${n// /}
+    printf '%s' "${n:-0}" > "$countfile"
+  fi
+  command -v sort >/dev/null 2>&1 && sort -u "$tmp" -o "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$idx" 2>/dev/null || return 1
+  return 0
+}
+
+_dsearch_index_start_bg() {
+  local idx countfile; idx="$(_dsearch_index_path)"
+  if (( _DSEARCH_INDEX_PID > 0 )) && ! kill -0 $_DSEARCH_INDEX_PID 2>/dev/null; then
+    wait $_DSEARCH_INDEX_PID 2>/dev/null || true; _DSEARCH_INDEX_PID=0
+    [[ -f $idx && -s $idx ]] && _DSEARCH_INDEX_STATE=done
+  fi
+  if ! _dsearch_index_stale "$idx"; then _DSEARCH_INDEX_STATE=done; return 0; fi
+  _dsearch_index_running && return 0
+  mkdir -p "$(dirname -- "$idx")" 2>/dev/null || return 1
+  countfile="$(dirname -- "$idx")/index.count.$$"
+  _DSEARCH_INDEX_COUNT_FILE="$countfile"
+  _DSEARCH_INDEX_TMP="${idx}.tmp.$$"
+  printf '0' > "$countfile"; _DSEARCH_INDEX_STATE=running
+  ( _dsearch_build_index_with_count "$idx" "$countfile" || { rm -f -- "${idx}.tmp.$$"; exit 1; } ) &
+  _DSEARCH_INDEX_PID=$!; return 0
+}
+
+_dsearch_index_cancel() {
+  local pid=$_DSEARCH_INDEX_PID
+  if (( pid > 0 )); then
+    pkill -TERM -P $pid 2>/dev/null || true
+    kill -TERM $pid 2>/dev/null || true
+    wait $pid 2>/dev/null || true
+    _DSEARCH_INDEX_PID=0; _DSEARCH_INDEX_STATE=cancelled
+  fi
+  [[ -n $_DSEARCH_INDEX_TMP ]] && rm -f -- "$_DSEARCH_INDEX_TMP" 2>/dev/null
+  [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
+  _DSEARCH_INDEX_COUNT_FILE=""; _DSEARCH_INDEX_TMP=""
+}
+
+_dsearch_index_wait_ui() {
+  local idx hl rst count pid
+  idx="$(_dsearch_index_path)"
+  hl="${DNAV_HIGHLIGHT:-${HIGHLIGHT:-$'\e[30;46m'}}"
+  rst="${DNAV_RESET:-${RESET:-$'\e[0m'}}"
+  _dsearch_index_start_bg
+  if ! _dsearch_index_running && [[ -f $idx && -s $idx ]]; then _DSEARCH_INDEX_STATE=done; return 0; fi
+  if ! _dsearch_index_running; then [[ -f $idx && -s $idx ]] && return 0; return 1; fi
+  pid=$_DSEARCH_INDEX_PID; printf '\e[?25l'
+  while kill -0 $pid 2>/dev/null; do
+    count="$(_dsearch_index_count)"
+    printf "\r${hl} Indexing...${rst} %s\e[K" "$count"
+    sleep 0.1
+  done
+  wait $pid 2>/dev/null; _DSEARCH_INDEX_PID=0
+  count="$(_dsearch_index_count)"
+  printf "\r${hl} Indexing...${rst} %s\e[K" "$count"; sleep 0.08; printf '\r\e[2K'
+  [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
+  _DSEARCH_INDEX_COUNT_FILE=""; _DSEARCH_INDEX_TMP=""
+  if [[ -f $idx && -s $idx ]]; then _DSEARCH_INDEX_STATE=done; return 0; fi
+  _DSEARCH_INDEX_STATE=failed; return 1
+}
+
+_dsearch_ensure_index() {
+  local idx; idx="$(_dsearch_index_path)"
+  if ! _dsearch_index_stale "$idx" && ! _dsearch_index_running; then return 0; fi
+  _dsearch_index_wait_ui
+}
+
+_dsearch_session_cleanup() {
+  [[ -n $_dsearch_tmpdir && -d $_dsearch_tmpdir ]] && rm -rf -- "$_dsearch_tmpdir" 2>/dev/null
+  _dsearch_tmpdir=""; _dsearch_prev_query=""; _dsearch_q=""
+  _dsearch_cand_stack=(); _dsearch_focus=list; _dsearch_view=search
+}
+
+_dsearch_awk_filter() {
+  local query="$1" mode="$2" maxn="$3" src="$4" survivors="$5"
+  awk -v query="$query" -v mode="$mode" -v maxn="$maxn" -v surv="$survivors" '
+  function consider(sc, path,   i) {
+    if (maxn > 0) {
+      if (tn == maxn && sc <= tsc[tn]) { }
+      else {
+        if (tn < maxn) tn++
+        i = tn
+        while (i > 1 && sc > tsc[i-1]) { tsc[i]=tsc[i-1]; tpath[i]=tpath[i-1]; i-- }
+        tsc[i]=sc; tpath[i]=path
+      }
+    }
+  }
+  function fuzzy_score(path, q,   lp, qlen, plen, score, run, last, pi, qi, ch, pc, prev, found) {
+    lp=tolower(path); q=tolower(q); qlen=length(q); plen=length(lp)
+    if (qlen==0) return -1
+    score=0; run=0; last=-2; pi=1
+    for (qi=1; qi<=qlen; qi++) {
+      ch=substr(q,qi,1); found=0
+      for (; pi<=plen; pi++) {
+        pc=substr(lp,pi,1)
+        if (pc==ch) {
+          found=1
+          if (pi==last+1) { run++; score+=8+run } else { run=0; score+=2 }
+          prev=(pi==1)?"":substr(lp,pi-1,1)
+          if (pi==1||prev=="/") score+=12
+          if (prev=="-"||prev=="_"||prev==".") score+=4
+          last=pi; pi++; break
+        }
+      }
+      if (!found) return -1
+    }
+    score += 40 - (plen < 40 ? plen : 40)
+    return score
+  }
+  function prefix1_score(path, q,   lp, ch, n, i, seg, best, sc, plen) {
+    lp=tolower(path); ch=tolower(substr(q,1,1)); if (ch=="") return -1
+    n=split(lp, seg, "/"); best=-1
+    for (i=1; i<=n; i++) {
+      if (seg[i]=="") continue
+      if (substr(seg[i],1,1)==ch) {
+        sc=50; sc+=20-(length(seg[i])<20?length(seg[i]):20)
+        plen=length(lp); sc+=30-(plen<30?plen:30); if (i==n) sc+=15
+        if (sc>best) best=sc
+      }
+    }
+    return best
+  }
+  BEGIN { tn=0 }
+  {
+    path=$0; if (path=="") next
+    if (mode=="prefix1") sc=prefix1_score(path,query); else sc=fuzzy_score(path,query)
+    if (sc<0) next
+    print path >> surv
+    consider(sc, path)
+  }
+  END { for (i=1; i<=tn; i++) print tpath[i] }
+  ' "$src"
+}
+
+_dsearch_pin_jumps() {
+  local query="$1" maxn="${2:-10}"
+  declare -f _djump_available >/dev/null 2>&1 && _djump_available || return 0
+  local -a keys=() pinned=() out=(); local k p m found
+  mapfile -t keys < <(_djump_match_query "$query")
+  for k in "${keys[@]}"; do
+    p="$(_djump_resolve "$k" 2>/dev/null)" || continue
+    [[ -d $p ]] || continue
+    command -v realpath >/dev/null 2>&1 && p="$(realpath -m -- "$p" 2>/dev/null)" || true
+    found=0
+    for m in "${pinned[@]}"; do [[ $m == "$p" ]] && { found=1; break; }; done
+    (( found )) || pinned+=("$p")
+  done
+  (( ${#pinned[@]} == 0 )) && return 0
+  out=("${pinned[@]}")
+  for m in "${_dsearch_matches[@]}"; do
+    found=0
+    for p in "${pinned[@]}"; do [[ $m == "$p" ]] && { found=1; break; }; done
+    (( found )) || out+=("$m")
+  done
+  _dsearch_matches=("${out[@]:0:$maxn}")
+}
+
+_dsearch_apply_filter() {
+  local query="$1" maxn="${2:-10}" qlen=${#query}
+  local idx src mode survivors; local -a top=()
+  _dsearch_matches=(); idx="$(_dsearch_index_path)"
+  if (( qlen == 0 )); then _dsearch_prev_query=""; return 0; fi
+  survivors="$_dsearch_tmpdir/c.${qlen}"; : > "$survivors"
+  local prev_len=${#_dsearch_prev_query}
+  if (( qlen == 1 )); then src="$idx"; mode="prefix1"
+  elif (( qlen < prev_len )) && [[ -n ${_dsearch_cand_stack[$qlen]:-} && -s ${_dsearch_cand_stack[$qlen]} ]]; then
+    src="${_dsearch_cand_stack[$qlen]}"; mode="fuzzy"
+    mapfile -t top < <(_dsearch_awk_filter "$query" "$mode" "$maxn" "$src" "$survivors")
+    _dsearch_matches=("${top[@]}"); _dsearch_cand_stack[$qlen]="$survivors"
+    _dsearch_prev_query="$query"; _dsearch_pin_jumps "$query" "$maxn"; return 0
+  elif [[ -n $_dsearch_prev_query && $query == "$_dsearch_prev_query"* ]] && (( qlen > prev_len )); then
+    if [[ -n ${_dsearch_cand_stack[$prev_len]:-} && -s ${_dsearch_cand_stack[$prev_len]} ]]; then
+      src="${_dsearch_cand_stack[$prev_len]}"
+    else src="$idx"; fi
+    mode="fuzzy"
+  else src="$idx"; mode="fuzzy"; (( qlen == 1 )) && mode="prefix1"; fi
+  mapfile -t top < <(_dsearch_awk_filter "$query" "$mode" "$maxn" "$src" "$survivors")
+  _dsearch_matches=("${top[@]}"); _dsearch_cand_stack[$qlen]="$survivors"
+  _dsearch_prev_query="$query"; _dsearch_pin_jumps "$query" "$maxn"
+}
+
+_dsearch_hl() { printf '%s' "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-$'\e[30;46m'}}"; }
+_dsearch_rst() { printf '%s' "${DNAV_RESET:-${RESET:-$'\e[0m'}}"; }
+_dsearch_cols() { local w=${cols:-${COLUMNS:-80}}; (( w < 8 )) && w=80; printf '%s' "$w"; }
+
+_dsearch_display_path() {
+  local p="$1" maxw="${2:-0}" home="$HOME"
+  [[ $p == "$home" || $p == "$home"/* ]] && p="~${p#$home}"
+  if (( maxw > 0 && ${#p} > maxw )); then p="…${p: -$((maxw - 1))}"; fi
+  printf '%s\n' "$p"
+}
+
+_dsearch_fit() {
+  local s="$1" w="$2"
+  if (( ${#s} > w )); then
+    if (( w <= 1 )); then s="${s:0:w}"; else s="…${s: -$((w - 1))}"; fi
+  fi
+  printf "%-${w}s" "$s"
+}
+
+_dsearch_paint_row() {
+  local mode="$1" text="${2:-}" hl rst maxw inner
+  maxw="$(_dsearch_cols)"; hl="$(_dsearch_hl)"; rst="$(_dsearch_rst)"
+  case $mode in
+    bar)
+      local label=" DNav Search:" helpchip=" Help " count gap avail qshow
+      if (( ${#_dsearch_matches[@]} > 0 )) && [[ ${_dsearch_focus:-list} == list ]]; then
+        count=" $(( _dsearch_sel + 1 ))/${#_dsearch_matches[@]} "
+      else count=""; fi
+      avail=$(( maxw - ${#label} - 1 - ${#count} - ${#helpchip} )); (( avail < 1 )) && avail=1
+      qshow="$text"
+      if (( ${#qshow} > avail )); then
+        (( avail <= 1 )) && qshow="${qshow:0:avail}" || qshow="${qshow:0:$((avail-1))}…"
+      fi
+      gap=$(( maxw - ${#label} - 1 - ${#qshow} - ${#count} - ${#helpchip} )); (( gap < 0 )) && gap=0
+      printf "\r${hl}%s${rst} %s%*s%s" "$label" "$qshow" $gap "" "$count"
+      if [[ ${_dsearch_focus:-list} == help ]]; then printf "${hl}%s${rst}" "$helpchip"
+      else printf '%s' "$helpchip"; fi
+      printf '\e[K' ;;
+    sel) inner=$(( maxw - 2 )); (( inner < 1 )) && inner=1
+      printf "\r${hl}▶ %s${rst}" "$(_dsearch_fit "$text" $inner)" ;;
+    row) inner=$(( maxw - 2 )); (( inner < 1 )) && inner=1
+      printf "\r\e[2m  %s${rst}" "$(_dsearch_fit "$text" $inner)" ;;
+    help_row) printf "\r${hl}%-${maxw}s${rst}" "$(_dsearch_fit " $text" $maxw)" ;;
+    blank) printf "\r%*s" $maxw "" ;;
+  esac
+}
+
+_dsearch_draw() {
+  local query="$1" n p disp i leftover
+  printf '\e[?25l'; _dsearch_paint_row bar "$query"; n=0
+  if [[ ${_dsearch_view:-search} == help ]]; then
+    local -a hlines=("Type to fuzzy-find directories" "↑/↓ or Ctrl+N/P  move" "Enter  open" "Esc  leave" "Ctrl+U  clear" "Backspace  delete")
+    for p in "${hlines[@]}"; do printf '\n'; _dsearch_paint_row help_row "$p"; (( n++ )); done
+  else
+    for p in "${_dsearch_matches[@]}"; do
+      disp="$(_dsearch_display_path "$p")"; disp="${disp%$'\n'}"
+      printf '\n'
+      if [[ ${_dsearch_focus:-list} == list ]] && (( n == _dsearch_sel )); then _dsearch_paint_row sel "$disp"
+      else _dsearch_paint_row row "$disp"; fi
+      (( n++ ))
+    done
+  fi
+  leftover=$(( _dsearch_extra_lines - n ))
+  for (( i=0; i < leftover; i++ )); do printf '\n'; _dsearch_paint_row blank; done
+  (( leftover > 0 )) && printf "\e[%dA" $leftover
+  _dsearch_extra_lines=$n; (( n > 0 )) && printf "\e[%dA" $n; printf '\r'
+}
+
+_dsearch_erase_ui() {
+  local i maxw; maxw="$(_dsearch_cols)"; printf '\e[?25l'
+  printf "\r%*s" $maxw ""
+  for (( i=0; i < _dsearch_extra_lines; i++ )); do printf '\n'; _dsearch_paint_row blank; done
+  (( _dsearch_extra_lines > 0 )) && printf "\e[%dA" $_dsearch_extra_lines
+  printf "\r%*s\r" $maxw ""; _dsearch_extra_lines=0
+}
+
+_dsearch_sel_up() {
+  [[ ${_dsearch_view:-search} == search ]] || return 1
+  if [[ ${_dsearch_focus:-list} == help ]]; then _dsearch_focus=list; _dsearch_draw "$_dsearch_q"; return 0; fi
+  (( ${#_dsearch_matches[@]} && _dsearch_sel > 0 )) || return 1
+  (( _dsearch_sel-- )); _dsearch_draw "$_dsearch_q"
+}
+_dsearch_sel_down() {
+  [[ ${_dsearch_view:-search} == search ]] || return 1
+  if [[ ${_dsearch_focus:-list} == help ]]; then _dsearch_focus=list; _dsearch_draw "$_dsearch_q"; return 0; fi
+  (( ${#_dsearch_matches[@]} && _dsearch_sel < ${#_dsearch_matches[@]} - 1 )) || return 1
+  (( _dsearch_sel++ )); _dsearch_draw "$_dsearch_q"
+}
+
+_dsearch_refresh_query() {
+  _dsearch_sel=0; _dsearch_focus=list
+  [[ ${_dsearch_view:-search} == help ]] && _dsearch_view=search
+  _dsearch_apply_filter "$_dsearch_q" 10; _dsearch_draw "$_dsearch_q"
+}
+
+_dsearch_start_for_dfile() {
+  _DSEARCH_FOR_DFILE=1; DNAV_SEARCH_RESULT=""
+  _dsearch_start; local ret=$?; _DSEARCH_FOR_DFILE=0; return $ret
+}
+
+_dsearch_start() {
+  local key key2 key3 target
+  _DSEARCH_PUSHBACK=""; _dsearch_q=""; _dsearch_matches=()
+  _dsearch_sel=0; _dsearch_extra_lines=0; _dsearch_prev_query=""
+  _dsearch_cand_stack=(); _dsearch_focus=list; _dsearch_view=search
+  _dsearch_tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/dnav-dsearch.XXXXXX") || { printf '\r\e[2K'; printf '\e[?25l'; return 1; }
+  printf '\r\e[2K\e[?25l'
+  if ! _dsearch_ensure_index; then
+    _dsearch_session_cleanup; printf '\r\e[2K'; printf '\e[?25l'; return 1
+  fi
+  printf '\r\e[2K'; _dsearch_extra_lines=0; _dsearch_draw "$_dsearch_q"
+  while true; do
+    (( ${DNAV_ABORT:-0} )) && return 130
+    if [[ -n $_DSEARCH_PUSHBACK ]]; then key="$_DSEARCH_PUSHBACK"; _DSEARCH_PUSHBACK=""
+    else IFS= read -r -n 1 -s key || true; fi
+    (( ${DNAV_ABORT:-0} )) && return 130
+    if [[ $key == $'\x03' ]]; then
+      if declare -f _dnav_abort >/dev/null 2>&1; then _dnav_abort
+      else _dsearch_erase_ui; _dsearch_session_cleanup; DNAV_ABORT=1; printf '\e[?25h'; fi
+      return 130
+    fi
+    case $key in
+      $'\e')
+        if IFS= read -r -n 1 -s -t 0.05 key2 2>/dev/null; then
+          if [[ $key2 == '[' ]]; then
+            IFS= read -r -n 1 -s key3
+            case $key3 in
+              A) _dsearch_sel_up ;; B) _dsearch_sel_down ;;
+              C) [[ ${_dsearch_view:-search} == search ]] && { _dsearch_focus=help; _dsearch_draw "$_dsearch_q"; } ;;
+              D) [[ ${_dsearch_view:-search} == search && ${_dsearch_focus:-list} == help ]] && { _dsearch_focus=list; _dsearch_draw "$_dsearch_q"; } ;;
+            esac
+          fi
+        else
+          if [[ ${_dsearch_view:-search} == help ]]; then
+            _dsearch_view=search; _dsearch_focus=list; _dsearch_draw "$_dsearch_q"
+          else
+            _dsearch_erase_ui; _dsearch_session_cleanup; printf '\e[?25l'; return 1
+          fi
+        fi ;;
+      $'\n'|$'\r'|'')
+        [[ ${_dsearch_view:-search} == help ]] && continue
+        if [[ ${_dsearch_focus:-list} == help ]]; then
+          _dsearch_view=help; _dsearch_focus=help; _dsearch_draw "$_dsearch_q"; continue
+        fi
+        (( ${#_dsearch_matches[@]} == 0 )) && continue
+        target="${_dsearch_matches[_dsearch_sel]}"
+        _dsearch_erase_ui; _dsearch_session_cleanup; printf '\e[?25l'
+        if [[ -d $target ]]; then
+          if (( _DSEARCH_FOR_DFILE )); then
+            cd -- "$target" 2>/dev/null || true
+            command -v realpath >/dev/null 2>&1 && DNAV_SEARCH_RESULT="$(realpath -m -- "$target" 2>/dev/null)" || DNAV_SEARCH_RESULT="$target"
+            return 0
+          fi
+          cd -- "$target" || { printf 'Could not change to %s\n' "$target"; declare -f _dnav_cleanup >/dev/null 2>&1 && _dnav_cleanup; return 0; }
+          declare -f _dnav_success_bar >/dev/null 2>&1 && _dnav_success_bar "$(pwd -P 2>/dev/null || pwd)" || printf '%s\n' "$(pwd -P 2>/dev/null || pwd)"
+          declare -f _dnav_cleanup >/dev/null 2>&1 && _dnav_cleanup
+          declare -f _dnav_maybe_ls >/dev/null 2>&1 && _dnav_maybe_ls
+          return 0
+        else
+          (( _DSEARCH_FOR_DFILE )) && return 1
+          printf 'Folder not found: %s\n' "$target"
+          declare -f _dnav_cleanup >/dev/null 2>&1 && _dnav_cleanup; return 0
+        fi ;;
+      $'\177'|$'\b')
+        [[ ${_dsearch_view:-search} == help ]] && continue
+        if (( ${#_dsearch_q} > 0 )); then
+          _dsearch_q="${_dsearch_q:0:$((${#_dsearch_q}-1))}"; _dsearch_refresh_query
+        fi ;;
+      $'\x15')
+        [[ ${_dsearch_view:-search} == help ]] && continue
+        _dsearch_q=""; _dsearch_sel=0; _dsearch_matches=(); _dsearch_prev_query=""
+        _dsearch_focus=list; _dsearch_draw "$_dsearch_q" ;;
+      $'\x10') _dsearch_sel_up ;;
+      $'\x0e') _dsearch_sel_down ;;
+      [[:print:]])
+        [[ ${_dsearch_view:-search} == help ]] && _dsearch_view=search
+        _dsearch_focus=list; _dsearch_q+="$key"; _dsearch_refresh_query ;;
+    esac
+  done
+}
