@@ -10,6 +10,15 @@ If you like the concept and would use it except that AI was used in making it th
 
 It was made for my own use, I just made it public in case someone else found it useful.
 
+The primate module dnav gives the ability to jump to favorited spots with a minimal GUI.
+![alt text](IMG_5335.jpeg)
+
+An optional secondary module dsearch gives the ability to search for and jump to locations.
+![alt text](IMG_5336.jpeg)
+
+The optional module dfile adds a minimal file explorer that lets you jump to locations and into editing if you have one configured for your system.
+![alt text](IMG_5337.jpeg)
+
 ## Install
 
 ```bash
