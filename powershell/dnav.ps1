@@ -1,30 +1,26 @@
 # dnav.ps1 - folder navigation bar for PowerShell (Windows)
 #
-# Dot-source into your session:
-#   . .\powershell\dnav.ps1
-#   dnav
+# SentinelOne-friendly core: no Add-Type, no kernel32 P/Invoke.
+# Keyboard via [Console]::ReadKey only. Optional modules (dfile/dsearch)
+# are NOT auto-loaded — they use lower-level console APIs and may be noisier.
 #
-# Keys: Left/Right or h/l  move | Enter open | Esc cancel | / or s  search | f  files
+# Dot-source:
+#   . .\powershell\dnav.ps1          # loads djump/dfavorite automatically
+#   . .\powershell\dsearch.ps1       # optional, higher EDR signal
+#   . .\powershell\dfile.ps1         # optional, higher EDR signal
 #
-# Config (created on first run):
-#   $env:APPDATA\dnav\folders   - Label  Path  (one per line)
-#   $env:APPDATA\dnav\config    - simple key = value settings
+# Keys: Left/Right or h/l  move | Enter open | Esc cancel
+#       / or s  search (if dsearch loaded) | f  files (if dfile loaded)
 
-# Auto-load sibling modules from the same directory if present
+# Auto-load only djump (low signal: file I/O + functions, no P/Invoke)
 $__dnavDir = $PSScriptRoot
 if (-not $__dnavDir -and $MyInvocation.MyCommand.Path) {
     $__dnavDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 if ($__dnavDir) {
-    foreach ($__pair in @(
-        @{ File = 'dsearch.ps1'; Cmd = 'dsearch' },
-        @{ File = 'dfile.ps1';   Cmd = 'dfile' },
-        @{ File = 'djump.ps1';   Cmd = 'djump' }
-    )) {
-        $__p = Join-Path $__dnavDir $__pair.File
-        if ((Test-Path -LiteralPath $__p) -and -not (Get-Command $__pair.Cmd -ErrorAction SilentlyContinue)) {
-            . $__p
-        }
+    $__djumpPath = Join-Path $__dnavDir 'djump.ps1'
+    if ((Test-Path -LiteralPath $__djumpPath) -and -not (Get-Command djump -ErrorAction SilentlyContinue)) {
+        . $__djumpPath
     }
 }
 
@@ -72,7 +68,7 @@ function Expand-DnavPath {
     if ($Path -eq '~') {
         return $env:USERPROFILE
     }
-    if ($Path.StartsWith('~/') -or $Path.StartsWith('~\') ) {
+    if ($Path.StartsWith('~/') -or $Path.StartsWith('~\')) {
         return (Join-Path $env:USERPROFILE $Path.Substring(2))
     }
     return [Environment]::ExpandEnvironmentVariables($Path)
@@ -144,52 +140,21 @@ function Show-DnavAbout {
     Write-Host '  Left/Right or h/l   move on the bar'
     Write-Host '  Enter               open selected folder'
     Write-Host '  Enter on About      this help'
-    Write-Host '  / or s              fuzzy directory search'
-    Write-Host '  f                   file explorer'
     Write-Host '  Esc                 cancel / leave'
+    if (Get-Command dsearch -ErrorAction SilentlyContinue) {
+        Write-Host '  / or s              fuzzy directory search (optional module)'
+    }
+    if (Get-Command dfile -ErrorAction SilentlyContinue) {
+        Write-Host '  f                   file explorer (optional module)'
+    }
+    Write-Host '  dKEY / djump        jump aliases (dfavorite to manage)'
     Write-Host '  Config dir          ' -NoNewline
     Write-Host (Get-DnavConfigDir) -ForegroundColor DarkGray
-    Write-Host '  Edit folders        notepad (Get-DnavConfigDir)\folders'
     Write-Host ''
 }
 
 function dnav {
-    if (-not ([System.Management.Automation.PSTypeName]'ConsoleInput').Type) {
-        Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class ConsoleInput {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetStdHandle(int nStdHandle);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool ReadConsoleInput(IntPtr hConsoleInput, ref INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
-    public const int STD_INPUT_HANDLE = -10;
-    public const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
-    public const uint ENABLE_EXTENDED_FLAGS = 0x0080;
-    [StructLayout(LayoutKind.Sequential)]
-    public struct COORD { public short X; public short Y; }
-    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
-    public struct KEY_EVENT_RECORD {
-        [FieldOffset(0)] public bool bKeyDown;
-        [FieldOffset(4)] public short wRepeatCount;
-        [FieldOffset(6)] public short wVirtualKeyCode;
-        [FieldOffset(8)] public short wVirtualScanCode;
-        [FieldOffset(10)] public char UnicodeChar;
-        [FieldOffset(12)] public int dwControlKeyState;
-    }
-    [StructLayout(LayoutKind.Explicit)]
-    public struct INPUT_RECORD {
-        [FieldOffset(0)] public short EventType;
-        [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent;
-    }
-}
-"@
-    }
-
+    # No Add-Type / kernel32 — use managed [Console]::ReadKey only.
     $items = @(Get-DnavFolders)
     $brand = Get-DnavBrand
     $selected = 0
@@ -209,12 +174,6 @@ public static class ConsoleInput {
         $selected = 0
     }
 
-    $handle = [ConsoleInput]::GetStdHandle([ConsoleInput]::STD_INPUT_HANDLE)
-    $mode = 0
-    [ConsoleInput]::GetConsoleMode($handle, [ref]$mode) | Out-Null
-    $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
-    [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
-
     if ([Console]::BufferHeight -lt 3) {
         Write-Host 'Console buffer too small for dnav.' -ForegroundColor Red
         return
@@ -223,9 +182,6 @@ public static class ConsoleInput {
     [Console]::WriteLine()
     [Console]::WriteLine()
     $startRow = [Console]::CursorTop - 2
-
-    $record = New-Object ConsoleInput+INPUT_RECORD
-    $eventsRead = 0
 
     function Clear-Bar {
         $winW = [Console]::WindowWidth
@@ -286,28 +242,28 @@ public static class ConsoleInput {
         }
     }
 
+    $prevVisible = [Console]::CursorVisible
     try {
+        [Console]::CursorVisible = $false
         Redraw
+
         while ($true) {
-            [ConsoleInput]::ReadConsoleInput($handle, [ref]$record, 1, [ref]$eventsRead) | Out-Null
-            if ($record.EventType -ne 1) { continue }
-            if (-not $record.KeyEvent.bKeyDown) { continue }
+            $keyInfo = [Console]::ReadKey($true)
+            $key = $keyInfo.Key
+            $ch = $keyInfo.KeyChar
 
-            $vk = $record.KeyEvent.wVirtualKeyCode
-            $ch = $record.KeyEvent.UnicodeChar
-
-            switch ($vk) {
-                37 {
+            switch ($key) {
+                ([ConsoleKey]::LeftArrow) {
                     if ($selected -gt 0) { $selected--; Redraw }
                 }
-                39 {
+                ([ConsoleKey]::RightArrow) {
                     if ($selected -lt ($items.Count - 1)) { $selected++; Redraw }
                 }
-                13 {
+                ([ConsoleKey]::Enter) {
                     Navigate-Selected
                     return
                 }
-                27 {
+                ([ConsoleKey]::Escape) {
                     Clear-Bar
                     return
                 }
@@ -318,63 +274,50 @@ public static class ConsoleInput {
                     elseif ($ch -eq 'l' -or $ch -eq 'L') {
                         if ($selected -lt ($items.Count - 1)) { $selected++; Redraw }
                     }
-                    elseif ($ch -eq '/' -or $ch -eq 's' -or $ch -eq 'S') {
-                        if ($hasSearch) {
-                            Clear-Bar
-                            [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
-                            $navigated = dsearch
-                            if ($navigated) { return }
-                            $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
-                            [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
-                            [Console]::WriteLine()
-                            [Console]::WriteLine()
-                            $startRow = [Console]::CursorTop - 2
-                            Redraw
-                        }
+                    elseif (($ch -eq '/' -or $ch -eq 's' -or $ch -eq 'S') -and $hasSearch) {
+                        Clear-Bar
+                        $navigated = dsearch
+                        if ($navigated) { return }
+                        [Console]::WriteLine()
+                        [Console]::WriteLine()
+                        $startRow = [Console]::CursorTop - 2
+                        Redraw
                     }
-                    elseif ($ch -eq 'f' -or $ch -eq 'F') {
-                        if ($hasFiles) {
-                            Clear-Bar
-                            [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
-                            $fpath = $null
-                            $item = $items[$selected]
-                            if ($item.Path -and (Test-Path -LiteralPath $item.Path -PathType Container)) {
-                                $fpath = $item.Path
-                            }
-                            if (-not $fpath) { $fpath = (Get-Location).Path }
-                            $navigated = dfile -StartPath $fpath
-                            if ($navigated) { return }
-                            $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
-                            [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
-                            [Console]::WriteLine()
-                            [Console]::WriteLine()
-                            $startRow = [Console]::CursorTop - 2
-                            Redraw
+                    elseif (($ch -eq 'f' -or $ch -eq 'F') -and $hasFiles) {
+                        Clear-Bar
+                        $fpath = $null
+                        $item = $items[$selected]
+                        if ($item.Path -and (Test-Path -LiteralPath $item.Path -PathType Container)) {
+                            $fpath = $item.Path
                         }
+                        if (-not $fpath) { $fpath = (Get-Location).Path }
+                        $navigated = dfile -StartPath $fpath
+                        if ($navigated) { return }
+                        [Console]::WriteLine()
+                        [Console]::WriteLine()
+                        $startRow = [Console]::CursorTop - 2
+                        Redraw
                     }
                 }
             }
         }
     }
     finally {
-        [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
+        [Console]::CursorVisible = $prevVisible
     }
 }
 
 function dhelp {
-    Write-Host 'DNav (PowerShell)' -ForegroundColor Cyan
+    Write-Host 'DNav (PowerShell) - core' -ForegroundColor Cyan
     Write-Host '  dnav              open the folder bar'
-    Write-Host '  dsearch           fuzzy directory search'
-    Write-Host '  dfile             file explorer'
     Write-Host '  djump / dKEY      jump aliases'
     Write-Host '  dfavorite         manage jumps'
-    Write-Host '  dsearch-reindex   rebuild directory index'
     Write-Host '  dhelp             this text'
+    Write-Host ''
+    Write-Host 'Optional (higher EDR signal - load only if needed):' -ForegroundColor DarkYellow
+    Write-Host '  . .\powershell\dsearch.ps1'
+    Write-Host '  . .\powershell\dfile.ps1'
     Write-Host "  config dir        $(Get-DnavConfigDir)"
-    if (Get-Command Get-DsearchCacheDir -ErrorAction SilentlyContinue) {
-        Write-Host "  cache dir         $(Get-DsearchCacheDir)"
-    }
-    Write-Host '  folders file      (Get-DnavConfigDir)\folders'
 }
 
 Initialize-DnavConfig
