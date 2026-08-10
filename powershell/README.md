@@ -1,35 +1,62 @@
 # PowerShell port of DNav
 
-Windows-first folder navigation bar.
+Windows-first folder navigation + fuzzy directory search.
 
 ## Try it
 
 ```powershell
 cd path\to\DNav
-. .\powershell\dnav.ps1
+. .\powershell\dnav.ps1      # auto-loads dsearch.ps1 if present
 dnav
 ```
 
-To load on every shell, add the dot-source line to your `$PROFILE`.
+Or search directly:
 
-## Keys
+```powershell
+dsearch
+dsearch-reindex   # force rebuild index
+```
+
+Add the dot-source line to `$PROFILE` to load on every shell.
+
+## Keys (dnav)
 
 | Key | Action |
 |-----|--------|
 | Left / Right or `h` / `l` | Move selection |
 | Enter | Open folder (or About) |
+| `/` or `s` | Open fuzzy search |
 | Esc | Cancel |
 
-## Config
+## Keys (dsearch)
 
-Created on first run under `%APPDATA%\dnav` (or `$env:DNAV_CONFIG_DIR`):
+| Key | Action |
+|-----|--------|
+| Type | Filter directories |
+| Up / Down or Ctrl+P / Ctrl+N | Move selection |
+| Enter | Jump to folder |
+| Backspace | Delete character |
+| Ctrl+U | Clear query |
+| Esc | Cancel |
 
-- `folders` - bar labels and paths (`Label  Path`, `~` expands)
-- `config` - `brand = DNav`, etc.
+## Config / cache
+
+| Path | Purpose |
+|------|---------|
+| `%APPDATA%\dnav\folders` | Bar labels + paths |
+| `%APPDATA%\dnav\config` | `brand`, etc. |
+| `%LOCALAPPDATA%\dnav\dirs.idx` | Search index (24h TTL) |
+
+Override search roots:
+
+```powershell
+$env:DNAV_SEARCH_ROOTS = "C:\Users\you;D:\Projects"
+dsearch-reindex
+```
 
 ## Status
 
-- **Done:** `dnav` folder bar, config, About, success path bar, keyboard only
-- **Not yet:** dfile, dsearch, djump / dKEY favorites
+- **Done:** `dnav` bar, `dsearch` + index, About, success bar
+- **Not yet:** dfile, djump / dKEY favorites
 
-Mouse support from the original prototype was dropped on purpose.
+Mouse support was intentionally omitted.
