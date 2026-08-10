@@ -2,6 +2,14 @@
 
 A zsh navigation helper: folder bar, file explorer, fuzzy search, and shell jump aliases (`dhome`, `dproj`, …).
 
+Note: I made this for myself, I used AI heavily since it’s a personal project and I cared about rapid dev more than code quality. 
+
+If you hate AI, cool, don’t use it.
+
+If you like the concept and would use it except that AI was used in making it then cool, feel free to rewrite it. 
+
+It was made for my own use, I just made it public in case someone else found it useful.
+
 ## Install
 
 ```bash
