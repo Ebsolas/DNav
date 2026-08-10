@@ -6,14 +6,22 @@
 #   Documents\WindowsPowerShell\dnav\jumps  (package install)
 #
 # Commands:
-#   djump [-r|-l|KEY]     reload / list / go
-#   dhome, ddoc, ...      auto-generated from keys
+#   djump [-Reload|-List|KEY]   reload / list / go
+#   dhome, ddoc, ...            auto-generated from keys
 #   dfavorite add|edit|remove|list
 
 $script:DjumpMap = @{}
 $script:DjumpKeys = [System.Collections.Generic.List[string]]::new()
 $script:DjumpLoaded = $false
 $script:DjumpInstalled = [System.Collections.Generic.List[string]]::new()
+
+# Capture install dir at source time ($PSScriptRoot only reliable while loading)
+$script:DjumpSourceDir = $null
+if ($PSScriptRoot) {
+    $script:DjumpSourceDir = $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+    $script:DjumpSourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
 
 function Get-DjumpPackageDir {
     if ($script:DnavInstallDir -and (Test-Path -LiteralPath $script:DnavInstallDir)) {
@@ -22,11 +30,10 @@ function Get-DjumpPackageDir {
     if ($env:DNAV_HOME -and (Test-Path -LiteralPath $env:DNAV_HOME)) {
         return [System.IO.Path]::GetFullPath($env:DNAV_HOME)
     }
-    if ($PSScriptRoot) { return $PSScriptRoot }
-    if ($MyInvocation.MyCommand.Path) {
-        $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-        if ($here) { return $here }
+    if ($script:DjumpSourceDir -and (Test-Path -LiteralPath $script:DjumpSourceDir)) {
+        return $script:DjumpSourceDir
     }
+    if ($PSScriptRoot) { return $PSScriptRoot }
     $docs = [Environment]::GetFolderPath('MyDocuments')
     if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
     return (Join-Path $docs 'WindowsPowerShell\dnav')
@@ -37,7 +44,6 @@ function Get-DjumpUserPath {
     $cfg = if ($env:DNAV_CONFIG_DIR) {
         $env:DNAV_CONFIG_DIR
     } else {
-        # Same as dnav: Documents\WindowsPowerShell\dnav\config
         Join-Path (Get-DjumpPackageDir) 'config'
     }
     if (-not (Test-Path -LiteralPath $cfg)) {
@@ -101,6 +107,7 @@ function Test-DjumpLabel {
 function Uninstall-DjumpCommands {
     foreach ($cmd in @($script:DjumpInstalled)) {
         Remove-Item -Path "Function:\$cmd" -ErrorAction SilentlyContinue
+        Remove-Item -Path "Function:global:\$cmd" -ErrorAction SilentlyContinue
     }
     $script:DjumpInstalled.Clear()
 }
@@ -111,7 +118,7 @@ function Install-DjumpCommands {
         if (-not (Test-DjumpLabel $key)) { continue }
         $cmdName = "d$key"
         $scriptBlock = [scriptblock]::Create("Invoke-DjumpGoto -Key '$key'")
-        Set-Item -Path "Function:global:$cmdName" -Value $scriptBlock
+        Set-Item -Path "Function:global:$cmdName" -Value $scriptBlock -Force
         $script:DjumpInstalled.Add($cmdName) | Out-Null
     }
 }
@@ -233,56 +240,68 @@ function Get-DjumpMatchKeys {
 }
 
 function djump {
+    [CmdletBinding(DefaultParameterSetName = 'Go')]
     param(
-        [Parameter(Position = 0)]
-        [string]$Arg = ''
+        [Parameter(Position = 0, ParameterSetName = 'Go')]
+        [string]$Key,
+
+        [Parameter(ParameterSetName = 'List')]
+        [Alias('l')]
+        [switch]$List,
+
+        [Parameter(ParameterSetName = 'Reload')]
+        [Alias('r')]
+        [switch]$Reload,
+
+        [Parameter(ParameterSetName = 'Help')]
+        [Alias('h')]
+        [switch]$Help
     )
 
-    switch -Regex ($Arg) {
-        '^(-r|--reload)$' {
-            $script:DjumpLoaded = $false
-            if (Import-DjumpTable) {
-                Write-Host "djump: loaded $($script:DjumpKeys.Count) jumps ($($script:DjumpInstalled.Count) commands)"
-                return
-            }
-            Write-Host "djump: failed to load $(Get-DjumpDataPath)" -ForegroundColor Red
-            return
-        }
-        '^(-l|--list)?$' {
-            Ensure-Djump
-            if ($script:DjumpKeys.Count -eq 0) {
-                Write-Host "djump: no jumps file at $(Get-DjumpDataPath)" -ForegroundColor DarkYellow
-                return
-            }
-            foreach ($k in $script:DjumpKeys) {
-                Write-Host ("d{0,-14}  {1}" -f $k, $script:DjumpMap[$k])
-            }
-            return
-        }
-        '^(-h|--help)$' {
-            Write-Host 'usage: djump [-r|-l|KEY]'
-            Write-Host '  -r, --reload   reload jumps file and dKEY commands'
-            Write-Host '  -l, --list     list dKEY -> path'
-            Write-Host '  KEY            cd to jump (also: dKEY e.g. dhome)'
-            Write-Host 'favorites: dfavorite add|edit|remove|list'
-            return
-        }
-        default {
-            if ($Arg) {
-                [void](Invoke-DjumpGoto -Key $Arg)
-            } else {
-                djump -Arg '-l'
-            }
-        }
+    if ($Help) {
+        Write-Host 'usage: djump [-Reload|-List|KEY]'
+        Write-Host '  -r, -Reload   reload jumps file and dKEY commands'
+        Write-Host '  -l, -List     list dKEY -> path'
+        Write-Host '  KEY           cd to jump (also: dKEY e.g. dhome)'
+        Write-Host 'favorites: dfavorite add|edit|remove|list'
+        return
     }
+
+    if ($Reload) {
+        $script:DjumpLoaded = $false
+        if (Import-DjumpTable) {
+            Write-Host "djump: loaded $($script:DjumpKeys.Count) jumps ($($script:DjumpInstalled.Count) commands)"
+            return
+        }
+        Write-Host "djump: failed to load $(Get-DjumpDataPath)" -ForegroundColor Red
+        return
+    }
+
+    if ($List -or [string]::IsNullOrEmpty($Key)) {
+        Ensure-Djump
+        if ($script:DjumpKeys.Count -eq 0) {
+            Write-Host "djump: no jumps file at $(Get-DjumpDataPath)" -ForegroundColor DarkYellow
+            Write-Host "djump: package dir $(Get-DjumpPackageDir)" -ForegroundColor DarkGray
+            return
+        }
+        foreach ($k in $script:DjumpKeys) {
+            Write-Host ("d{0,-14}  {1}" -f $k, $script:DjumpMap[$k])
+        }
+        return
+    }
+
+    [void](Invoke-DjumpGoto -Key $Key)
 }
 
 function dfavorite {
+    [CmdletBinding()]
     param(
         [Parameter(Position = 0)]
         [string]$Command = '',
+
         [Parameter(Position = 1)]
         [string]$Label = '',
+
         [Parameter(Position = 2)]
         [string]$Path = ''
     )
