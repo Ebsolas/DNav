@@ -234,6 +234,13 @@ _dfile_enter() {
     cd -- "$start" 2>/dev/null || true
   fi
 
+  # If bg index still running, show Indexing... N then clear before explorer draws
+  if (( $+functions[_dsearch_index_running] )) && _dsearch_index_running; then
+    printf "\r\e[2K\e[?25l"
+    (( $+functions[_dsearch_ensure_index] )) && _dsearch_ensure_index
+    printf "\r\e[2K"
+  fi
+
   _dfile_refresh() {
     local out rc
     cwd="${PWD:A}"

@@ -55,6 +55,10 @@ source ~/.local/share/dnav/dnav
 | `dconfig -e` | Edit config files in `$EDITOR` |
 | `djump -l` | List jump aliases |
 | `dhome`, `dproj`, … | Jump without opening the TUI |
+| `dfavorite add LABEL [PATH]` | Add a jump (default path: `$PWD`) |
+| `dfavorite edit LABEL [PATH]` | Update a jump path |
+| `dfavorite remove LABEL` | Remove a jump + `dLABEL` command |
+| `dfavorite list` | List favorites |
 
 ### In the TUI
 

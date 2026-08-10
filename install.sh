@@ -114,6 +114,9 @@ show_hidden = 0
 # Animate the expand-to-path success bar (0 = instant bar)
 success_anim = 1
 
+# 1 = full line redraw every move; 0 = partial chip repaint
+full_redraw = 0
+
 # dsearch roots (space-separated). Empty = built-in defaults
 # search_roots = $HOME /opt /mnt
 EOF
@@ -122,8 +125,7 @@ EOF
 write_default_folders() {
   cat > "$CONFIG_DIR/folders" <<'EOF'
 # Main dnav bar — one entry per line:  Label   path
-# Use a lone Label (or path "-") for About (opens help/settings).
-# Paths: ~ expands.
+# Paths: ~ expands. About is always added by dnav (not listed here).
 #
 # Label     path
 Home        ~
@@ -134,7 +136,6 @@ Projects    ~/Projects
 Config      ~/.config
 Apps        ~/Apps
 Share       ~/.local/share
-About
 EOF
 }
 

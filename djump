@@ -8,12 +8,13 @@
 #
 # API:
 #   _djump_available
-#   _djump_load
+#   _djump_load / _djump_save
 #   _djump_resolve KEY     → prints absolute path, return 0/1
 #   _djump_list_keys
 #   _djump_match_query S   → keys matching s / ds (for typeahead / search pin)
 #   _djump_goto KEY        → cd to jump (for shell cmds)
 #   djump [-r|-l|KEY]      → reload / list / go
+#   dfavorite add|edit|remove|list  → manage jump favorites
 #
 # When sourced (via dnav), each jump key is also installed as a shell command
 # `dKEY` (e.g. key "home" → `dhome`) so you can jump without opening dnav.
@@ -36,6 +37,69 @@ _djump_data_path() {
   else
     print -r -- "${0:A:h}/jumps"
   fi
+}
+
+# Path we write favorites to (always user config, not package tree).
+_djump_user_path() {
+  if [[ -n ${DNAV_JUMPS:-} ]]; then
+    print -r -- "$DNAV_JUMPS"
+    return
+  fi
+  local cfg="${DNAV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dnav}"
+  mkdir -p -- "$cfg" 2>/dev/null || true
+  print -r -- "$cfg/jumps"
+}
+
+# Compact path for storage (~ for $HOME). Never treats bare "~" as a relative name.
+_djump_store_path() {
+  local path="$1" store
+  if [[ $path == '~' ]]; then
+    store="$HOME"
+  elif [[ $path == '~/'* ]]; then
+    store="${path/#\~/$HOME}"
+  elif [[ $path == /* ]]; then
+    store="${path:A}"
+  else
+    # relative → absolute from $PWD
+    store="$(cd -- "$PWD" && cd -- "$path" 2>/dev/null && pwd -P)" || store="${PWD:A}/$path"
+  fi
+  if [[ $store == "$HOME" ]]; then
+    store="~"
+  elif [[ $store == "$HOME/"* ]]; then
+    store="~${store#$HOME}"
+  fi
+  print -r -- "$store"
+}
+
+# Persist current map to the user jumps file and reinstall dKEY commands.
+_djump_save() {
+  local f k path
+  f="$(_djump_user_path)"
+  {
+    print -r -- "# djump table — key becomes dKEY (home → dhome)"
+    print -r -- "# Format:  key   path"
+    print -r -- "# Managed by dfavorite / dnav Settings / hand-edit"
+    print -r -- "#"
+    for k in "${_DJUMP_KEYS[@]}"; do
+      path="${_DJUMP_MAP[$k]}"
+      [[ -n $path ]] || continue
+      print -r -- "$k  $(_djump_store_path "$path")"
+    done
+  } > "$f"
+  # Future loads should read the user file
+  _DJUMP_LOADED=0
+  _djump_load 2>/dev/null || {
+    # load may fail only if empty; still install what we have
+    _DJUMP_LOADED=1
+    _djump_install_cmds
+  }
+  return 0
+}
+
+# Validate jump label (must form a valid dKEY function name body).
+_djump_valid_label() {
+  local key="${1#d}"
+  [[ $key =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]]
 }
 
 # Remove previously installed dKEY shell functions.
@@ -218,10 +282,139 @@ djump() {
       print -r -- "  -r, --reload   reload jumps file and dKEY commands"
       print -r -- "  -l, --list     list dKEY → path"
       print -r -- "  KEY            cd to jump (also: dKEY e.g. dhome)"
+      print -r -- "favorites: dfavorite add|edit|remove|list"
       return 0
       ;;
     *)
       _djump_goto "$1"
+      ;;
+  esac
+}
+
+# ── dfavorite — manage jump favorites from the shell ─────────────────────
+#   dfavorite add   LABEL [PATH]   add (PATH defaults to $PWD)
+#   dfavorite edit  LABEL [PATH]   change path (PATH defaults to $PWD)
+#   dfavorite remove LABEL         remove favorite + dKEY command
+#   dfavorite list                 list favorites
+#   dfavorite                      show help
+dfavorite() {
+  local cmd="${1:-}" label path dest k
+  local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
+  local rst="${DNAV_RESET:-\e[0m}"
+
+  _djump_ensure 2>/dev/null || {
+    # Empty table is fine — start fresh in user config
+    _DJUMP_MAP=()
+    _DJUMP_KEYS=()
+    _DJUMP_LOADED=1
+  }
+
+  case $cmd in
+    ''|-h|--help|help)
+      print -r -- "${hl} dfavorite ${rst}"
+      print -r -- "  dfavorite add LABEL [PATH]     add jump (default path: \$PWD)"
+      print -r -- "  dfavorite edit LABEL [PATH]    set path (default: \$PWD)"
+      print -r -- "  dfavorite remove LABEL         remove jump + dLABEL command"
+      print -r -- "  dfavorite list                 list favorites"
+      print -r -- ""
+      print -r -- "Examples:"
+      print -r -- "  dfavorite add work             # dwork → current directory"
+      print -r -- "  dfavorite add docs ~/Documents  # ddocs → ~/Documents"
+      print -r -- "  dfavorite edit work /other/path"
+      print -r -- "  dfavorite remove work"
+      return 0
+      ;;
+    list|-l|--list)
+      if (( $#_DJUMP_KEYS == 0 )); then
+        print -r -- "dfavorite: no favorites yet (try: dfavorite add <label>)"
+        return 0
+      fi
+      for k in "${_DJUMP_KEYS[@]}"; do
+        print -r -- "d${(r:14:)k}  ${_DJUMP_MAP[$k]}"
+      done
+      return 0
+      ;;
+    add)
+      # Label is stored without the dKEY prefix (add work → dwork). Do not strip
+      # a leading "d" from words like "docs".
+      label="$2"
+      path="${3:-$PWD}"
+      if [[ -z $label ]]; then
+        print -u2 -- "usage: dfavorite add LABEL [PATH]"
+        return 1
+      fi
+      if ! _djump_valid_label "$label"; then
+        print -u2 -- "dfavorite: invalid label '$label' (use letters, digits, _)"
+        return 1
+      fi
+      dest="$(_djump_expand "$path")"
+      if [[ ! -d $dest ]]; then
+        print -u2 -- "dfavorite: not a directory: $path"
+        return 1
+      fi
+      if [[ -n ${_DJUMP_MAP[$label]:-} ]]; then
+        print -u2 -- "dfavorite: '$label' exists (use: dfavorite edit $label …)"
+        return 1
+      fi
+      _DJUMP_KEYS+=("$label")
+      _DJUMP_MAP[$label]="$dest"
+      _djump_save
+      print -r -- "dfavorite: added d${label} → $(_djump_store_path "$dest")"
+      return 0
+      ;;
+    edit)
+      label="$2"
+      path="${3:-$PWD}"
+      if [[ -z $label ]]; then
+        print -u2 -- "usage: dfavorite edit LABEL [PATH]"
+        return 1
+      fi
+      # Allow dwork as well as work when editing/removing
+      if [[ -z ${_DJUMP_MAP[$label]:-} && $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then
+        label="${label#d}"
+      fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} ]]; then
+        print -u2 -- "dfavorite: unknown label '$label' (try: dfavorite list)"
+        return 1
+      fi
+      dest="$(_djump_expand "$path")"
+      if [[ ! -d $dest ]]; then
+        print -u2 -- "dfavorite: not a directory: $path"
+        return 1
+      fi
+      _DJUMP_MAP[$label]="$dest"
+      _djump_save
+      print -r -- "dfavorite: updated d${label} → $(_djump_store_path "$dest")"
+      return 0
+      ;;
+    remove|rm|delete|del)
+      label="$2"
+      if [[ -z $label ]]; then
+        print -u2 -- "usage: dfavorite remove LABEL"
+        return 1
+      fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} && $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then
+        label="${label#d}"
+      fi
+      if [[ -z ${_DJUMP_MAP[$label]:-} ]]; then
+        print -u2 -- "dfavorite: unknown label '$label'"
+        return 1
+      fi
+      unset "_DJUMP_MAP[$label]"
+      local -a nkeys
+      nkeys=()
+      for k in "${_DJUMP_KEYS[@]}"; do
+        [[ $k == "$label" ]] && continue
+        nkeys+=("$k")
+      done
+      _DJUMP_KEYS=("${nkeys[@]}")
+      _djump_save
+      print -r -- "dfavorite: removed d${label}"
+      return 0
+      ;;
+    *)
+      print -u2 -- "dfavorite: unknown command '$cmd' (try: dfavorite --help)"
+      return 1
       ;;
   esac
 }
