@@ -2,24 +2,26 @@
 #
 # Dot-source into your session:
 #   . .\powershell\dnav.ps1
-#   . .\powershell\dsearch.ps1   # optional fuzzy search
 #   dnav
 #
-# Keys: Left/Right or h/l  move | Enter open | Esc cancel | / or s  search
+# Keys: Left/Right or h/l  move | Enter open | Esc cancel | / or s  search | f  files
 #
 # Config (created on first run):
 #   $env:APPDATA\dnav\folders   - Label  Path  (one per line)
 #   $env:APPDATA\dnav\config    - simple key = value settings
 
-# Auto-load dsearch.ps1 from the same directory if present and not already loaded
+# Auto-load sibling modules from the same directory if present
 $__dnavDir = $PSScriptRoot
 if (-not $__dnavDir -and $MyInvocation.MyCommand.Path) {
     $__dnavDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 if ($__dnavDir) {
-    $__dsearchPath = Join-Path $__dnavDir 'dsearch.ps1'
-    if ((Test-Path -LiteralPath $__dsearchPath) -and -not (Get-Command dsearch -ErrorAction SilentlyContinue)) {
-        . $__dsearchPath
+    foreach ($__mod in @('dsearch.ps1', 'dfile.ps1')) {
+        $__p = Join-Path $__dnavDir $__mod
+        $__cmd = if ($__mod -eq 'dsearch.ps1') { 'dsearch' } else { 'dfile' }
+        if ((Test-Path -LiteralPath $__p) -and -not (Get-Command $__cmd -ErrorAction SilentlyContinue)) {
+            . $__p
+        }
     }
 }
 
@@ -140,6 +142,7 @@ function Show-DnavAbout {
     Write-Host '  Enter               open selected folder'
     Write-Host '  Enter on About      this help'
     Write-Host '  / or s              fuzzy directory search'
+    Write-Host '  f                   file explorer'
     Write-Host '  Esc                 cancel / leave'
     Write-Host '  Config dir          ' -NoNewline
     Write-Host (Get-DnavConfigDir) -ForegroundColor DarkGray
@@ -188,6 +191,7 @@ public static class ConsoleInput {
     $brand = Get-DnavBrand
     $selected = 0
     $hasSearch = [bool](Get-Command dsearch -ErrorAction SilentlyContinue)
+    $hasFiles  = [bool](Get-Command dfile -ErrorAction SilentlyContinue)
 
     try {
         $currentPath = [System.IO.Path]::GetFullPath((Get-Location).Path)
@@ -234,7 +238,11 @@ public static class ConsoleInput {
         [Console]::SetCursorPosition(0, $startRow)
         $header = " $brand "
         Write-Host $header -ForegroundColor Black -BackgroundColor Cyan -NoNewline
-        $hint = if ($hasSearch) { '  (h/l arrows  Enter  / search  Esc)' } else { '  (h/l arrows  Enter  Esc)' }
+        $hintParts = @('h/l arrows', 'Enter')
+        if ($hasSearch) { $hintParts += '/ search' }
+        if ($hasFiles)  { $hintParts += 'f files' }
+        $hintParts += 'Esc'
+        $hint = '  (' + ($hintParts -join '  ') + ')'
         Write-Host $hint -ForegroundColor DarkGray -NoNewline
         $clearLen = $winW - [Console]::CursorLeft
         if ($clearLen -gt 0) { [Console]::Write((' ' * $clearLen)) }
@@ -321,6 +329,26 @@ public static class ConsoleInput {
                             Redraw
                         }
                     }
+                    elseif ($ch -eq 'f' -or $ch -eq 'F') {
+                        if ($hasFiles) {
+                            Clear-Bar
+                            [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
+                            $fpath = $null
+                            $item = $items[$selected]
+                            if ($item.Path -and (Test-Path -LiteralPath $item.Path -PathType Container)) {
+                                $fpath = $item.Path
+                            }
+                            if (-not $fpath) { $fpath = (Get-Location).Path }
+                            $navigated = dfile -StartPath $fpath
+                            if ($navigated) { return }
+                            $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
+                            [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
+                            [Console]::WriteLine()
+                            [Console]::WriteLine()
+                            $startRow = [Console]::CursorTop - 2
+                            Redraw
+                        }
+                    }
                 }
             }
         }
@@ -334,6 +362,7 @@ function dhelp {
     Write-Host 'DNav (PowerShell)' -ForegroundColor Cyan
     Write-Host '  dnav              open the folder bar'
     Write-Host '  dsearch           fuzzy directory search'
+    Write-Host '  dfile             file explorer'
     Write-Host '  dsearch-reindex   rebuild directory index'
     Write-Host '  dhelp             this text'
     Write-Host "  config dir        $(Get-DnavConfigDir)"
