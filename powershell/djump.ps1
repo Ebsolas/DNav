@@ -2,7 +2,7 @@
 #
 # Data file (first match wins):
 #   $env:DNAV_JUMPS
-#   %APPDATA%\dnav\jumps
+#   Documents\WindowsPowerShell\dnav\config\jumps
 #   Documents\WindowsPowerShell\dnav\jumps  (package install)
 #
 # Commands:
@@ -36,10 +36,9 @@ function Get-DjumpUserPath {
     if ($env:DNAV_JUMPS) { return $env:DNAV_JUMPS }
     $cfg = if ($env:DNAV_CONFIG_DIR) {
         $env:DNAV_CONFIG_DIR
-    } elseif ($env:XDG_CONFIG_HOME) {
-        Join-Path $env:XDG_CONFIG_HOME 'dnav'
     } else {
-        Join-Path $env:APPDATA 'dnav'
+        # Same as dnav: Documents\WindowsPowerShell\dnav\config
+        Join-Path (Get-DjumpPackageDir) 'config'
     }
     if (-not (Test-Path -LiteralPath $cfg)) {
         New-Item -ItemType Directory -Path $cfg -Force | Out-Null
