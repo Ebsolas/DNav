@@ -1,0 +1,465 @@
+#!/usr/bin/env bash
+# dnav - quick navigation to common folders (bash port)
+#
+# Optional modules (place next to this file):
+#   dfile, dsearch, djump
+#
+# User config under ${XDG_CONFIG_HOME:-~/.config}/dnav/
+
+declare -g DNAV_DIR
+if [[ -n ${BASH_SOURCE[0]:-} ]]; then
+  DNAV_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+else
+  DNAV_DIR="$(pwd)"
+fi
+
+declare -g DNAV_CONFIG_DIR
+declare -g DNAV_CFG_COLOR_FG=30 DNAV_CFG_COLOR_BG=46
+declare -g DNAV_CFG_LS=0 DNAV_CFG_SHOW_HIDDEN=0
+declare -g DNAV_CFG_SUCCESS_ANIM=1 DNAV_CFG_FULL_REDRAW=0
+declare -g DNAV_CFG_BRAND=DNav
+declare -g DNAV_CFG_SEARCH_ROOTS=""
+declare -ga DNAV_FOLDER_NAMES=() DNAV_FOLDER_PATHS=()
+declare -g DNAV_HIGHLIGHT DNAV_RESET
+DNAV_HIGHLIGHT=$'\e[30;46m'
+DNAV_RESET=$'\e[0m'
+
+_dnav_config_dir() {
+  if [[ -n ${DNAV_CONFIG_DIR:-} ]]; then
+    printf '%s\n' "$DNAV_CONFIG_DIR"
+  else
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/dnav"
+  fi
+}
+
+_dnav_truthy() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_dnav_color_num() {
+  local kind="$1" name="${2,,}" n
+  if [[ $name =~ ^[0-9]+$ ]]; then printf '%s' "$name"; return 0; fi
+  case $kind in
+    fg)
+      case $name in
+        black) n=30 ;; red) n=31 ;; green) n=32 ;; yellow) n=33 ;;
+        blue) n=34 ;; magenta|purple) n=35 ;; cyan) n=36 ;; white) n=37 ;;
+        bright-black|gray|grey) n=90 ;; bright-red) n=91 ;; bright-green) n=92 ;;
+        bright-yellow) n=93 ;; bright-blue) n=94 ;; bright-magenta) n=95 ;;
+        bright-cyan) n=96 ;; bright-white) n=97 ;; *) n=30 ;;
+      esac ;;
+    bg)
+      case $name in
+        black) n=40 ;; red) n=41 ;; green) n=42 ;; yellow) n=43 ;;
+        blue) n=44 ;; magenta|purple) n=45 ;; cyan) n=46 ;; white) n=47 ;;
+        bright-black|gray|grey) n=100 ;; bright-red) n=101 ;; bright-green) n=102 ;;
+        bright-yellow) n=103 ;; bright-blue) n=104 ;; bright-magenta) n=105 ;;
+        bright-cyan) n=106 ;; bright-white) n=107 ;; *) n=46 ;;
+      esac ;;
+    *) n=0 ;;
+  esac
+  printf '%s' "$n"
+}
+
+_dnav_apply_colors() {
+  DNAV_CFG_COLOR_FG="$(_dnav_color_num fg "${DNAV_CFG_COLOR_FG:-30}")"
+  DNAV_CFG_COLOR_BG="$(_dnav_color_num bg "${DNAV_CFG_COLOR_BG:-46}")"
+  if (( DNAV_CFG_COLOR_BG >= 30 && DNAV_CFG_COLOR_BG <= 37 )); then
+    DNAV_CFG_COLOR_BG=$(( DNAV_CFG_COLOR_BG + 10 ))
+  fi
+  DNAV_HIGHLIGHT=$'\e['"${DNAV_CFG_COLOR_FG}"';'"${DNAV_CFG_COLOR_BG}"'m'
+  DNAV_RESET=$'\e[0m'
+}
+
+_dnav_expand_path() {
+  local path="$1"
+  [[ -z $path || $path == - ]] && { printf '\n'; return 0; }
+  if [[ $path == '~' || $path == '~/'* ]]; then path="${path/#\~/$HOME}"; fi
+  printf '%s\n' "$path"
+}
+
+_dnav_abspath() {
+  local path="$1"
+  path="$(_dnav_expand_path "$path")"; path="${path%$'\n'}"
+  if command -v realpath >/dev/null 2>&1; then realpath -m -- "$path" 2>/dev/null && return; fi
+  if [[ -d $path ]]; then (cd -- "$path" 2>/dev/null && pwd -P) && return; fi
+  printf '%s\n' "$path"
+}
+
+_dnav_config_seed() {
+  local dir="$1"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  if [[ ! -f $dir/config ]]; then
+    cat > "$dir/config" <<'EOF'
+# DNav settings — edit freely, then run: dconfig -r
+color_fg = black
+color_bg = cyan
+brand = DNav
+ls_after = 0
+show_hidden = 0
+success_anim = 1
+full_redraw = 0
+EOF
+  fi
+  if [[ ! -f $dir/folders ]]; then
+    cat > "$dir/folders" <<'EOF'
+# Main dnav bar — Label path
+Home        ~
+Docs        ~/Documents
+Down        ~/Downloads
+EbSync      ~/Eb_Transfer
+Projects    ~/Projects
+Config      ~/.config
+Apps        ~/Apps
+Share       ~/.local/share
+EOF
+  fi
+  if [[ ! -f $dir/jumps ]]; then
+    if [[ -f $DNAV_DIR/jumps ]]; then cp -- "$DNAV_DIR/jumps" "$dir/jumps" 2>/dev/null || true; fi
+    if [[ ! -f $dir/jumps ]]; then
+      cat > "$dir/jumps" <<'EOF'
+# djump table — key becomes dKEY (home → dhome)
+home      ~
+bk        ..
+etc       /etc
+con       ~/.config
+doc       ~/Documents
+down      ~/Downloads
+proj      ~/Projects
+share     ~/.local/share
+EOF
+    fi
+  fi
+}
+
+_dnav_config_load_kv() {
+  local f="$1" line key val
+  [[ -f $f ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line || $line != *=* ]] && continue
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"; key="${key#"${key%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"; val="${val#"${val%%[![:space:]]*}"}"
+    if [[ $val == \"*\" || $val == \'*\' ]]; then val="${val:1:$((${#val}-2))}"; fi
+    key="${key,,}"
+    case $key in
+      color_fg|highlight_fg|fg) DNAV_CFG_COLOR_FG="$val" ;;
+      color_bg|highlight_bg|bg) DNAV_CFG_COLOR_BG="$val" ;;
+      brand) DNAV_CFG_BRAND="$val" ;;
+      ls_after|ls) _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
+      show_hidden|hidden) _dnav_truthy "$val" && DNAV_CFG_SHOW_HIDDEN=1 || DNAV_CFG_SHOW_HIDDEN=0 ;;
+      success_anim|anim) _dnav_truthy "$val" && DNAV_CFG_SUCCESS_ANIM=1 || DNAV_CFG_SUCCESS_ANIM=0 ;;
+      full_redraw|redraw) _dnav_truthy "$val" && DNAV_CFG_FULL_REDRAW=1 || DNAV_CFG_FULL_REDRAW=0 ;;
+      search_roots) DNAV_CFG_SEARCH_ROOTS="$val" ;;
+    esac
+  done < "$f"
+}
+
+_dnav_config_load_folders() {
+  local f="$1" line label path
+  DNAV_FOLDER_NAMES=(); DNAV_FOLDER_PATHS=()
+  [[ -f $f ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line ]] && continue
+    label="${line%%[[:space:]]*}"
+    path="${line#"$label"}"; path="${path#"${path%%[![:space:]]*}"}"
+    [[ -z $label || -z $path || $path == - ]] && continue
+    local ll="${label,,}"
+    [[ $ll == help || $ll == about ]] && continue
+    DNAV_FOLDER_NAMES+=("$label")
+    DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$path")")
+  done < "$f"
+  (( ${#DNAV_FOLDER_NAMES[@]} > 0 ))
+}
+
+_dnav_config_load() {
+  DNAV_CONFIG_DIR="$(_dnav_config_dir)"
+  DNAV_CFG_COLOR_FG=30; DNAV_CFG_COLOR_BG=46
+  DNAV_CFG_LS=0; DNAV_CFG_SHOW_HIDDEN=0
+  DNAV_CFG_SUCCESS_ANIM=1; DNAV_CFG_FULL_REDRAW=0
+  DNAV_CFG_BRAND=DNav; DNAV_CFG_SEARCH_ROOTS=""
+  DNAV_FOLDER_NAMES=(); DNAV_FOLDER_PATHS=()
+  _dnav_config_seed "$DNAV_CONFIG_DIR"
+  _dnav_config_load_kv "$DNAV_CONFIG_DIR/config"
+  _dnav_apply_colors
+  _dnav_config_load_folders "$DNAV_CONFIG_DIR/folders" || true
+  if [[ -n $DNAV_CFG_SEARCH_ROOTS && -z ${DNAV_SEARCH_ROOTS+x} ]]; then
+    DNAV_SEARCH_ROOTS="${DNAV_CFG_SEARCH_ROOTS//\$HOME/$HOME}"
+  fi
+}
+
+dconfig() {
+  case ${1:-} in
+    -r|--reload|'')
+      _dnav_config_load
+      if declare -f _djump_load >/dev/null 2>&1; then
+        _DJUMP_LOADED=0; _djump_load 2>/dev/null || true
+      fi
+      if [[ -n ${1:-} || $- == *i* ]]; then
+        printf 'dconfig: %s\n' "${DNAV_CONFIG_DIR}"
+        printf '  color  fg=%s bg=%s\n' "$DNAV_CFG_COLOR_FG" "$DNAV_CFG_COLOR_BG"
+        printf '  brand  %s\n' "$DNAV_CFG_BRAND"
+        printf '  ls_after=%s  show_hidden=%s  success_anim=%s  full_redraw=%s\n' \
+          "$DNAV_CFG_LS" "$DNAV_CFG_SHOW_HIDDEN" "$DNAV_CFG_SUCCESS_ANIM" "$DNAV_CFG_FULL_REDRAW"
+        printf '  folders %d  jumps %d\n' "${#DNAV_FOLDER_NAMES[@]}" "${#_DJUMP_KEYS[@]:-0}"
+      fi ;;
+    -e|--edit)
+      local ed="${EDITOR:-${VISUAL:-vi}}"
+      $ed "$(_dnav_config_dir)/config" "$(_dnav_config_dir)/folders" "$(_dnav_config_dir)/jumps" ;;
+    -p|--path) printf '%s\n' "$(_dnav_config_dir)" ;;
+    -h|--help)
+      printf '%s\n' "usage: dconfig [-r|-e|-p]"
+      printf '%s\n' "  -r, --reload   reload config + jumps (default)"
+      printf '%s\n' "  -e, --edit     open config files in \$EDITOR"
+      printf '%s\n' "  -p, --path     print config directory" ;;
+    *) printf 'dconfig: unknown option: %s (try dconfig -h)\n' "$1" >&2; return 1 ;;
+  esac
+}
+
+_dnav_config_load
+
+[[ -f $DNAV_DIR/djump   ]] && source "$DNAV_DIR/djump"
+[[ -f $DNAV_DIR/dfile   ]] && source "$DNAV_DIR/dfile"
+[[ -f $DNAV_DIR/dsearch ]] && source "$DNAV_DIR/dsearch"
+
+declare -f _dfile_available   >/dev/null 2>&1 || _dfile_available()   { return 1; }
+declare -f _dsearch_available >/dev/null 2>&1 || _dsearch_available() { return 1; }
+declare -f _djump_available   >/dev/null 2>&1 || _djump_available()   { return 1; }
+
+_dnav_maybe_ls() {
+  case ${DNAV_CFG_LS:-0} in
+    1|true|yes|on|TRUE|YES|ON) command ls -a --color=auto ;;
+  esac
+}
+
+_dnav_success_bar() {
+  local path="$1" origin_mid="${2:-}"
+  local hl="${DNAV_HIGHLIGHT:-$'\e[30;46m'}" rst="${DNAV_RESET:-$'\e[0m'}"
+  local max_w=${COLUMNS:-80} step left right width half display
+  local anim=${DNAV_CFG_SUCCESS_ANIM:-1}
+  (( max_w < 20 )) && max_w=80
+  [[ -z $origin_mid ]] && origin_mid=$(( max_w / 2 ))
+  if (( anim )); then
+    for (( step=1; step <= 10; step++ )); do
+      half=$(( (max_w * step) / 20 ))
+      left=$(( origin_mid - half )); right=$(( origin_mid + half ))
+      (( left < 0 )) && left=0; (( right > max_w )) && right=$max_w
+      width=$(( right - left ))
+      printf '\r\e[2K'
+      printf "\e[${left}C${hl}%*s${rst}" $width ""
+      sleep 0.03 2>/dev/null || true
+    done
+  fi
+  display=$path
+  (( ${#display} > max_w )) && display="${display:0:$((max_w - 1))}…"
+  printf '\r\e[2K'
+  printf "${hl}%-${max_w}s${rst}\n" "$display"
+}
+
+dhelp() {
+  local hl="${DNAV_HIGHLIGHT:-$'\e[30;46m'}" rst="${DNAV_RESET:-$'\e[0m'}" k path
+  printf '%s\n' "${hl} DNav ${rst}"
+  printf '%s\n' "  dnav                 open the folder navigator"
+  printf '%s\n' "  dhelp                this command list"
+  printf '%s\n' "  dconfig              reload/edit config (~/.config/dnav)"
+  printf '%s\n' "  djump                list jump aliases (djump -l)"
+  printf '%s\n' "  djump KEY            jump to KEY (same as dKEY)"
+  printf '%s\n' "  djump -r             reload jumps file + dKEY commands"
+  printf '%s\n' "  dfavorite …          add/edit/remove jump favorites"
+  printf '%s\n' "  config dir           ${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
+  if declare -f _djump_available >/dev/null 2>&1 && _djump_available 2>/dev/null; then
+    if _djump_ensure 2>/dev/null; then
+      printf '%s\n' ""
+      printf '%s\n' "${hl} DJump aliases ${rst}"
+      for k in "${_DJUMP_KEYS[@]}"; do
+        printf '  %-18s  %s\n' "d${k}" "${_DJUMP_MAP[$k]}"
+      done
+    fi
+  fi
+}
+
+dnav() {
+  local HIGHLIGHT_FG=${DNAV_CFG_COLOR_FG:-30} HIGHLIGHT_BG=${DNAV_CFG_COLOR_BG:-46}
+  local HIGHLIGHT=$'\e['"${HIGHLIGHT_FG}"';'"${HIGHLIGHT_BG}"'m' RESET=$'\e[0m'
+  DNAV_HIGHLIGHT=$HIGHLIGHT; DNAV_RESET=$RESET
+  local -a names=() paths=()
+  local selected=0 key key2 key3 i current target
+  local cols=${COLUMNS:-80} brand="${DNAV_CFG_BRAND:-DNav}" bar_win=0
+
+  if (( ${#DNAV_FOLDER_NAMES[@]} > 0 )); then
+    names=("${DNAV_FOLDER_NAMES[@]}"); paths=("${DNAV_FOLDER_PATHS[@]}")
+  else
+    names=(Home Docs Down EbSync Projects Config Apps Share)
+    paths=("$HOME" "${XDG_DOCUMENTS_DIR:-$HOME/Documents}" "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}" \
+      "${XDG_EBTRANSFER_DIR:-$HOME/Eb_Transfer}" "${XDG_PROJECTS_DIR:-$HOME/Projects}" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}" "${XDG_APPS_DIR:-$HOME/Apps}" "${XDG_DATA_HOME:-$HOME/.local/share}")
+  fi
+  names+=(About); paths+=("")
+
+  current="$(pwd -P 2>/dev/null || pwd)"
+  for (( i=0; i < ${#paths[@]}; i++ )); do
+    if [[ -n ${paths[i]} ]]; then
+      local pabs; pabs="$(_dnav_abspath "${paths[i]}")"; pabs="${pabs%$'\n'}"
+      if [[ $pabs == "$current" ]]; then selected=$i; break; fi
+    fi
+  done
+
+  local _DNAV_STTY_ORIG _DNAV_CLEANED=0
+  _DNAV_STTY_ORIG=$(stty -g 2>/dev/null)
+  declare -g DNAV_ABORT=0; DNAV_ABORT=0
+
+  _dnav_cleanup() {
+    (( _DNAV_CLEANED )) && return
+    declare -f _dsearch_index_cancel >/dev/null 2>&1 && _dsearch_index_cancel
+    [[ -n $_DNAV_STTY_ORIG ]] && stty "$_DNAV_STTY_ORIG" 2>/dev/null
+    printf '\e[?25h'; _DNAV_CLEANED=1
+  }
+  _dnav_clear_menu() { printf '\r\e[2K'; }
+  _dnav_abort() {
+    DNAV_ABORT=1
+    declare -f _dsearch_index_cancel >/dev/null 2>&1 && _dsearch_index_cancel
+    declare -f _dsearch_erase_ui >/dev/null 2>&1 && { _dsearch_erase_ui 2>/dev/null || true; declare -f _dsearch_session_cleanup >/dev/null 2>&1 && _dsearch_session_cleanup; }
+    if (( ${+_DFILE_OPEN} && _DFILE_OPEN )); then
+      declare -f _dfile_erase >/dev/null 2>&1 && _dfile_erase; _DFILE_OPEN=0
+    fi
+    _dnav_clear_menu; _dnav_cleanup
+  }
+
+  trap '_dnav_cleanup' EXIT
+  trap '_dnav_abort; return 130' INT TERM QUIT
+  stty -echo -icanon isig 2>/dev/null
+  printf '\e[?25l'
+  declare -f _dsearch_index_start_bg >/dev/null 2>&1 && _dsearch_index_start_bg
+
+  _dnav_draw() {
+    local i label used=0 n=${#names[@]} cell_w more_l=0 more_r=0
+    local brand_w=$(( ${#brand} + 3 )) avail=$(( cols - brand_w ))
+    (( avail < 10 )) && avail=10
+    printf '\e[?25l\r'
+    printf "${HIGHLIGHT} %s ${RESET} " "$brand"
+    (( bar_win > 0 )) && more_l=1
+    used=0
+    for (( i=bar_win; i < n; i++ )); do
+      cell_w=$(( ${#names[i]} + 3 ))
+      if (( used > 0 && used + cell_w > avail - (more_l ? 2 : 0) - 2 )); then more_r=1; break; fi
+      (( used += cell_w ))
+    done
+    (( more_l )) && printf '\e[2m<\e[22m '
+    used=0
+    local content_w=$(( avail - (more_l ? 2 : 0) - (more_r ? 2 : 0) ))
+    (( content_w < 4 )) && content_w=4
+    for (( i=bar_win; i < n; i++ )); do
+      label="${names[i]}"; cell_w=$(( ${#label} + 3 ))
+      if (( used > 0 && used + cell_w > content_w )); then break; fi
+      if (( i == selected )); then printf "${HIGHLIGHT} %s ${RESET} " "$label"
+      else printf ' %s  ' "$label"; fi
+      (( used += cell_w ))
+    done
+    (( more_r )) && printf ' \e[2m>\e[22m'
+    printf '\e[K'
+  }
+
+  _dnav_move_left() {
+    (( selected > 0 )) || return; (( selected-- ))
+    (( selected < bar_win )) && bar_win=$selected; _dnav_draw
+  }
+  _dnav_move_right() {
+    (( selected < ${#names[@]} - 1 )) || return; (( selected++ ))
+    local brand_w=$(( ${#brand} + 3 )) avail=$(( cols - brand_w )) used=0 i
+    for (( i=bar_win; i <= selected; i++ )); do
+      used=$(( used + ${#names[i]} + 3 ))
+      if (( used > avail && i > bar_win )); then bar_win=$(( selected > 0 ? selected : 0 )); fi
+    done
+    _dnav_draw
+  }
+
+  _dnav_show_about() {
+    local maxw=$cols; (( maxw < 20 )) && maxw=20
+    printf '\e[?25l\r'
+    printf "${HIGHLIGHT} DNav About:${RESET} Help  Settings  \e[2m(Esc to leave)\e[22m\e[K\n"
+    printf '\r\e[2m  h/l ←/→  move   Enter open   / search   f files\e[22m\e[K\n'
+    printf '\r\e[2m  dconfig -e  edit config   dhelp  list commands\e[22m\e[K\n'
+    printf '\r\e[2m  Config: %s\e[22m\e[K' "${DNAV_CONFIG_DIR}"
+    local about_extra=3
+    while true; do
+      (( DNAV_ABORT )) && return 130
+      IFS= read -r -n 1 -s key || true
+      (( DNAV_ABORT )) && return 130
+      [[ $key == $'\x03' ]] && { _dnav_abort; return 130; }
+      case $key in
+        $'\e')
+          if IFS= read -r -n 1 -s -t 0.05 key2 2>/dev/null; then
+            [[ $key2 == '[' ]] && IFS= read -r -n 1 -s key3
+          else
+            printf '\r\e[2K'; local j
+            for (( j=0; j < about_extra; j++ )); do printf '\n\e[2K'; done
+            (( about_extra > 0 )) && printf "\e[%dA" $about_extra
+            printf '\r'; _dnav_draw; return 0
+          fi ;;
+        q|Q)
+          printf '\r\e[2K'; local j
+          for (( j=0; j < about_extra; j++ )); do printf '\n\e[2K'; done
+          (( about_extra > 0 )) && printf "\e[%dA" $about_extra
+          printf '\r'; _dnav_draw; return 0 ;;
+      esac
+    done
+  }
+
+  _dnav_draw
+  while true; do
+    (( DNAV_ABORT )) && return 130
+    IFS= read -r -n 1 -s key || true
+    (( DNAV_ABORT )) && return 130
+    [[ $key == $'\x03' ]] && { _dnav_abort; return 130; }
+    case $key in
+      $'\e')
+        if IFS= read -r -n 1 -s -t 0.05 key2 2>/dev/null; then
+          if [[ $key2 == '[' ]]; then
+            IFS= read -r -n 1 -s key3
+            case $key3 in D) _dnav_move_left ;; C) _dnav_move_right ;; esac
+          fi
+        else
+          _dnav_clear_menu; _dnav_cleanup; return 0
+        fi ;;
+      $'\n'|$'\r'|'')
+        if [[ -z ${paths[selected]} || ${names[selected]} == About ]]; then
+          _dnav_show_about; continue
+        fi
+        target="${paths[selected]}"
+        if [[ -d $target ]]; then
+          cd -- "$target" || { _dnav_clear_menu; printf 'Could not change to %s\n' "${names[selected]}"; _dnav_cleanup; return 1; }
+          _dnav_success_bar "$(_dnav_abspath "$target")"
+          _dnav_cleanup; _dnav_maybe_ls; return 0
+        else
+          _dnav_clear_menu; printf 'Folder not found: %s\n' "$target"; _dnav_cleanup; return 1
+        fi ;;
+      h) _dnav_move_left ;;
+      l) _dnav_move_right ;;
+      /|s|S)
+        if _dsearch_available 2>/dev/null; then
+          if _dsearch_start; then return 0; fi
+          (( DNAV_ABORT )) && return 130; _dnav_draw
+        fi ;;
+      f|F)
+        if _dfile_available 2>/dev/null; then
+          local fpath=""
+          [[ -n ${paths[selected]} && -d ${paths[selected]} ]] && fpath="${paths[selected]}"
+          [[ -z $fpath || ! -d $fpath ]] && fpath="$PWD"
+          _dnav_clear_menu
+          if _dfile_enter "$fpath"; then return 0; fi
+          (( DNAV_ABORT )) && return 130; _dnav_draw
+        fi ;;
+    esac
+  done
+}
+
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then dnav "$@"; fi
