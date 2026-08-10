@@ -20,9 +20,11 @@ _dsearch_in_dfile() {
 }
 
 # ── Background index (starts with dnav; interruptible) ────────────────────
-# State is global so dnav / dfile / dsearch share one job.
+# Uses an external zsh worker + PID file so interactive shells never print
+# "done" job lines (breaks TUI layout on iSH / busybox environments).
 typeset -gi _DSEARCH_INDEX_PID=0
 typeset -g  _DSEARCH_INDEX_COUNT_FILE=""
+typeset -g  _DSEARCH_INDEX_PID_FILE=""
 typeset -g  _DSEARCH_INDEX_TMP=""
 typeset -g  _DSEARCH_INDEX_STATE=idle   # idle|running|done|failed|cancelled
 
@@ -31,32 +33,65 @@ _dsearch_index_path() {
   print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx"
 }
 
+_dsearch_index_dir() {
+  print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/dnav"
+}
+
+# Portable mtime (GNU stat, BSD stat, or python fallback).
+_dsearch_file_mtime() {
+  local f="$1" m
+  m=$(stat -c %Y -- "$f" 2>/dev/null) && { print -rn -- "$m"; return 0; }
+  m=$(stat -f %m -- "$f" 2>/dev/null) && { print -rn -- "$m"; return 0; }
+  m=$(python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$f" 2>/dev/null) && {
+    print -rn -- "$m"; return 0
+  }
+  return 1
+}
+
 _dsearch_index_stale() {
-  local idx="$1"
+  local idx="$1" now mtime age
   [[ ! -f $idx || ! -s $idx ]] && return 0
-  local now mtime age
-  now=$(date +%s)
-  mtime=$(stat -c %Y -- "$idx" 2>/dev/null) || return 0
+  now=$(date +%s 2>/dev/null) || return 0
+  mtime="$(_dsearch_file_mtime "$idx")" || return 0
   age=$(( now - mtime ))
   (( age > 86400 ))
 }
 
 _dsearch_index_count() {
-  local n=0
-  [[ -n $_DSEARCH_INDEX_COUNT_FILE && -f $_DSEARCH_INDEX_COUNT_FILE ]] && \
-    n=$(<$_DSEARCH_INDEX_COUNT_FILE 2>/dev/null) || n=0
-  [[ $n == <-> ]] || n=0
+  local n=0 f="$_DSEARCH_INDEX_COUNT_FILE"
+  [[ -z $f || ! -f $f ]] && { print -rn -- 0; return; }
+  n=$(tr -cd '0-9' <"$f" 2>/dev/null)
+  [[ -n $n ]] || n=0
   print -rn -- "$n"
 }
 
-# True if a background index is still running.
+# Constrained environments (iSH / BusyBox): keep indexing light.
+_dsearch_constrained_env() {
+  [[ -n ${DNAV_SEARCH_LIGHT:-} ]] && return 0
+  [[ -d /var/ish || -d /ish || -e /proc/ish ]] && return 0
+  uname -a 2>/dev/null | grep -Eiq 'ish|iphone|ipod|ipad' && return 0
+  # BusyBox find is common on iSH Alpine
+  if find 2>&1 | head -1 | grep -qi busybox; then
+    return 0
+  fi
+  command -v busybox >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# True if a background index is still running (poll PID file; never wait).
 _dsearch_index_running() {
+  local pid=$_DSEARCH_INDEX_PID pf="$_DSEARCH_INDEX_PID_FILE"
+  if (( pid <= 0 )) && [[ -n $pf && -f $pf ]]; then
+    pid=$(tr -cd '0-9' <"$pf" 2>/dev/null)
+    [[ -n $pid ]] && _DSEARCH_INDEX_PID=$pid
+  fi
   (( _DSEARCH_INDEX_PID > 0 )) || return 1
-  kill -0 $_DSEARCH_INDEX_PID 2>/dev/null && return 0
-  # Zombie / already exited — reap quietly (NO_MONITOR avoids "done" spam)
-  setopt localoptions nomonitor
-  wait $_DSEARCH_INDEX_PID 2>/dev/null
+  if kill -0 $_DSEARCH_INDEX_PID 2>/dev/null; then
+    return 0
+  fi
+  # Process gone — clear without wait (avoids job-control "done" lines)
   _DSEARCH_INDEX_PID=0
+  [[ -n $pf ]] && rm -f -- "$pf" 2>/dev/null
   return 1
 }
 
@@ -65,7 +100,7 @@ _dsearch_skip_root() {
   case $1 in
     /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/user/*|/run/systemd/*) return 0 ;;
     /boot|/boot/*|/tmp|/var/tmp|/var/log|/var/cache|/var/lib/docker/*) return 0 ;;
-    /snap|/var/lib/snapd/snap) return 0 ;;  # snap loops are noisy; /var/lib/flatpak kept
+    /snap|/var/lib/snapd/snap) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -80,6 +115,7 @@ _dsearch_collect_roots() {
     local p="$1"
     [[ -n $p && -d $p && -r $p ]] || return
     _dsearch_skip_root "$p" && return
+    # Prefer physical path when :A works; else keep as-is (iSH quirks)
     p="${p:A}"
     [[ -n ${seen[$p]:-} ]] && return
     seen[$p]=1
@@ -94,18 +130,22 @@ _dsearch_collect_roots() {
     return 0
   fi
 
-  # Current user home + other homes (readable)
+  # Light mode (iSH / BusyBox): home only — full tree walks are too heavy
+  if _dsearch_constrained_env; then
+    _dsearch_add_root "$HOME"
+    print -r -- "${roots[@]}"
+    return 0
+  fi
+
   _dsearch_add_root "$HOME"
   for r in /home/*(N/); do
     _dsearch_add_root "$r"
   done
 
-  # Removable / external media
   for r in /media/*(N/) /mnt/*(N/) /run/media/*/*(N/); do
     _dsearch_add_root "$r"
   done
 
-  # User-facing system trees (apps, shared data, optional software, web)
   for r in \
     /opt \
     /usr/local \
@@ -119,12 +159,11 @@ _dsearch_collect_roots() {
     _dsearch_add_root "$r"
   done
 
-  # Other real mount points (disks, network shares) — skip virtual FS
   if command -v findmnt >/dev/null 2>&1; then
     for m in "${(@f)$(findmnt -n -o TARGET -t notmpfs,noproc,nosysfs,nodevtmpfs,nocgroup,nocgroup2,nofuse.portal 2>/dev/null)}"; do
       _dsearch_skip_root "$m" && continue
       case $m in
-        /) continue ;;  # full root walk is huge; homes + mounts cover it
+        /) continue ;;
         *) _dsearch_add_root "$m" ;;
       esac
     done
@@ -133,8 +172,12 @@ _dsearch_collect_roots() {
   print -r -- "${roots[@]}"
 }
 
+# Prune expression shared by find (portable — no -readable; BusyBox-safe).
+_dsearch_find_prune() {
+  print -r -- '\( -name .git -o -name node_modules -o -name target -o -name __pycache__ -o -name .npm -o -name .cargo -o -name .cache -o -path "*/.cache/*" -o -path "*/.local/share/Trash" -o -path "*/.local/share/Trash/*" -o -name Trash -o -name .Trash -o -name Caches -o -name .gradle -o -name .m2 -o -name vendor -o -name .tox -o -name .venv -o -name venv -o -name ".Trash-*" \) -prune -o -type d -print'
+}
+
 # Build index while writing a running directory count to $2.
-# Designed to run in a background subshell (no job-control noise).
 _dsearch_build_index_with_count() {
   local idx="$1" countfile="$2"
   local tmp="${idx}.tmp.$$"
@@ -143,52 +186,53 @@ _dsearch_build_index_with_count() {
 
   mkdir -p "${idx:h}" 2>/dev/null || return 1
   roots=($(_dsearch_collect_roots))
+  (( $#roots )) || roots=("$HOME")
 
   print -rn -- 0 > "$countfile"
   : > "$tmp"
 
   {
     for r in $roots; do
-      [[ -d $r && -r $r ]] || continue
-      # -xdev: stay on one filesystem per root
-      find "$r" -xdev \
-        \( \
-          -name .git -o \
-          -name node_modules -o \
-          -name target -o \
-          -name __pycache__ -o \
-          -name .npm -o \
-          -name .cargo -o \
-          -name .cache -o \
-          -path '*/.cache/*' -o \
-          -path '*/.local/share/Trash' -o \
-          -path '*/.local/share/Trash/*' -o \
-          -name Trash -o \
-          -name .Trash -o \
-          -name Caches -o \
-          -name .gradle -o \
-          -name .m2 -o \
-          -name vendor -o \
-          -name .tox -o \
-          -name .venv -o \
-          -name venv -o \
-          -name '.Trash-*' \
-        \) -prune -o \
-        -type d -readable -print 2>/dev/null
+      [[ -d $r ]] || continue
+      # No -readable (unsupported on BusyBox/iSH). -xdev when supported.
+      if find "$r" -xdev -maxdepth 0 >/dev/null 2>&1; then
+        find "$r" -xdev \
+          \( \
+            -name .git -o -name node_modules -o -name target -o \
+            -name __pycache__ -o -name .npm -o -name .cargo -o \
+            -name .cache -o -path '*/.cache/*' -o \
+            -path '*/.local/share/Trash' -o -path '*/.local/share/Trash/*' -o \
+            -name Trash -o -name .Trash -o -name Caches -o \
+            -name .gradle -o -name .m2 -o -name vendor -o \
+            -name .tox -o -name .venv -o -name venv -o -name '.Trash-*' \
+          \) -prune -o -type d -print 2>/dev/null
+      else
+        find "$r" \
+          \( \
+            -name .git -o -name node_modules -o -name target -o \
+            -name __pycache__ -o -name .npm -o -name .cargo -o \
+            -name .cache -o \
+            -name Trash -o -name .Trash -o -name Caches -o \
+            -name .gradle -o -name .m2 -o -name vendor -o \
+            -name .tox -o -name .venv -o -name venv \
+          \) -prune -o -type d -print 2>/dev/null
+      fi
     done
-  } | while IFS= read -r line; do
+  } | {
+    n=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -z $line ]] && continue
       print -r -- "$line"
       (( n++ ))
-      # Update count often enough to feel live, not every line
-      if (( n % 25 == 0 )); then
+      if (( n % 10 == 0 )); then
         print -rn -- $n > "$countfile"
       fi
-    done > "$tmp"
+    done
+    print -rn -- $n > "$countfile"
+  } > "$tmp"
 
-  # Final count (in case not multiple of 25)
   if [[ -f $tmp ]]; then
-    n=$(wc -l < "$tmp" 2>/dev/null) || n=0
-    n=${n// /}
+    n=$(wc -l < "$tmp" 2>/dev/null | tr -cd '0-9')
     print -rn -- ${n:-0} > "$countfile"
   fi
 
@@ -200,132 +244,150 @@ _dsearch_build_index_with_count() {
   return 0
 }
 
-# Start background reindex if stale and not already running.
-# Silent — progress only shown when a caller waits with _dsearch_index_wait_ui.
+# Start background reindex if stale. Worker is fully detached (no job table).
 _dsearch_index_start_bg() {
-  setopt localoptions nomonitor
-  local idx countfile
+  local idx countfile pidfile worker
   idx="$(_dsearch_index_path)"
 
-  # Reap a finished worker if we never waited on it
   if (( _DSEARCH_INDEX_PID > 0 )) && ! kill -0 $_DSEARCH_INDEX_PID 2>/dev/null; then
-    wait $_DSEARCH_INDEX_PID 2>/dev/null || true
     _DSEARCH_INDEX_PID=0
-    if [[ -f $idx && -s $idx ]]; then
-      _DSEARCH_INDEX_STATE=done
-    fi
   fi
 
-  # Already fresh
   if ! _dsearch_index_stale "$idx"; then
     _DSEARCH_INDEX_STATE=done
     return 0
   fi
 
-  # Already running
   if _dsearch_index_running; then
     return 0
   fi
 
-  mkdir -p "${idx:h}" 2>/dev/null || return 1
-  countfile="${idx:h}/index.count.$$"
+  mkdir -p "$(_dsearch_index_dir)" 2>/dev/null || return 1
+  countfile="$(_dsearch_index_dir)/index.count"
+  pidfile="$(_dsearch_index_dir)/index.pid"
   _DSEARCH_INDEX_COUNT_FILE="$countfile"
-  _DSEARCH_INDEX_TMP="${idx}.tmp.$$"
+  _DSEARCH_INDEX_PID_FILE="$pidfile"
+  _DSEARCH_INDEX_TMP="${idx}.building"
   print -rn -- 0 > "$countfile"
   _DSEARCH_INDEX_STATE=running
 
-  (
-    setopt localoptions nomonitor
-    if _dsearch_build_index_with_count "$idx" "$countfile"; then
-      :
-    else
-      rm -f -- "${idx}.tmp.$$" 2>/dev/null
-      exit 1
-    fi
-  ) &
-  _DSEARCH_INDEX_PID=$!
+  # Propagate light mode into the worker on iSH / BusyBox
+  if _dsearch_constrained_env; then
+    export DNAV_SEARCH_LIGHT=1
+  fi
+
+  # Resolve this file so the worker can source the same dsearch
+  local self=""
+  if [[ -n ${DNAV_DIR:-} && -f $DNAV_DIR/dsearch ]]; then
+    self="$DNAV_DIR/dsearch"
+  elif [[ -n ${(%):-%x} ]]; then
+    self="${${(%):-%x}:A}"
+  fi
+  [[ -f $self ]] || self=""
+
+  # Detached external zsh — not a job of the interactive shell.
+  # Interactive "&" + wait is what prints "+ N done" and wrecks the TUI on iSH.
+  if [[ -n $self ]]; then
+    # $0 $1 $2 $3 $4 = tag self idx countfile pidfile
+    nohup zsh -fc '
+      emulate -L zsh
+      setopt nomonitor nonotify
+      source "$1"
+      _dsearch_build_index_with_count "$2" "$3"
+      rm -f -- "$4"
+    ' dnav-index-worker "$self" "$idx" "$countfile" "$pidfile" \
+      </dev/null >/dev/null 2>&1 &!
+    _DSEARCH_INDEX_PID=$!
+  else
+    setopt localoptions nomonitor nonotify
+    ( _dsearch_build_index_with_count "$idx" "$countfile"; rm -f -- "$pidfile" ) \
+      </dev/null >/dev/null 2>&1 &!
+    _DSEARCH_INDEX_PID=$!
+  fi
+  print -rn -- $_DSEARCH_INDEX_PID > "$pidfile"
   return 0
 }
 
 # Cancel background index (user left dnav early / Ctrl+C).
 _dsearch_index_cancel() {
-  setopt localoptions nomonitor
-  local pid=$_DSEARCH_INDEX_PID
-  if (( pid > 0 )); then
-    # Kill the worker and its find children
-    pkill -TERM -P $pid 2>/dev/null || true
+  local pid=$_DSEARCH_INDEX_PID pf="$_DSEARCH_INDEX_PID_FILE"
+  if (( pid <= 0 )) && [[ -n $pf && -f $pf ]]; then
+    pid=$(tr -cd '0-9' <"$pf" 2>/dev/null)
+  fi
+  if [[ -n $pid && $pid -gt 0 ]]; then
+    # Kill process group / children if any
+    kill -TERM -$pid 2>/dev/null || true
     kill -TERM $pid 2>/dev/null || true
-    wait $pid 2>/dev/null || true
+    pkill -TERM -P $pid 2>/dev/null || true
+    # Do NOT wait — waiting re-attaches job status on some zsh/iSH builds
     _DSEARCH_INDEX_PID=0
     _DSEARCH_INDEX_STATE=cancelled
   fi
-  # Drop incomplete temps; keep last good index if any
   [[ -n $_DSEARCH_INDEX_TMP ]] && rm -f -- "$_DSEARCH_INDEX_TMP" 2>/dev/null
-  [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" "${_DSEARCH_INDEX_COUNT_FILE}.state" 2>/dev/null
+  [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
+  [[ -n $pf ]] && rm -f -- "$pf" 2>/dev/null
+  rm -f -- "$(_dsearch_index_dir)/index.worker.zsh" 2>/dev/null
   _DSEARCH_INDEX_COUNT_FILE=""
+  _DSEARCH_INDEX_PID_FILE=""
   _DSEARCH_INDEX_TMP=""
 }
 
-# Wait for background index if needed, showing "Indexing... N" on ONE line.
-# Clears that line when finished (no extra newlines / job messages).
-# Returns 0 if a usable index exists.
-_dsearch_index_wait_ui() {
-  setopt localoptions nomonitor
-  local idx hl rst count pid ret=0
-  local st=""
-  idx="$(_dsearch_index_path)"
-  hl="${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}"
-  rst="${DNAV_RESET:-${RESET:-\e[0m}}"
+# Paint "Indexing... N" on one line; clear with \r\e[2K when done (no newlines).
+_dsearch_index_paint_status() {
+  local count="$1"
+  local hl="${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}"
+  local rst="${DNAV_RESET:-${RESET:-\e[0m}}"
+  printf "\r${hl} Indexing...${rst} %s\e[K" "$count"
+}
 
-  # Kick off if needed
+# Wait for background index if needed. Always leaves the cursor line clean.
+# Returns 0 if a usable index exists OR after creating an empty fallback.
+_dsearch_index_wait_ui() {
+  local idx count
+  idx="$(_dsearch_index_path)"
+
   _dsearch_index_start_bg
 
-  # Fast path: ready and not running
   if ! _dsearch_index_running && [[ -f $idx && -s $idx ]]; then
     _DSEARCH_INDEX_STATE=done
     return 0
   fi
 
-  if ! _dsearch_index_running; then
-    # Failed to start or empty
-    [[ -f $idx && -s $idx ]] && return 0
-    return 1
-  fi
-
-  pid=$_DSEARCH_INDEX_PID
-  printf "\e[?25l"
-  while kill -0 $pid 2>/dev/null; do
+  if _dsearch_index_running; then
+    printf "\e[?25l"
+    while _dsearch_index_running; do
+      count="$(_dsearch_index_count)"
+      _dsearch_index_paint_status "$count"
+      sleep 0.15
+    done
     count="$(_dsearch_index_count)"
-    # Single-line status — never prints a newline
-    printf "\r${hl} Indexing...${rst} %s\e[K" "$count"
-    sleep 0.1
-  done
-
-  # Reap without job-control noise
-  wait $pid 2>/dev/null
-  ret=$?
-  _DSEARCH_INDEX_PID=0
-
-  count="$(_dsearch_index_count)"
-  printf "\r${hl} Indexing...${rst} %s\e[K" "$count"
-  # Brief beat so the final count is visible, then clear same line
-  sleep 0.08
-  printf "\r\e[2K"
-
-  [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && \
-    rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" "${_DSEARCH_INDEX_COUNT_FILE}.state" 2>/dev/null
-  _DSEARCH_INDEX_COUNT_FILE=""
-  _DSEARCH_INDEX_TMP=""
+    _dsearch_index_paint_status "$count"
+    sleep 0.05
+    printf "\r\e[2K"
+    _DSEARCH_INDEX_PID=0
+    [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
+    [[ -n $_DSEARCH_INDEX_PID_FILE ]] && rm -f -- "$_DSEARCH_INDEX_PID_FILE" 2>/dev/null
+    _DSEARCH_INDEX_COUNT_FILE=""
+    _DSEARCH_INDEX_PID_FILE=""
+    _DSEARCH_INDEX_TMP=""
+  fi
 
   if [[ -f $idx && -s $idx ]]; then
     _DSEARCH_INDEX_STATE=done
     return 0
   fi
+
+  # Fallback so search still opens (empty results better than kick-out)
+  mkdir -p "${idx:h}" 2>/dev/null
+  if [[ ! -f $idx ]]; then
+    : > "$idx"
+  fi
   _DSEARCH_INDEX_STATE=failed
-  return 1
+  return 0
 }
 
 # Ensure index is ready (start bg if needed, wait with UI if still running).
+# Never hard-fails: search UI should still open.
 _dsearch_ensure_index() {
   local idx
   idx="$(_dsearch_index_path)"
@@ -335,6 +397,7 @@ _dsearch_ensure_index() {
   fi
 
   _dsearch_index_wait_ui
+  return 0
 }
 
 # ── Session state (search UI) ─────────────────────────────────────────────
@@ -932,16 +995,10 @@ _dsearch_start() {
   # Wipe previous TUI line (main bar / dfile) so only search remains
   printf "\r\e[2K\e[?25l"
 
-  # Wait for background index if needed — shows "Indexing... N" on this line, then clears
-  if ! _dsearch_ensure_index; then
-    _dsearch_session_cleanup
-    printf "\r\e[2K"
-    printf "\e[?25l"
-    return 1
-  fi
-
-  # Real search UI only (indexing line already cleared by wait_ui)
-  printf "\r\e[2K"
+  # Wait for background index if needed — "Indexing... N" on this line, then clear.
+  # ensure_index always returns 0 so we still enter search (even with empty index).
+  _dsearch_ensure_index
+  printf "\r\e[2K\e[?25l"
   _dsearch_extra_lines=0
   _dsearch_draw "$_dsearch_q"
 
