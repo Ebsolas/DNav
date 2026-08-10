@@ -2,55 +2,41 @@
 #
 # Install location (canonical):
 #   $HOME\Documents\WindowsPowerShell\dnav\
-#   (i.e. [Environment]::GetFolderPath('MyDocuments')\WindowsPowerShell\dnav)
 #
 # SentinelOne-friendly core: no Add-Type, no kernel32 P/Invoke.
-# Keyboard via [Console]::ReadKey only. Optional modules (dfile/dsearch)
-# are NOT auto-loaded — they use lower-level console APIs and may be noisier.
+# Keyboard via [Console]::ReadKey only. Optional modules NOT auto-loaded.
 #
-# Dot-source from profile or by path:
+# Visual layout matches zsh: single inline line, brand chip, horizontal
+# scroll with < > when chips overflow the terminal width.
+#
+# Dot-source:
 #   . "$HOME\Documents\WindowsPowerShell\dnav\dnav.ps1"
-#   . "$HOME\Documents\WindowsPowerShell\dnav\dsearch.ps1"   # optional
-#   . "$HOME\Documents\WindowsPowerShell\dnav\dfile.ps1"     # optional
-#
-# Config: Documents\WindowsPowerShell\dnav\config\  (folders, config, jumps)
 #
 # Keys: Left/Right or h/l  move | Enter open | Esc cancel
 #       / or s  search (if dsearch loaded) | f  files (if dfile loaded)
 
 function Get-DnavInstallDir {
-    # 1) Explicit override
     if ($env:DNAV_HOME -and (Test-Path -LiteralPath $env:DNAV_HOME)) {
         return [System.IO.Path]::GetFullPath($env:DNAV_HOME)
     }
-    # 2) Directory of this script (when dot-sourced from install tree)
-    if ($PSScriptRoot) {
-        return $PSScriptRoot
-    }
+    if ($PSScriptRoot) { return $PSScriptRoot }
     if ($MyInvocation.MyCommand.Path) {
         $here = Split-Path -Parent $MyInvocation.MyCommand.Path
         if ($here) { return $here }
     }
-    # 3) Canonical install path under Documents\WindowsPowerShell\dnav
     $docs = [Environment]::GetFolderPath('MyDocuments')
     if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
-    $canonical = Join-Path $docs 'WindowsPowerShell\dnav'
-    if (Test-Path -LiteralPath $canonical) {
-        return $canonical
-    }
-    return $canonical  # still return it so callers can create/copy there
+    return (Join-Path $docs 'WindowsPowerShell\dnav')
 }
 
 $script:DnavInstallDir = Get-DnavInstallDir
 
-# Auto-load only djump from the install directory
 $__djumpPath = Join-Path $script:DnavInstallDir 'djump.ps1'
 if ((Test-Path -LiteralPath $__djumpPath) -and -not (Get-Command djump -ErrorAction SilentlyContinue)) {
     . $__djumpPath
 }
 
 function Get-DnavConfigDir {
-    # Prefer explicit override, else install\config (Documents\WindowsPowerShell\dnav\config)
     if ($env:DNAV_CONFIG_DIR) { return $env:DNAV_CONFIG_DIR }
     $install = if ($script:DnavInstallDir) { $script:DnavInstallDir } else { Get-DnavInstallDir }
     return (Join-Path $install 'config')
@@ -91,9 +77,7 @@ ls_after = 0
 function Expand-DnavPath {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path) -or $Path -eq '-') { return $null }
-    if ($Path -eq '~') {
-        return $env:USERPROFILE
-    }
+    if ($Path -eq '~') { return $env:USERPROFILE }
     if ($Path.StartsWith('~/') -or $Path.StartsWith('~\')) {
         return (Join-Path $env:USERPROFILE $Path.Substring(2))
     }
@@ -156,6 +140,7 @@ function Show-DnavSuccessBar {
     if ($display.Length -gt $w) {
         $display = $display.Substring(0, $w - 1) + [char]0x2026
     }
+    [Console]::Write("`r")
     Write-Host ($display.PadRight($w)) -ForegroundColor Black -BackgroundColor Cyan
 }
 
@@ -182,10 +167,11 @@ function Show-DnavAbout {
 }
 
 function dnav {
-    # No Add-Type / kernel32 — use managed [Console]::ReadKey only.
+    # Inline single-line bar (zsh parity): brand + scrolling chips + < >
     $items = @(Get-DnavFolders)
     $brand = Get-DnavBrand
     $selected = 0
+    $script:__dnavBarWin = 0
     $hasSearch = [bool](Get-Command dsearch -ErrorAction SilentlyContinue)
     $hasFiles  = [bool](Get-Command dfile -ErrorAction SilentlyContinue)
 
@@ -202,60 +188,122 @@ function dnav {
         $selected = 0
     }
 
-    if ([Console]::BufferHeight -lt 3) {
-        Write-Host 'Console buffer too small for dnav.' -ForegroundColor Red
-        return
+    $cols = [Math]::Max(20, [Console]::WindowWidth)
+
+    function Get-BrandWidth {
+        return ($brand.Length + 3)
     }
 
-    [Console]::WriteLine()
-    [Console]::WriteLine()
-    $startRow = [Console]::CursorTop - 2
+    function Ensure-BarVisible {
+        $brandW = Get-BrandWidth
+        $avail = [Math]::Max(10, $cols - $brandW)
+        $win = $script:__dnavBarWin
+        if ($selected -lt $win) { $win = $selected }
 
-    function Clear-Bar {
-        $winW = [Console]::WindowWidth
-        for ($r = 0; $r -lt 3; $r++) {
-            [Console]::SetCursorPosition(0, $startRow + $r)
-            [Console]::Write((' ' * $winW))
-        }
-        [Console]::SetCursorPosition(0, $startRow)
-    }
-
-    function Redraw {
-        $winW = [Console]::WindowWidth
-        [Console]::SetCursorPosition(0, $startRow)
-        $header = " $brand "
-        Write-Host $header -ForegroundColor Black -BackgroundColor Cyan -NoNewline
-        $hintParts = @('h/l arrows', 'Enter')
-        if ($hasSearch) { $hintParts += '/ search' }
-        if ($hasFiles)  { $hintParts += 'f files' }
-        $hintParts += 'Esc'
-        $hint = '  (' + ($hintParts -join '  ') + ')'
-        Write-Host $hint -ForegroundColor DarkGray -NoNewline
-        $clearLen = $winW - [Console]::CursorLeft
-        if ($clearLen -gt 0) { [Console]::Write((' ' * $clearLen)) }
-
-        [Console]::SetCursorPosition(0, $startRow + 1)
-        [Console]::Write((' ' * $winW))
-
-        $col = 1
-        for ($i = 0; $i -lt $items.Count; $i++) {
-            $name = $items[$i].Name
-            if (($col + $name.Length + 2) -ge $winW) { break }
-            [Console]::SetCursorPosition($col, $startRow + 1)
-            if ($i -eq $selected) {
-                Write-Host (" $name ") -ForegroundColor Black -BackgroundColor Cyan -NoNewline
-            } else {
-                Write-Host (" $name ") -NoNewline
+        $used = 0
+        for ($i = $win; $i -le $selected -and $i -lt $items.Count; $i++) {
+            $cell = $items[$i].Name.Length + 3
+            if (($used + $cell) -gt $avail -and $i -gt $win) {
+                $win = $selected
+                break
             }
-            $col += $name.Length + 3
+            $used += $cell
         }
-        [Console]::SetCursorPosition(0, $startRow + 2)
+        if ($win -lt 0) { $win = 0 }
+
+        $used = 0
+        for ($i = $win; $i -le $selected -and $i -lt $items.Count; $i++) {
+            $cell = $items[$i].Name.Length + 3
+            if (($used + $cell) -gt $avail -and $i -eq $selected) {
+                $win = $selected
+                $used2 = $cell
+                while ($win -gt 0) {
+                    $prev = $items[$win - 1].Name.Length + 3
+                    if (($used2 + $prev) -gt $avail) { break }
+                    $used2 += $prev
+                    $win--
+                }
+                break
+            }
+            $used += $cell
+        }
+        $script:__dnavBarWin = $win
+    }
+
+    function Clear-BarLine {
+        $w = [Math]::Max(20, [Console]::WindowWidth)
+        [Console]::Write("`r" + (' ' * $w) + "`r")
+    }
+
+    function Draw-Bar {
+        $cols = [Math]::Max(20, [Console]::WindowWidth)
+        Ensure-BarVisible
+        $barWin = $script:__dnavBarWin
+        $brandW = Get-BrandWidth
+        $avail = [Math]::Max(10, $cols - $brandW)
+
+        $moreL = ($barWin -gt 0)
+        $used = 0
+        $moreR = $false
+        $reserveL = if ($moreL) { 2 } else { 0 }
+        for ($i = $barWin; $i -lt $items.Count; $i++) {
+            $cell = $items[$i].Name.Length + 3
+            if ($used -gt 0 -and ($used + $cell) -gt ($avail - $reserveL - 2)) {
+                $moreR = $true
+                break
+            }
+            $used += $cell
+        }
+
+        $contentW = $avail
+        if ($moreL) { $contentW -= 2 }
+        if ($moreR) { $contentW -= 2 }
+        if ($contentW -lt 4) { $contentW = 4 }
+
+        [Console]::Write("`r")
+        Write-Host (" $brand ") -ForegroundColor Black -BackgroundColor Cyan -NoNewline
+        [Console]::Write(' ')
+
+        if ($moreL) {
+            Write-Host '<' -ForegroundColor DarkGray -NoNewline
+            [Console]::Write(' ')
+        }
+
+        $used = 0
+        for ($i = $barWin; $i -lt $items.Count; $i++) {
+            $label = $items[$i].Name
+            $cell = $label.Length + 3
+            if ($used -gt 0 -and ($used + $cell) -gt $contentW) {
+                $moreR = $true
+                break
+            }
+            if ($i -eq $selected) {
+                Write-Host (" $label ") -ForegroundColor Black -BackgroundColor Cyan -NoNewline
+                [Console]::Write(' ')
+            } else {
+                [Console]::Write(" $label  ")
+            }
+            $used += $cell
+        }
+
+        if ($moreR) {
+            [Console]::Write(' ')
+            Write-Host '>' -ForegroundColor DarkGray -NoNewline
+        }
+
+        $left = [Console]::CursorLeft
+        if ($left -lt $cols) {
+            [Console]::Write((' ' * ($cols - $left)))
+            [Console]::SetCursorPosition(0, [Console]::CursorTop)
+        } else {
+            [Console]::Write("`r")
+        }
     }
 
     function Navigate-Selected {
         $item = $items[$selected]
         if (-not $item.Path) {
-            Clear-Bar
+            Clear-BarLine
             Show-DnavAbout
             return
         }
@@ -263,17 +311,17 @@ function dnav {
         if (Test-Path -LiteralPath $path -PathType Container) {
             Set-Location -LiteralPath $path
             $full = (Get-Location).Path
-            Clear-Bar
             Show-DnavSuccessBar $full
         } else {
-            Write-Host "`nFolder not found: $path" -ForegroundColor Red
+            Clear-BarLine
+            Write-Host "Folder not found: $path" -ForegroundColor Red
         }
     }
 
     $prevVisible = [Console]::CursorVisible
     try {
         [Console]::CursorVisible = $false
-        Redraw
+        Draw-Bar
 
         while ($true) {
             $keyInfo = [Console]::ReadKey($true)
@@ -282,37 +330,34 @@ function dnav {
 
             switch ($key) {
                 ([ConsoleKey]::LeftArrow) {
-                    if ($selected -gt 0) { $selected--; Redraw }
+                    if ($selected -gt 0) { $selected--; Draw-Bar }
                 }
                 ([ConsoleKey]::RightArrow) {
-                    if ($selected -lt ($items.Count - 1)) { $selected++; Redraw }
+                    if ($selected -lt ($items.Count - 1)) { $selected++; Draw-Bar }
                 }
                 ([ConsoleKey]::Enter) {
                     Navigate-Selected
                     return
                 }
                 ([ConsoleKey]::Escape) {
-                    Clear-Bar
+                    Clear-BarLine
                     return
                 }
                 default {
                     if ($ch -eq 'h' -or $ch -eq 'H') {
-                        if ($selected -gt 0) { $selected--; Redraw }
+                        if ($selected -gt 0) { $selected--; Draw-Bar }
                     }
                     elseif ($ch -eq 'l' -or $ch -eq 'L') {
-                        if ($selected -lt ($items.Count - 1)) { $selected++; Redraw }
+                        if ($selected -lt ($items.Count - 1)) { $selected++; Draw-Bar }
                     }
                     elseif (($ch -eq '/' -or $ch -eq 's' -or $ch -eq 'S') -and $hasSearch) {
-                        Clear-Bar
+                        Clear-BarLine
                         $navigated = dsearch
                         if ($navigated) { return }
-                        [Console]::WriteLine()
-                        [Console]::WriteLine()
-                        $startRow = [Console]::CursorTop - 2
-                        Redraw
+                        Draw-Bar
                     }
                     elseif (($ch -eq 'f' -or $ch -eq 'F') -and $hasFiles) {
-                        Clear-Bar
+                        Clear-BarLine
                         $fpath = $null
                         $item = $items[$selected]
                         if ($item.Path -and (Test-Path -LiteralPath $item.Path -PathType Container)) {
@@ -321,10 +366,7 @@ function dnav {
                         if (-not $fpath) { $fpath = (Get-Location).Path }
                         $navigated = dfile -StartPath $fpath
                         if ($navigated) { return }
-                        [Console]::WriteLine()
-                        [Console]::WriteLine()
-                        $startRow = [Console]::CursorTop - 2
-                        Redraw
+                        Draw-Bar
                     }
                 }
             }
