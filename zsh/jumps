@@ -1,0 +1,23 @@
+# Package default jumps — prefer editing user config:
+#   ~/.config/dnav/jumps
+# Format:  key   path   → shell command dKEY (home → dhome)
+# Reload: djump -r  or  dconfig -r
+# Paths: ~ expands; relative paths (e.g. ..) are relative to current $PWD
+#
+# key     path
+home      ~
+bk        ..
+etc       /etc
+con       ~/.config
+doc       ~/Documents
+down      ~/Downloads
+game      ~/Games
+music     ~/Music
+pub       ~/Public
+pic       ~/Pictures
+proj      ~/Projects
+vid       ~/Videos
+app       /usr/share/applications
+eb        ~/Eb_Transfer
+apps      ~/Apps
+share     ~/.local/share

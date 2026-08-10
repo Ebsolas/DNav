@@ -11,20 +11,20 @@ If you like the concept and would use it except that AI was used in making it th
 It was made for my own use, I just made it public in case someone else found it useful.
 
 The primate module dnav gives the ability to jump to favorited spots with a minimal GUI.
-![alt text](IMG_5335.jpeg)
+![alt text](assets/IMG_5335.jpeg)
 
 An optional secondary module dsearch gives the ability to search for and jump to locations.
-![alt text](IMG_5336.jpeg)
+![alt text](assets/IMG_5336.jpeg)
 
 The optional module dfile adds a minimal file explorer that lets you jump to locations and into editing if you have one configured for your system.
-![alt text](IMG_5337.jpeg)
+![alt text](assets/IMG_5337.jpeg)
 
 ## Install
 
 ```bash
 git clone https://github.com/Ebsolas/DNav.git
 cd DNav
-./install.sh
+./zsh/install.sh
 exec zsh          # reload shell
 ```
 
@@ -37,19 +37,19 @@ The installer will:
 ### Options
 
 ```text
-./install.sh                 # default install
-./install.sh --prefix DIR    # install scripts elsewhere
-./install.sh --config DIR    # alternate config directory
-./install.sh --no-rc         # skip .zshrc edit
-./install.sh --force-config  # overwrite config/folders/jumps with defaults
-./install.sh --uninstall     # remove scripts + rc hook (keeps config)
+./zsh/install.sh                 # default install
+./zsh/install.sh --prefix DIR    # install scripts elsewhere
+./zsh/install.sh --config DIR    # alternate config directory
+./zsh/install.sh --no-rc         # skip .zshrc edit
+./zsh/install.sh --force-config  # overwrite config/folders/jumps with defaults
+./zsh/install.sh --uninstall     # remove scripts + rc hook (keeps config)
 ```
 
 ### Manual install
 
 ```zsh
 mkdir -p ~/.local/share/dnav ~/.config/dnav
-cp dnav dfile djump dsearch jumps ~/.local/share/dnav/
+cp zsh/dnav zsh/dfile zsh/djump zsh/dsearch zsh/jumps ~/.local/share/dnav/
 # then in ~/.zshrc:
 source ~/.local/share/dnav/dnav
 ```
