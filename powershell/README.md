@@ -1,20 +1,22 @@
 # PowerShell port of DNav
 
-Windows-first folder navigation + fuzzy directory search.
+Windows-first folder navigation, fuzzy search, and file explorer.
 
 ## Try it
 
 ```powershell
 cd path\to\DNav
-. .\powershell\dnav.ps1      # auto-loads dsearch.ps1 if present
+. .\powershell\dnav.ps1      # auto-loads dsearch.ps1 + dfile.ps1
 dnav
 ```
 
-Or search directly:
+Standalone:
 
 ```powershell
 dsearch
-dsearch-reindex   # force rebuild index
+dsearch-reindex
+dfile
+dfile -StartPath C:\Users
 ```
 
 Add the dot-source line to `$PROFILE` to load on every shell.
@@ -25,7 +27,8 @@ Add the dot-source line to `$PROFILE` to load on every shell.
 |-----|--------|
 | Left / Right or `h` / `l` | Move selection |
 | Enter | Open folder (or About) |
-| `/` or `s` | Open fuzzy search |
+| `/` or `s` | Fuzzy directory search |
+| `f` | File explorer |
 | Esc | Cancel |
 
 ## Keys (dsearch)
@@ -38,6 +41,28 @@ Add the dot-source line to `$PROFILE` to load on every shell.
 | Backspace | Delete character |
 | Ctrl+U | Clear query |
 | Esc | Cancel |
+
+## Keys (dfile)
+
+| Key | Action |
+|-----|--------|
+| Left / Right or `h` / `l` | Move on current row |
+| Up / `k` | Go to parent |
+| Down / `j` | Enter selected subdirectory |
+| Tab or `f` | Toggle focus: dirs ↔ files |
+| `.` | Toggle show hidden |
+| Enter | Exit to dir, or open file |
+| `/` or `s` | Search (returns into explorer) |
+| Esc | Cancel |
+
+Layout:
+
+```
+ DNav Files:  [siblings in parent]
+ [child directories]
+ ---- Show Hidden ○ ----
+ [files]
+```
 
 ## Config / cache
 
@@ -56,7 +81,7 @@ dsearch-reindex
 
 ## Status
 
-- **Done:** `dnav` bar, `dsearch` + index, About, success bar
-- **Not yet:** dfile, djump / dKEY favorites
+- **Done:** `dnav`, `dsearch`, `dfile`
+- **Not yet:** djump / dKEY favorites
 
 Mouse support was intentionally omitted.
