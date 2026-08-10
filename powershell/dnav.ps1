@@ -6,20 +6,24 @@
 #
 # SentinelOne-friendly core: no Add-Type, no kernel32 P/Invoke.
 # Keyboard via [Console]::ReadKey only. Optional modules (dfile/dsearch)
-# are NOT auto-loaded.
+# are NOT auto-loaded — they use lower-level console APIs and may be noisier.
 #
 # Dot-source from profile or by path:
 #   . "$HOME\Documents\WindowsPowerShell\dnav\dnav.ps1"
 #   . "$HOME\Documents\WindowsPowerShell\dnav\dsearch.ps1"   # optional
 #   . "$HOME\Documents\WindowsPowerShell\dnav\dfile.ps1"     # optional
 #
+# Config: Documents\WindowsPowerShell\dnav\config\  (folders, config, jumps)
+#
 # Keys: Left/Right or h/l  move | Enter open | Esc cancel
 #       / or s  search (if dsearch loaded) | f  files (if dfile loaded)
 
 function Get-DnavInstallDir {
+    # 1) Explicit override
     if ($env:DNAV_HOME -and (Test-Path -LiteralPath $env:DNAV_HOME)) {
         return [System.IO.Path]::GetFullPath($env:DNAV_HOME)
     }
+    # 2) Directory of this script (when dot-sourced from install tree)
     if ($PSScriptRoot) {
         return $PSScriptRoot
     }
@@ -27,13 +31,14 @@ function Get-DnavInstallDir {
         $here = Split-Path -Parent $MyInvocation.MyCommand.Path
         if ($here) { return $here }
     }
+    # 3) Canonical install path under Documents\WindowsPowerShell\dnav
     $docs = [Environment]::GetFolderPath('MyDocuments')
     if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
     $canonical = Join-Path $docs 'WindowsPowerShell\dnav'
     if (Test-Path -LiteralPath $canonical) {
         return $canonical
     }
-    return $canonical
+    return $canonical  # still return it so callers can create/copy there
 }
 
 $script:DnavInstallDir = Get-DnavInstallDir
@@ -45,9 +50,10 @@ if ((Test-Path -LiteralPath $__djumpPath) -and -not (Get-Command djump -ErrorAct
 }
 
 function Get-DnavConfigDir {
+    # Prefer explicit override, else install\config (Documents\WindowsPowerShell\dnav\config)
     if ($env:DNAV_CONFIG_DIR) { return $env:DNAV_CONFIG_DIR }
-    if ($env:XDG_CONFIG_HOME) { return (Join-Path $env:XDG_CONFIG_HOME 'dnav') }
-    return (Join-Path $env:APPDATA 'dnav')
+    $install = if ($script:DnavInstallDir) { $script:DnavInstallDir } else { Get-DnavInstallDir }
+    return (Join-Path $install 'config')
 }
 
 function Initialize-DnavConfig {
@@ -176,6 +182,7 @@ function Show-DnavAbout {
 }
 
 function dnav {
+    # No Add-Type / kernel32 — use managed [Console]::ReadKey only.
     $items = @(Get-DnavFolders)
     $brand = Get-DnavBrand
     $selected = 0
