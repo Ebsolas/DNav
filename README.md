@@ -10,7 +10,7 @@ If you like the concept and would use it except that AI was used in making it th
 
 It was made for my own use, I just made it public in case someone else found it useful.
 
-The primate module dnav gives the ability to jump to favorited spots with a minimal GUI.
+The primary module dnav gives the ability to jump to favorited spots with a minimal GUI.
 ![alt text](assets/IMG_5335.jpeg)
 
 An optional secondary module dsearch gives the ability to search for and jump to locations.
@@ -24,25 +24,25 @@ The optional module dfile adds a minimal file explorer that lets you jump to loc
 ```bash
 git clone https://github.com/Ebsolas/DNav.git
 cd DNav
-./zsh/install.sh
+./install.sh
 exec zsh          # reload shell
 ```
 
 The installer will:
 
-1. Copy scripts to `~/.local/share/dnav/` (or `$XDG_DATA_HOME/dnav`)
+1. Copy scripts from `zsh/` to `~/.local/share/dnav/` (or `$XDG_DATA_HOME/dnav`)
 2. Seed config under `~/.config/dnav/` (without overwriting existing files)
 3. Add a source hook to `~/.zshrc` (does **not** auto-run the TUI)
 
 ### Options
 
 ```text
-./zsh/install.sh                 # default install
-./zsh/install.sh --prefix DIR    # install scripts elsewhere
-./zsh/install.sh --config DIR    # alternate config directory
-./zsh/install.sh --no-rc         # skip .zshrc edit
-./zsh/install.sh --force-config  # overwrite config/folders/jumps with defaults
-./zsh/install.sh --uninstall     # remove scripts + rc hook (keeps config)
+./install.sh                 # default install
+./install.sh --prefix DIR    # install scripts elsewhere
+./install.sh --config DIR    # alternate config directory
+./install.sh --no-rc         # skip .zshrc edit
+./install.sh --force-config  # overwrite config/folders/jumps with defaults
+./install.sh --uninstall     # remove scripts + rc hook (keeps config)
 ```
 
 ### Manual install
