@@ -147,19 +147,27 @@ _dfile_enter() {
     cwd="$(pwd -P 2>/dev/null || pwd)"
     parent="$(dirname -- "$cwd")"; [[ -z $parent ]] && parent="/"
     perm_denied=""; siblings=(); children=(); files=()
-    out="$(_dfile_list "$parent" dirs $show_hidden 2>/dev/null)"; rc=$?
-    if (( rc != 0 )); then [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"; siblings=()
-    else [[ -n $out ]] && mapfile -t siblings <<< "$out" || siblings=(); fi
+    # At filesystem root: no parent siblings — show only "/"
+    if [[ $cwd == / ]]; then
+      siblings=("/")
+      sel_s=0
+      win_s=0
+      parent="/"
+    else
+      out="$(_dfile_list "$parent" dirs $show_hidden 2>/dev/null)"; rc=$?
+      if (( rc != 0 )); then [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"; siblings=()
+      else [[ -n $out ]] && mapfile -t siblings <<< "$out" || siblings=(); fi
+      local base i; base="$(basename -- "$cwd")"; sel_s=0
+      for (( i=0; i < ${#siblings[@]}; i++ )); do
+        [[ ${siblings[i]} == "$base" ]] && { sel_s=$i; break; }
+      done
+    fi
     out="$(_dfile_list "$cwd" dirs $show_hidden 2>/dev/null)"; rc=$?
     if (( rc != 0 )); then [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"; children=()
     else [[ -n $out ]] && mapfile -t children <<< "$out" || children=(); fi
     out="$(_dfile_list "$cwd" files $show_hidden 2>/dev/null)"; rc=$?
     if (( rc != 0 )); then [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"; files=()
     else [[ -n $out ]] && mapfile -t files <<< "$out" || files=(); fi
-    local base i; base="$(basename -- "$cwd")"; sel_s=0
-    for (( i=0; i < ${#siblings[@]}; i++ )); do
-      [[ ${siblings[i]} == "$base" ]] && { sel_s=$i; break; }
-    done
     (( ${#children[@]} == 0 )) && sel_c=0
     (( ${#files[@]} == 0 )) && sel_f=0
     (( sel_c >= ${#children[@]} && ${#children[@]} > 0 )) && sel_c=$(( ${#children[@]} - 1 ))
@@ -203,7 +211,11 @@ _dfile_enter() {
       siblings)
         brand=" DNav Files:"; printf "\r${hl}%s${rst} " "$brand"
         brand_w=$(( ${#brand} + 1 )); rest_w=$(( maxw - brand_w )); (( rest_w < 8 )) && rest_w=8
-        _dfile_paint_strip siblings $sel_s $win_s 1 $rest_w; win_s=$_dfile_win_out ;;
+        if (( ${#siblings[@]} == 0 )); then
+          printf '\e[K'; win_s=0
+        else
+          _dfile_paint_strip siblings $sel_s $win_s 1 $rest_w; win_s=$_dfile_win_out
+        fi ;;
       children)
         [[ $focus == children ]] && active=1; printf '\r'
         _dfile_paint_strip children $sel_c $win_c $active $maxw; win_c=$_dfile_win_out ;;

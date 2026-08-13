@@ -451,11 +451,9 @@ dnav() {
         fi ;;
       f|F)
         if _dfile_available 2>/dev/null; then
-          local fpath=""
-          [[ -n ${paths[selected]} && -d ${paths[selected]} ]] && fpath="${paths[selected]}"
-          [[ -z $fpath || ! -d $fpath ]] && fpath="$PWD"
+          # Always open explorer at the shell's current location
           _dnav_clear_menu
-          if _dfile_enter "$fpath"; then return 0; fi
+          if _dfile_enter "$PWD"; then return 0; fi
           (( DNAV_ABORT )) && return 130; _dnav_draw
         fi ;;
     esac

@@ -252,13 +252,30 @@ _dfile_enter() {
     children=()
     files=()
 
-    out="$(_dfile_list "$parent" dirs $show_hidden 2>/dev/null)"
-    rc=$?
-    if (( rc != 0 )); then
-      [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"
-      siblings=()
+    # At filesystem root there is no parent strip of siblings — only show "/"
+    if [[ $cwd == / ]]; then
+      siblings=("/")
+      sel_s=0
+      win_s=0
+      parent="/"
     else
-      [[ -n $out ]] && siblings=("${(@f)out}") || siblings=()
+      out="$(_dfile_list "$parent" dirs $show_hidden 2>/dev/null)"
+      rc=$?
+      if (( rc != 0 )); then
+        [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"
+        siblings=()
+      else
+        [[ -n $out ]] && siblings=("${(@f)out}") || siblings=()
+      fi
+      # Highlight current directory name among siblings
+      local base="${cwd:t}" i
+      sel_s=0
+      for (( i=1; i <= $#siblings; i++ )); do
+        if [[ ${siblings[i]} == $base ]]; then
+          sel_s=$(( i - 1 ))
+          break
+        fi
+      done
     fi
 
     out="$(_dfile_list "$cwd" dirs $show_hidden 2>/dev/null)"
@@ -279,15 +296,6 @@ _dfile_enter() {
       [[ -n $out ]] && files=("${(@f)out}") || files=()
     fi
 
-    # Highlight current directory name among siblings
-    local base="${cwd:t}" i
-    sel_s=0
-    for (( i=1; i <= $#siblings; i++ )); do
-      if [[ ${siblings[i]} == $base ]]; then
-        sel_s=$(( i - 1 ))
-        break
-      fi
-    done
     (( $#children == 0 )) && sel_c=0
     (( $#files == 0 )) && sel_f=0
     (( sel_c >= $#children && $#children > 0 )) && sel_c=$(( $#children - 1 ))
@@ -349,15 +357,21 @@ _dfile_enter() {
     rst="$(_dfile_rst)"
     case $which in
       siblings)
-        # Brand chip always cyan; current parent chip always cyan (not focusable).
+        # Brand chip always cyan; current dir among parent siblings (or "/" at root).
         brand=" DNav Files:"
         printf "\r${hl}%s${rst} " "$brand"
         brand_w=$(( ${#brand} + 1 ))
         rest_w=$(( maxw - brand_w ))
         (( rest_w < 8 )) && rest_w=8
-        # active=1 always: highlight sel_s (cwd among parent siblings) as indicator
-        _dfile_paint_strip siblings $sel_s $win_s 1 $rest_w
-        win_s=$reply[1]
+        if (( $#siblings == 0 )); then
+          # No parent context — leave the rest of the top row blank
+          printf "\e[K"
+          win_s=0
+        else
+          # active=1 always: highlight sel_s (cwd chip, or "/" at root)
+          _dfile_paint_strip siblings $sel_s $win_s 1 $rest_w
+          win_s=$reply[1]
+        fi
         ;;
       children)
         [[ $focus == children ]] && active=1

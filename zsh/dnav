@@ -1590,14 +1590,9 @@ dnav() {
       f|F)
         [[ $mode == about ]] && continue
         if [[ $mode == main ]] && _dfile_available; then
-          local fpath=""
-          if [[ -n ${paths[selected+1]} && -d ${paths[selected+1]} ]]; then
-            fpath="${paths[selected+1]}"
-          fi
-          [[ -z $fpath || ! -d $fpath ]] && fpath="$PWD"
-          # Clear main bar line before explorer
+          # Always open explorer at the shell's current location
           _dnav_clear_menu
-          if _dfile_enter "$fpath"; then
+          if _dfile_enter "$PWD"; then
             # exited to a folder or opened a file (cleanup already done)
             return 0
           fi
