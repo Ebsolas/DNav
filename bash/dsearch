@@ -271,7 +271,11 @@ _dsearch_pin_jumps() {
 }
 
 _dsearch_apply_filter() {
-  local query="$1" maxn="${2:-10}" qlen=${#query}
+  # NOTE: do not combine qlen=${#query} on the same `local` line as query=…
+  # In bash, RHSs in one local statement are evaluated before any assignment,
+  # so qlen would always be 0 and search would never show results.
+  local query="$1" maxn="${2:-10}"
+  local qlen=${#query}
   local idx src mode survivors; local -a top=()
   _dsearch_matches=(); idx="$(_dsearch_index_path)"
   if (( qlen == 0 )); then _dsearch_prev_query=""; return 0; fi

@@ -1,0 +1,36 @@
+name: test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  unix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Show shells
+        run: |
+          bash --version | head -1
+          zsh --version
+
+      - name: Run bash + zsh tests
+        run: ./tests/run.sh -v
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show pwsh
+        shell: pwsh
+        run: $PSVersionTable.PSVersion
+
+      - name: Run PowerShell tests
+        shell: pwsh
+        run: ./tests/run.ps1 -VerboseTests

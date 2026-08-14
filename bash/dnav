@@ -249,14 +249,14 @@ _dnav_success_bar() {
   (( max_w < 20 )) && max_w=80
   [[ -z $origin_mid ]] && origin_mid=$(( max_w / 2 ))
   if (( anim )); then
-    for (( step=1; step <= 10; step++ )); do
-      half=$(( (max_w * step) / 20 ))
+    for (( step=1; step <= 8; step++ )); do
+      half=$(( (max_w * step) / 16 ))
       left=$(( origin_mid - half )); right=$(( origin_mid + half ))
       (( left < 0 )) && left=0; (( right > max_w )) && right=$max_w
       width=$(( right - left ))
       printf '\r\e[2K'
       printf "\e[${left}C${hl}%*s${rst}" $width ""
-      sleep 0.03 2>/dev/null || true
+      sleep 0.012 2>/dev/null || true
     done
   fi
   display=$path

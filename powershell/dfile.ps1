@@ -1,4 +1,4 @@
-# dfile.ps1 - mini file explorer for DNav (PowerShell / Windows)
+# dfile.ps1 - mini file explorer for DNav (PowerShell, cross-platform)
 #
 # Layout:
 #   row0  DNav Files:  [sibling dirs in parent]
@@ -10,49 +10,15 @@
 #       Tab or f  toggle dirs/files | .  hidden | Enter  open/exit
 #       / or s  search | Esc  cancel
 #
-# Dot-source with the other modules:
-#   . .\powershell\dnav.ps1
-#   . .\powershell\dfile.ps1
+# Loaded by dnav.ps1 when present.
 
-function Ensure-ConsoleInputType {
-    if (-not ([System.Management.Automation.PSTypeName]'ConsoleInput').Type) {
-        Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class ConsoleInput {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetStdHandle(int nStdHandle);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool ReadConsoleInput(IntPtr hConsoleInput, ref INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
-    public const int STD_INPUT_HANDLE = -10;
-    public const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
-    public const uint ENABLE_EXTENDED_FLAGS = 0x0080;
-    [StructLayout(LayoutKind.Sequential)]
-    public struct COORD { public short X; public short Y; }
-    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
-    public struct KEY_EVENT_RECORD {
-        [FieldOffset(0)] public bool bKeyDown;
-        [FieldOffset(4)] public short wRepeatCount;
-        [FieldOffset(6)] public short wVirtualKeyCode;
-        [FieldOffset(8)] public short wVirtualScanCode;
-        [FieldOffset(10)] public char UnicodeChar;
-        [FieldOffset(12)] public int dwControlKeyState;
-    }
-    [StructLayout(LayoutKind.Explicit)]
-    public struct INPUT_RECORD {
-        [FieldOffset(0)] public short EventType;
-        [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent;
-    }
-}
-"@
-    }
+if (-not (Get-Command Read-DnavKey -ErrorAction SilentlyContinue)) {
+    $__p = $null
+    if ($PSScriptRoot) { $__p = Join-Path $PSScriptRoot 'dnav.platform.ps1' }
+    if ($__p -and (Test-Path -LiteralPath $__p)) { . $__p }
 }
 
-function Get-DfileEntries {
+function global:Get-DfileEntries {
     param(
         [string]$Dir,
         [ValidateSet('dirs', 'files')]
@@ -96,7 +62,7 @@ function Get-DfileEntries {
     return @($names | Sort-Object)
 }
 
-function Get-DfileWindow {
+function global:Get-DfileWindow {
     param(
         [string[]]$Items,
         [int]$Sel,
@@ -146,7 +112,7 @@ function Get-DfileWindow {
     return @{ Vis = @($vis); Win = $Win }
 }
 
-function Write-DfileStrip {
+function global:Write-DfileStrip {
     param(
         [string[]]$Items,
         [int]$Sel,
@@ -211,96 +177,113 @@ function Write-DfileStrip {
     return $Win
 }
 
-function dfile {
+function global:dfile {
     param(
         [string]$StartPath = ''
     )
-    Ensure-ConsoleInputType
+    if (-not (Get-Command Read-DnavKey -ErrorAction SilentlyContinue)) {
+        function script:Read-DnavKey {
+            $ki = [Console]::ReadKey($true)
+            return [pscustomobject]@{ Key = $ki.Key; Char = $ki.KeyChar; Ctrl = $false }
+        }
+    }
 
     if ($StartPath -and (Test-Path -LiteralPath $StartPath -PathType Container)) {
         Set-Location -LiteralPath $StartPath
     }
 
-    $showHidden = $false
-    $focus = 'children'
-    $selS = 0; $selC = 0; $selF = 0
-    $winS = 0; $winC = 0; $winF = 0
-    $siblings = @(); $children = @(); $files = @()
-    $cwd = ''; $parent = ''; $permDenied = ''
-
-    $handle = [ConsoleInput]::GetStdHandle([ConsoleInput]::STD_INPUT_HANDLE)
-    $mode = 0
-    [ConsoleInput]::GetConsoleMode($handle, [ref]$mode) | Out-Null
-    $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
-    [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
+    # Hashtable state — nested functions share the same object by reference.
+    # (Bare $siblings = ... / $script:siblings = ... do NOT update each other.)
+    $st = @{
+        ShowHidden = $false
+        Focus      = 'children'
+        SelS = 0; SelC = 0; SelF = 0
+        WinS = 0; WinC = 0; WinF = 0
+        Siblings = @(); Children = @(); Files = @()
+        Cwd = ''; Parent = ''; PermDenied = ''
+        StartRow = 0
+    }
 
     for ($i = 0; $i -lt 4; $i++) { [Console]::WriteLine() }
-    $startRow = [Console]::CursorTop - 4
-
-    $record = New-Object ConsoleInput+INPUT_RECORD
-    $eventsRead = 0
+    $st.StartRow = [Console]::CursorTop - 4
 
     function Clear-DfileArea {
-        $winW = [Console]::WindowWidth
+        $winW = if (Get-Command Get-DnavConsoleWidth -ErrorAction SilentlyContinue) {
+            Get-DnavConsoleWidth
+        } else {
+            [Math]::Max(20, [Console]::WindowWidth)
+        }
         for ($r = 0; $r -lt 4; $r++) {
-            [Console]::SetCursorPosition(0, $startRow + $r)
-            [Console]::Write((' ' * $winW))
+            try {
+                [Console]::SetCursorPosition(0, $st.StartRow + $r)
+                [Console]::Write((' ' * $winW))
+            } catch { }
         }
     }
 
     function Refresh-Dfile {
         try {
-            $script:cwd = [System.IO.Path]::GetFullPath((Get-Location).Path)
+            $st.Cwd = [System.IO.Path]::GetFullPath((Get-Location).Path)
         } catch {
-            $script:cwd = (Get-Location).Path
+            $st.Cwd = (Get-Location).Path
         }
-        $script:parent = [System.IO.Path]::GetDirectoryName($script:cwd)
-        if ([string]::IsNullOrEmpty($script:parent)) {
-            $script:parent = $script:cwd
+        $st.Parent = [System.IO.Path]::GetDirectoryName($st.Cwd)
+        if ([string]::IsNullOrEmpty($st.Parent)) {
+            $st.Parent = $st.Cwd
         }
-        $script:permDenied = ''
-        $script:siblings = @(Get-DfileEntries -Dir $script:parent -Kind dirs -ShowHidden $showHidden)
-        $script:children = @(Get-DfileEntries -Dir $script:cwd -Kind dirs -ShowHidden $showHidden)
-        $script:files = @(Get-DfileEntries -Dir $script:cwd -Kind files -ShowHidden $showHidden)
+        $st.PermDenied = ''
+        $st.Siblings = @(Get-DfileEntries -Dir $st.Parent -Kind dirs -ShowHidden $st.ShowHidden)
+        $st.Children = @(Get-DfileEntries -Dir $st.Cwd -Kind dirs -ShowHidden $st.ShowHidden)
+        $st.Files = @(Get-DfileEntries -Dir $st.Cwd -Kind files -ShowHidden $st.ShowHidden)
 
-        $base = [System.IO.Path]::GetFileName($script:cwd.TrimEnd('\', '/'))
-        if (-not $base) { $base = $script:cwd }
-        $script:selS = 0
-        for ($i = 0; $i -lt $script:siblings.Count; $i++) {
-            if ($script:siblings[$i] -eq $base) { $script:selS = $i; break }
+        $base = [System.IO.Path]::GetFileName($st.Cwd.TrimEnd('\', '/'))
+        if (-not $base) { $base = $st.Cwd }
+        $st.SelS = 0
+        for ($i = 0; $i -lt $st.Siblings.Count; $i++) {
+            if ($st.Siblings[$i] -eq $base) { $st.SelS = $i; break }
         }
-        if ($script:children.Count -eq 0) { $script:selC = 0 }
-        elseif ($script:selC -ge $script:children.Count) { $script:selC = $script:children.Count - 1 }
-        if ($script:files.Count -eq 0) { $script:selF = 0 }
-        elseif ($script:selF -ge $script:files.Count) { $script:selF = $script:files.Count - 1 }
+        if ($st.Children.Count -eq 0) { $st.SelC = 0 }
+        elseif ($st.SelC -ge $st.Children.Count) { $st.SelC = $st.Children.Count - 1 }
+        if ($st.Files.Count -eq 0) { $st.SelF = 0 }
+        elseif ($st.SelF -ge $st.Files.Count) { $st.SelF = $st.Files.Count - 1 }
 
-        if ($script:focus -eq 'children' -and $script:children.Count -eq 0 -and $script:files.Count -gt 0) {
-            $script:focus = 'files'
-        } elseif ($script:focus -eq 'files' -and $script:files.Count -eq 0 -and $script:children.Count -gt 0) {
-            $script:focus = 'children'
+        if ($st.Focus -eq 'children' -and $st.Children.Count -eq 0 -and $st.Files.Count -gt 0) {
+            $st.Focus = 'files'
+        } elseif ($st.Focus -eq 'files' -and $st.Files.Count -eq 0 -and $st.Children.Count -gt 0) {
+            $st.Focus = 'children'
         }
     }
 
     function Draw-Dfile {
-        $winW = [Console]::WindowWidth
+        $winW = if (Get-Command Get-DnavConsoleWidth -ErrorAction SilentlyContinue) {
+            Get-DnavConsoleWidth
+        } else {
+            [Math]::Max(20, [Console]::WindowWidth)
+        }
         Clear-DfileArea
 
-        [Console]::SetCursorPosition(0, $startRow)
-        $brand = ' DNav Files: '
+        try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
+        # Chip ends at colon; space after chip is normal (matches zsh/bash)
+        $brand = ' DNav Files:'
         Write-Host $brand -ForegroundColor Black -BackgroundColor Cyan -NoNewline
-        $restW = $winW - $brand.Length
+        try { [Console]::Write(' ') } catch { Write-Host ' ' -NoNewline }
+        $restW = $winW - $brand.Length - 1
         if ($restW -lt 8) { $restW = 8 }
-        $script:winS = Write-DfileStrip -Items $siblings -Sel $selS -Win $winS -Active $true `
-            -MaxWidth $restW -Row $startRow -StartCol $brand.Length
+        # Parent strip is display-only (cwd highlighted)
+        $st.WinS = Write-DfileStrip -Items $st.Siblings -Sel $st.SelS -Win $st.WinS -Active $true `
+            -MaxWidth $restW -Row $st.StartRow -StartCol $brand.Length
 
-        $activeC = ($focus -eq 'children')
-        $script:winC = Write-DfileStrip -Items $children -Sel $selC -Win $winC -Active $activeC `
-            -MaxWidth $winW -Row ($startRow + 1) -StartCol 0
+        $activeC = ($st.Focus -eq 'children')
+        $st.WinC = Write-DfileStrip -Items $st.Children -Sel $st.SelC -Win $st.WinC -Active $activeC `
+            -MaxWidth $winW -Row ($st.StartRow + 1) -StartCol 0
 
-        [Console]::SetCursorPosition(0, $startRow + 2)
-        $hid = if ($showHidden) { [char]0x25CF } else { [char]0x25CB }
+        try { [Console]::SetCursorPosition(0, $st.StartRow + 2) } catch { }
+        $hid = if ($st.ShowHidden) { [char]0x25CF } else { [char]0x25CB }
         $left = "- Show Hidden $hid "
-        $right = if ($permDenied) { " Permission Denied: $permDenied " } else { '' }
+        $fc = $st.Files.Count
+        $dc = $st.Children.Count
+        $mid = " dirs:$dc files:$fc "
+        $right = if ($st.PermDenied) { " Denied: $($st.PermDenied) " } else { $mid }
         if (($left.Length + $right.Length) -gt $winW -and $right) {
             $room = [Math]::Max(8, $winW - $left.Length - 5)
             $right = ' ...' + $right.Substring([Math]::Max(0, $right.Length - $room))
@@ -309,13 +292,13 @@ function dfile {
         if ($fill -lt 0) { $fill = 0 }
         Write-Host $left -NoNewline
         Write-Host (('-' * $fill)) -NoNewline
-        if ($right) { Write-Host $right -ForegroundColor DarkYellow -NoNewline }
+        if ($right) { Write-Host $right -ForegroundColor DarkGray -NoNewline }
 
-        $activeF = ($focus -eq 'files')
-        $script:winF = Write-DfileStrip -Items $files -Sel $selF -Win $winF -Active $activeF `
-            -MaxWidth $winW -Row ($startRow + 3) -StartCol 0
+        $activeF = ($st.Focus -eq 'files')
+        $st.WinF = Write-DfileStrip -Items $st.Files -Sel $st.SelF -Win $st.WinF -Active $activeF `
+            -MaxWidth $winW -Row ($st.StartRow + 3) -StartCol 0
 
-        [Console]::SetCursorPosition(0, $startRow)
+        try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
     }
 
     function Go-DfileDir([string]$Dest) {
@@ -323,48 +306,48 @@ function dfile {
         try {
             Set-Location -LiteralPath $Dest
         } catch {
-            $script:permDenied = $Dest
+            $st.PermDenied = $Dest
             Draw-Dfile
             return $false
         }
-        $script:winC = 0; $script:winF = 0
-        $script:selC = 0; $script:selF = 0
+        $st.WinC = 0; $st.WinF = 0
+        $st.SelC = 0; $st.SelF = 0
         Refresh-Dfile
         Draw-Dfile
         return $true
     }
 
     function Move-DfileH([int]$Dir) {
-        if ($focus -eq 'children') {
-            if ($children.Count -eq 0) { return }
-            $script:selC += $Dir
-            if ($script:selC -lt 0) { $script:selC = 0 }
-            if ($script:selC -ge $children.Count) { $script:selC = $children.Count - 1 }
+        if ($st.Focus -eq 'children') {
+            if ($st.Children.Count -eq 0) { return }
+            $st.SelC += $Dir
+            if ($st.SelC -lt 0) { $st.SelC = 0 }
+            if ($st.SelC -ge $st.Children.Count) { $st.SelC = $st.Children.Count - 1 }
         } else {
-            if ($files.Count -eq 0) { return }
-            $script:selF += $Dir
-            if ($script:selF -lt 0) { $script:selF = 0 }
-            if ($script:selF -ge $files.Count) { $script:selF = $files.Count - 1 }
+            if ($st.Files.Count -eq 0) { return }
+            $st.SelF += $Dir
+            if ($st.SelF -lt 0) { $st.SelF = 0 }
+            if ($st.SelF -ge $st.Files.Count) { $st.SelF = $st.Files.Count - 1 }
         }
         Draw-Dfile
     }
 
     function Toggle-DfileFocus {
-        $prev = $focus
-        if ($focus -eq 'files') { $script:focus = 'children' } else { $script:focus = 'files' }
-        if ($script:focus -eq 'children' -and $children.Count -eq 0 -and $files.Count -gt 0) {
-            $script:focus = 'files'
-        } elseif ($script:focus -eq 'files' -and $files.Count -eq 0 -and $children.Count -gt 0) {
-            $script:focus = 'children'
+        $prev = $st.Focus
+        if ($st.Focus -eq 'files') { $st.Focus = 'children' } else { $st.Focus = 'files' }
+        if ($st.Focus -eq 'children' -and $st.Children.Count -eq 0 -and $st.Files.Count -gt 0) {
+            $st.Focus = 'files'
+        } elseif ($st.Focus -eq 'files' -and $st.Files.Count -eq 0 -and $st.Children.Count -gt 0) {
+            $st.Focus = 'children'
         }
-        if ($script:focus -ne $prev) { Draw-Dfile }
+        if ($st.Focus -ne $prev) { Draw-Dfile }
     }
 
     function Exit-ToSelectedDir {
-        if ($focus -ne 'children' -or $children.Count -eq 0) { return $false }
-        $dest = Join-Path $cwd $children[$selC]
+        if ($st.Focus -ne 'children' -or $st.Children.Count -eq 0) { return $false }
+        $dest = Join-Path $st.Cwd $st.Children[$st.SelC]
         Clear-DfileArea
-        [Console]::SetCursorPosition(0, $startRow)
+        try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
         if (-not (Test-Path -LiteralPath $dest -PathType Container)) {
             Write-Host "Folder not found: $dest" -ForegroundColor Red
             return $true
@@ -380,10 +363,10 @@ function dfile {
     }
 
     function Open-SelectedFile {
-        if ($focus -ne 'files' -or $files.Count -eq 0) { return $false }
-        $fpath = Join-Path $cwd $files[$selF]
+        if ($st.Focus -ne 'files' -or $st.Files.Count -eq 0) { return $false }
+        $fpath = Join-Path $st.Cwd $st.Files[$st.SelF]
         Clear-DfileArea
-        [Console]::SetCursorPosition(0, $startRow)
+        try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
         if (-not (Test-Path -LiteralPath $fpath)) {
             Write-Host "File not found: $fpath" -ForegroundColor Red
             return $true
@@ -395,6 +378,8 @@ function dfile {
         }
         if ($env:EDITOR) {
             & $env:EDITOR $fpath
+        } elseif (Get-Command xdg-open -ErrorAction SilentlyContinue) {
+            Start-Process -FilePath 'xdg-open' -ArgumentList $fpath -ErrorAction SilentlyContinue
         } else {
             try {
                 Start-Process -FilePath $fpath -ErrorAction Stop
@@ -405,87 +390,74 @@ function dfile {
         return $true
     }
 
+    $prevVis = $true
     try {
+        try { $prevVis = [Console]::CursorVisible; [Console]::CursorVisible = $false } catch { }
         Refresh-Dfile
         Draw-Dfile
 
         while ($true) {
-            [ConsoleInput]::ReadConsoleInput($handle, [ref]$record, 1, [ref]$eventsRead) | Out-Null
-            if ($record.EventType -ne 1) { continue }
-            if (-not $record.KeyEvent.bKeyDown) { continue }
+            $k = Read-DnavKey
+            $key = $k.Key
+            $ch = $k.Char
 
-            $vk = $record.KeyEvent.wVirtualKeyCode
-            $ch = $record.KeyEvent.UnicodeChar
-
-            switch ($vk) {
-                37 { Move-DfileH -1 }
-                39 { Move-DfileH 1 }
-                38 {
-                    $root = [System.IO.Path]::GetPathRoot($cwd)
-                    if ($cwd -ne $root -and $parent -and $parent -ne $cwd) {
-                        [void](Go-DfileDir $parent)
-                    }
+            if ($key -eq [ConsoleKey]::LeftArrow -or $ch -eq 'h' -or $ch -eq 'H') {
+                Move-DfileH -1; continue
+            }
+            if ($key -eq [ConsoleKey]::RightArrow -or $ch -eq 'l' -or $ch -eq 'L') {
+                Move-DfileH 1; continue
+            }
+            if ($key -eq [ConsoleKey]::UpArrow -or $ch -eq 'k' -or $ch -eq 'K') {
+                $root = [System.IO.Path]::GetPathRoot($st.Cwd)
+                if ($st.Cwd -ne $root -and $st.Parent -and $st.Parent -ne $st.Cwd) {
+                    [void](Go-DfileDir $st.Parent)
                 }
-                40 {
-                    if ($focus -eq 'children' -and $children.Count -gt 0) {
-                        $dest = Join-Path $cwd $children[$selC]
-                        [void](Go-DfileDir $dest)
-                    }
+                continue
+            }
+            if ($key -eq [ConsoleKey]::DownArrow -or $ch -eq 'j' -or $ch -eq 'J') {
+                if ($st.Focus -eq 'children' -and $st.Children.Count -gt 0) {
+                    $dest = Join-Path $st.Cwd $st.Children[$st.SelC]
+                    [void](Go-DfileDir $dest)
                 }
-                9 { Toggle-DfileFocus }
-                13 {
-                    if ($focus -eq 'files') {
-                        if (Open-SelectedFile) { return $true }
-                    } else {
-                        if (Exit-ToSelectedDir) { return $true }
-                    }
+                continue
+            }
+            if ($key -eq [ConsoleKey]::Tab -or $ch -eq 'f' -or $ch -eq 'F') {
+                Toggle-DfileFocus; continue
+            }
+            if ($key -eq [ConsoleKey]::Enter) {
+                if ($st.Focus -eq 'files') {
+                    if (Open-SelectedFile) { return $true }
+                } else {
+                    if (Exit-ToSelectedDir) { return $true }
                 }
-                27 {
+                continue
+            }
+            if ($key -eq [ConsoleKey]::Escape) {
+                Clear-DfileArea
+                try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
+                return $false
+            }
+            if ($ch -eq '.') {
+                $st.ShowHidden = -not $st.ShowHidden
+                Refresh-Dfile
+                Draw-Dfile
+                continue
+            }
+            if ($ch -eq '/' -or $ch -eq 's' -or $ch -eq 'S') {
+                if (Get-Command dsearch -ErrorAction SilentlyContinue) {
                     Clear-DfileArea
-                    [Console]::SetCursorPosition(0, $startRow)
-                    return $false
-                }
-                default {
-                    if ($ch -eq 'h' -or $ch -eq 'H') { Move-DfileH -1 }
-                    elseif ($ch -eq 'l' -or $ch -eq 'L') { Move-DfileH 1 }
-                    elseif ($ch -eq 'k' -or $ch -eq 'K') {
-                        $root = [System.IO.Path]::GetPathRoot($cwd)
-                        if ($cwd -ne $root -and $parent -and $parent -ne $cwd) {
-                            [void](Go-DfileDir $parent)
-                        }
-                    }
-                    elseif ($ch -eq 'j' -or $ch -eq 'J') {
-                        if ($focus -eq 'children' -and $children.Count -gt 0) {
-                            $dest = Join-Path $cwd $children[$selC]
-                            [void](Go-DfileDir $dest)
-                        }
-                    }
-                    elseif ($ch -eq 'f' -or $ch -eq 'F') { Toggle-DfileFocus }
-                    elseif ($ch -eq '.') {
-                        $script:showHidden = -not $showHidden
-                        Refresh-Dfile
-                        Draw-Dfile
-                    }
-                    elseif ($ch -eq '/' -or $ch -eq 's' -or $ch -eq 'S') {
-                        if (Get-Command dsearch -ErrorAction SilentlyContinue) {
-                            Clear-DfileArea
-                            [Console]::SetCursorPosition(0, $startRow)
-                            [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
-                            $nav = dsearch
-                            $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
-                            [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
-                            if ($nav) { return $true }
-                            for ($i = 0; $i -lt 4; $i++) { [Console]::WriteLine() }
-                            $startRow = [Console]::CursorTop - 4
-                            Refresh-Dfile
-                            Draw-Dfile
-                        }
-                    }
+                    try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
+                    $nav = dsearch
+                    if ($nav) { return $true }
+                    for ($i = 0; $i -lt 4; $i++) { [Console]::WriteLine() }
+                    $st.StartRow = [Console]::CursorTop - 4
+                    Refresh-Dfile
+                    Draw-Dfile
                 }
             }
         }
     }
     finally {
-        [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
+        try { [Console]::CursorVisible = $prevVis } catch { }
     }
 }

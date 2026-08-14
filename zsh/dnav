@@ -100,12 +100,12 @@ _dnav_apply_colors() {
 
 # Expand ~ in a path; empty stays empty.
 _dnav_expand_path() {
-  local path="$1"
-  [[ -z $path || $path == - ]] && { print -r -- ""; return 0 }
-  if [[ $path == '~' || $path == '~/'* ]]; then
-    path="${path/#\~/$HOME}"
+  local p="$1"
+  [[ -z $p || $p == - ]] && { print -r -- ""; return 0 }
+  if [[ $p == '~' || $p == '~/'* ]]; then
+    p="${p/#\~/$HOME}"
   fi
-  print -r -- "$path"
+  print -r -- "$p"
 }
 
 # Write default user config files (first run).
@@ -136,6 +136,9 @@ show_hidden = 0
 
 # Animate the expand-to-path success bar (0 = instant bar)
 success_anim = 1
+# Expand flare: steps × ms (edit these; then: dconfig -r)
+success_anim_steps = 8
+success_anim_ms = 25
 
 # 1 = full line redraw every move (more compatible); 0 = partial chip repaint
 full_redraw = 0
@@ -216,6 +219,8 @@ _dnav_config_load_kv() {
       ls_after|ls)                  _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
       show_hidden|hidden)           _dnav_truthy "$val" && DNAV_CFG_SHOW_HIDDEN=1 || DNAV_CFG_SHOW_HIDDEN=0 ;;
       success_anim|anim)            _dnav_truthy "$val" && DNAV_CFG_SUCCESS_ANIM=1 || DNAV_CFG_SUCCESS_ANIM=0 ;;
+      success_anim_steps)           [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_STEPS=$val ;;
+      success_anim_ms)              [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_MS=$val ;;
       full_redraw|redraw)           _dnav_truthy "$val" && DNAV_CFG_FULL_REDRAW=1 || DNAV_CFG_FULL_REDRAW=0 ;;
       search_roots)                 DNAV_CFG_SEARCH_ROOTS="$val" ;;
     esac
@@ -309,6 +314,8 @@ _dnav_config_load() {
   DNAV_CFG_LS=0
   DNAV_CFG_SHOW_HIDDEN=0
   DNAV_CFG_SUCCESS_ANIM=1
+  DNAV_CFG_SUCCESS_ANIM_STEPS=8
+  DNAV_CFG_SUCCESS_ANIM_MS=25
   DNAV_CFG_FULL_REDRAW=0
   DNAV_CFG_BRAND=DNav
   DNAV_CFG_SEARCH_ROOTS=""
@@ -432,22 +439,31 @@ _dnav_config_set() {
 # Shared location bar (TUI select, dsearch, and shell djump/dKEY).
 # $1 = path to show; $2 = optional expand origin column (default: center).
 _dnav_success_bar() {
-  local path="$1"
+  local bar_path="$1"
   local origin_mid="${2:-}"
   local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
   local rst="${DNAV_RESET:-\e[0m}"
   local max_w=${COLUMNS:-80}
   local step left right width half display
   local anim=${DNAV_CFG_SUCCESS_ANIM:-1}
+  local steps=${DNAV_CFG_SUCCESS_ANIM_STEPS:-8}
+  local ms=${DNAV_CFG_SUCCESS_ANIM_MS:-25}
+  local cs delay
 
   (( max_w < 20 )) && max_w=80
+  (( steps < 1 )) && steps=1
+  (( ms < 1 )) && ms=1
   if [[ -z $origin_mid ]]; then
     origin_mid=$(( max_w / 2 ))
   fi
 
   if (( anim )); then
-    for (( step=1; step <= 10; step++ )); do
-      half=$(( (max_w * step) / 20 ))
+    # zselect -t is centiseconds (ms/10); /bin/sleep uses fractional seconds
+    cs=$(( (ms + 5) / 10 ))
+    (( cs < 1 )) && cs=1
+    delay=$(printf '0.%03d' $ms)
+    for (( step=1; step <= steps; step++ )); do
+      half=$(( (max_w * step) / (2 * steps) ))
       left=$(( origin_mid - half ))
       right=$(( origin_mid + half ))
       (( left < 0 )) && left=0
@@ -455,11 +471,15 @@ _dnav_success_bar() {
       width=$(( right - left ))
       printf "\r\e[2K"
       printf "\e[${left}C${hl}%*s${rst}" $width ""
-      sleep 0.03 2>/dev/null
+      if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+        zselect -t $cs
+      else
+        /bin/sleep "$delay" 2>/dev/null || /usr/bin/sleep "$delay" 2>/dev/null || true
+      fi
     done
   fi
 
-  display=$path
+  display=$bar_path
   if (( ${#display} > max_w )); then
     display="${display:0:$((max_w - 1))}…"
   fi
@@ -1425,11 +1445,11 @@ dnav() {
 
   # Expand from selected chip, then full-width path bar (shared _dnav_success_bar).
   _dnav_success_from_sel() {
-    local path="$1"
+    local sel_path="$1"
     local origin_start=${item_start[selected+1]:-0}
     local origin_end=${item_end[selected+1]:-$cols}
     local origin_mid=$(( (origin_start + origin_end) / 2 ))
-    _dnav_success_bar "$path" "$origin_mid"
+    _dnav_success_bar "$sel_path" "$origin_mid"
   }
 
   _dnav_compute_positions

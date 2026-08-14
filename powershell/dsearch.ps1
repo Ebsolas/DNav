@@ -1,25 +1,34 @@
-# dsearch.ps1 - fuzzy directory search for DNav (PowerShell / Windows)
+# dsearch.ps1 - fuzzy directory search for DNav (PowerShell, cross-platform)
 #
-# Dot-source after (or with) dnav.ps1:
-#   . .\powershell\dnav.ps1
-#   . .\powershell\dsearch.ps1
-#   dsearch          # standalone
-#   dnav             # then press / or s
+# Loaded by dnav.ps1 when present. Standalone:
+#   . .\powershell\dnav.ps1   # or . dsearch.ps1 after platform
+#   dsearch
 #
-# Index cache:  $env:LOCALAPPDATA\dnav\dirs.idx  (refreshed after 24h)
-# Override roots: $env:DNAV_SEARCH_ROOTS = "C:\Users\you;D:\Projects"
+# Index: Get-DnavCacheDir/dirs.idx (XDG on Unix, LOCALAPPDATA on Windows)
+# Override roots: $env:DNAV_SEARCH_ROOTS = "/home/you;/opt"  or "C:\Users\you;D:\"
 
-function Get-DsearchCacheDir {
+if (-not (Get-Command Get-DnavCacheDir -ErrorAction SilentlyContinue)) {
+    $__p = $null
+    if ($PSScriptRoot) { $__p = Join-Path $PSScriptRoot 'dnav.platform.ps1' }
+    if ($__p -and (Test-Path -LiteralPath $__p)) { . $__p }
+}
+
+function global:Get-DsearchCacheDir {
+    if (Get-Command Get-DnavCacheDir -ErrorAction SilentlyContinue) {
+        return (Get-DnavCacheDir)
+    }
     if ($env:DNAV_CACHE_DIR) { return $env:DNAV_CACHE_DIR }
     if ($env:XDG_CACHE_HOME) { return (Join-Path $env:XDG_CACHE_HOME 'dnav') }
-    return (Join-Path $env:LOCALAPPDATA 'dnav')
+    if ($env:LOCALAPPDATA) { return (Join-Path $env:LOCALAPPDATA 'dnav') }
+    return (Join-Path ([Environment]::GetEnvironmentVariable('HOME')) '.cache/dnav')
 }
 
-function Get-DsearchIndexPath {
-    return (Join-Path (Get-DsearchCacheDir) 'dirs.idx')
+function global:Get-DsearchIndexPath {
+    # Separate from zsh/bash full index (dirs.idx) so light PS rebuilds don't clobber it
+    return (Join-Path (Get-DsearchCacheDir) 'dirs-ps.idx')
 }
 
-function Test-DsearchIndexStale {
+function global:Test-DsearchIndexStale {
     param([string]$IndexPath)
     if (-not (Test-Path -LiteralPath $IndexPath)) { return $true }
     $item = Get-Item -LiteralPath $IndexPath -ErrorAction SilentlyContinue
@@ -27,7 +36,21 @@ function Test-DsearchIndexStale {
     return ((Get-Date) - $item.LastWriteTime).TotalHours -gt 24
 }
 
-function Get-DsearchRoots {
+function global:Get-DsearchMaxDepth {
+    if ($env:DNAV_SEARCH_MAX_DEPTH -match '^\d+$') {
+        return [int]$env:DNAV_SEARCH_MAX_DEPTH
+    }
+    return 8
+}
+
+function global:Get-DsearchMaxPaths {
+    if ($env:DNAV_SEARCH_MAX_PATHS -match '^\d+$') {
+        return [int]$env:DNAV_SEARCH_MAX_PATHS
+    }
+    return 20000
+}
+
+function global:Get-DsearchRoots {
     $roots = [System.Collections.Generic.List[string]]::new()
     $seen = @{}
 
@@ -47,34 +70,71 @@ function Get-DsearchRoots {
         return $roots
     }
 
-    Add-Root $env:USERPROFILE
-    Add-Root (Join-Path $env:USERPROFILE 'Documents')
-    Add-Root (Join-Path $env:USERPROFILE 'Downloads')
-    Add-Root (Join-Path $env:USERPROFILE 'Desktop')
-    Add-Root (Join-Path $env:USERPROFILE 'Projects')
-    Add-Root (Join-Path $env:USERPROFILE 'source')
-    Add-Root (Join-Path $env:USERPROFILE 'dev')
-    Add-Root (Join-Path $env:USERPROFILE 'OneDrive')
-    Add-Root 'C:\Users'
-    Add-Root 'D:\'
-    Add-Root 'E:\'
+    $userHome = if (Get-Command Get-DnavUserHome -ErrorAction SilentlyContinue) {
+        Get-DnavUserHome
+    } elseif ($env:USERPROFILE) {
+        $env:USERPROFILE
+    } else {
+        [Environment]::GetEnvironmentVariable('HOME')
+    }
+
+    # Default: HOME only (walk with depth/path caps). Broad roots cause multi‑GB
+    # walks on Linux and immediately thrash memory. Opt into more via DNAV_SEARCH_ROOTS
+    # or DNAV_SEARCH_BROAD=1.
+    Add-Root $userHome
+
+    $broad = $env:DNAV_SEARCH_BROAD
+    if ($broad -eq '1' -or $broad -eq 'true' -or $broad -eq 'yes') {
+        $isWin = $false
+        if (Get-Command Test-DnavWindows -ErrorAction SilentlyContinue) {
+            $isWin = Test-DnavWindows
+        } elseif ($env:OS -eq 'Windows_NT') {
+            $isWin = $true
+        }
+        if ($isWin) {
+            Add-Root (Join-Path $userHome 'OneDrive')
+            Add-Root 'D:\'
+            Add-Root 'E:\'
+        } else {
+            Add-Root '/opt'
+            Add-Root '/usr/local'
+            Add-Root '/srv'
+        }
+    }
 
     return $roots
 }
 
-function Test-DsearchSkipDir {
+function global:Test-DsearchSkipDir {
     param([string]$Name)
     $skip = @(
         '.git', 'node_modules', '__pycache__', '.npm', '.cargo', '.cache',
         'target', 'vendor', '.venv', 'venv', '.tox', '.gradle', '.m2',
         'AppData', 'Application Data', 'Cookies', 'Local Settings',
         'NTUSER.DAT', 'Temp', 'tmp', '.Trash', '$Recycle.Bin', 'System Volume Information',
-        'Windows', 'WinSxS', 'ProgramData', 'Recovery', 'PerfLogs'
+        'Windows', 'WinSxS', 'ProgramData', 'Recovery', 'PerfLogs',
+        'proc', 'sys', 'dev', 'run', 'boot', 'lost+found',
+        'Trash', 'Caches', '.local',  # .local often huge (share/containers); use DNAV_SEARCH_ROOTS for share
+        'snap', 'Flatpak', 'containers', 'docker', 'podman',
+        'Library', 'Application Support',
+        'chromium', 'google-chrome', 'BraveSoftware', 'Code', 'Cursor',
+        'discord', 'Slack', 'Steam', 'proton', 'lutris'
     )
-    return $skip -contains $Name
+    if ($skip -contains $Name) { return $true }
+    # Prefix skips (e.g. .cache:q clones of .cache)
+    if ($Name.StartsWith('.cache') -or $Name.StartsWith('.npm') -or
+        $Name.StartsWith('.cargo') -or $Name.StartsWith('.rustup')) {
+        return $true
+    }
+    # Other heavy/hidden tool trees
+    if ($Name -eq '.git' -or $Name -eq '.oh-my-zsh' -or $Name -eq '.grok' -or
+        $Name -eq '.vscode' -or $Name -eq '.cursor' -or $Name -eq '.pm2') {
+        return $true
+    }
+    return $false
 }
 
-function Build-DsearchIndex {
+function global:Build-DsearchIndex {
     param(
         [string]$IndexPath,
         [scriptblock]$OnProgress = $null
@@ -86,42 +146,77 @@ function Build-DsearchIndex {
 
     $tmp = "$IndexPath.tmp.$PID"
     $roots = Get-DsearchRoots
+    $maxDepth = Get-DsearchMaxDepth
+    $maxPaths = Get-DsearchMaxPaths
     $count = 0
-    $paths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    # Stream to file — avoid keeping every path in a giant sorted list in RAM
+    $sw = New-Object System.IO.StreamWriter($tmp, $false, [System.Text.UTF8Encoding]::new($false))
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    # stack entries: "depth`tpath"
     $stack = [System.Collections.Generic.Stack[string]]::new()
 
-    foreach ($root in $roots) {
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
-        [void]$paths.Add($root)
-        $stack.Push($root)
+    try {
+        foreach ($root in $roots) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+            if (-not $seen.Add($root)) { continue }
+            $sw.WriteLine($root)
+            $count++
+            $stack.Push("0`t$root")
 
-        while ($stack.Count -gt 0) {
-            $current = $stack.Pop()
-            try {
-                foreach ($dir in [System.IO.Directory]::EnumerateDirectories($current)) {
-                    $name = [System.IO.Path]::GetFileName($dir)
-                    if (Test-DsearchSkipDir $name) { continue }
-                    if ($paths.Add($dir)) {
+            while ($stack.Count -gt 0) {
+                if ($count -ge $maxPaths) { break }
+                $entry = $stack.Pop()
+                $tab = $entry.IndexOf([char]9)
+                if ($tab -lt 0) { continue }
+                $depth = [int]$entry.Substring(0, $tab)
+                $current = $entry.Substring($tab + 1)
+                if ($depth -ge $maxDepth) { continue }
+                try {
+                    foreach ($dir in [System.IO.Directory]::EnumerateDirectories($current)) {
+                        if ($count -ge $maxPaths) { break }
+                        $name = [System.IO.Path]::GetFileName($dir)
+                        if (Test-DsearchSkipDir $name) { continue }
+                        if (-not $seen.Add($dir)) { continue }
+                        $sw.WriteLine($dir)
                         $count++
-                        $stack.Push($dir)
-                        if ($OnProgress -and ($count % 50 -eq 0)) {
+                        $stack.Push(('{0}{1}{2}' -f ($depth + 1), [char]9, $dir))
+                        if ($OnProgress -and ($count % 100 -eq 0)) {
                             & $OnProgress $count
                         }
                     }
+                } catch {
+                    # Access denied on this node - skip children
                 }
-            } catch {
-                # Access denied on this node - skip children
             }
+            if ($count -ge $maxPaths) { break }
         }
+    } finally {
+        $sw.Close()
+        $sw.Dispose()
     }
 
-    $sorted = $paths | Sort-Object
-    $sorted | Set-Content -LiteralPath $tmp -Encoding UTF8
-    Move-Item -LiteralPath $tmp -Destination $IndexPath -Force
+    if ($OnProgress) { & $OnProgress $count }
+    # Optional sort without loading all as PS objects: use external sort if available
+    $sortedTmp = "$tmp.sorted"
+    $sortedOk = $false
+    if (Get-Command sort -ErrorAction SilentlyContinue) {
+        try {
+            & sort -u -o $sortedTmp $tmp 2>$null
+            if (Test-Path -LiteralPath $sortedTmp) {
+                Move-Item -LiteralPath $sortedTmp -Destination $IndexPath -Force
+                Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                $sortedOk = $true
+            }
+        } catch { }
+    }
+    if (-not $sortedOk) {
+        Move-Item -LiteralPath $tmp -Destination $IndexPath -Force
+        Remove-Item -LiteralPath $sortedTmp -Force -ErrorAction SilentlyContinue
+    }
     return $count
 }
 
-function Ensure-DsearchIndex {
+function global:Ensure-DsearchIndex {
     $idx = Get-DsearchIndexPath
     if (-not (Test-DsearchIndexStale $idx)) {
         return $true
@@ -149,7 +244,7 @@ function Ensure-DsearchIndex {
     }
 }
 
-function Get-DsearchFuzzyScore {
+function global:Get-DsearchFuzzyScore {
     param([string]$Path, [string]$Query)
     if ([string]::IsNullOrEmpty($Query)) { return -1 }
     $lp = $Path.ToLowerInvariant()
@@ -188,7 +283,7 @@ function Get-DsearchFuzzyScore {
     return $score
 }
 
-function Get-DsearchPrefix1Score {
+function global:Get-DsearchPrefix1Score {
     param([string]$Path, [string]$Query)
     if ([string]::IsNullOrEmpty($Query)) { return -1 }
     $ch = [char]::ToLowerInvariant($Query[0])
@@ -209,7 +304,7 @@ function Get-DsearchPrefix1Score {
     return $best
 }
 
-function Invoke-DsearchFilter {
+function global:Invoke-DsearchFilter {
     param(
         [string]$Query,
         [string[]]$Source,
@@ -220,7 +315,11 @@ function Invoke-DsearchFilter {
     }
 
     $modePrefix1 = ($Query.Length -eq 1)
-    $scored = [System.Collections.Generic.List[object]]::new()
+    # Bounded top-N heap (arrays) — never materialize every match as PSObject
+    $topScores = New-Object 'int[]' $Max
+    $topPaths = New-Object 'string[]' $Max
+    $topN = 0
+    $minTop = [int]::MinValue
 
     foreach ($path in $Source) {
         if ([string]::IsNullOrEmpty($path)) { continue }
@@ -230,24 +329,46 @@ function Invoke-DsearchFilter {
             Get-DsearchFuzzyScore -Path $path -Query $Query
         }
         if ($sc -lt 0) { continue }
-        $scored.Add([pscustomobject]@{ Score = $sc; Path = $path }) | Out-Null
+        if ($topN -eq $Max -and $sc -le $minTop) { continue }
+
+        if ($topN -lt $Max) {
+            $i = $topN
+            $topN++
+        } else {
+            $i = $Max - 1
+        }
+        while ($i -gt 0 -and $sc -gt $topScores[$i - 1]) {
+            $topScores[$i] = $topScores[$i - 1]
+            $topPaths[$i] = $topPaths[$i - 1]
+            $i--
+        }
+        $topScores[$i] = $sc
+        $topPaths[$i] = $path
+        $minTop = $topScores[$topN - 1]
     }
 
-    return @(
-        $scored |
-            Sort-Object -Property Score -Descending |
-            Select-Object -First $Max |
-            ForEach-Object { $_.Path }
-    )
+    if ($topN -eq 0) { return @() }
+    $out = New-Object 'string[]' $topN
+    [Array]::Copy($topPaths, $out, $topN)
+    return $out
 }
 
-function Format-DsearchPath {
+function global:Format-DsearchPath {
     param([string]$Path, [int]$MaxWidth = 0)
-    $home = $env:USERPROFILE
+    # NOTE: never assign $home — it aliases automatic read-only $HOME
+    $userHome = if (Get-Command Get-DnavUserHome -ErrorAction SilentlyContinue) {
+        Get-DnavUserHome
+    } elseif ($env:USERPROFILE) {
+        $env:USERPROFILE
+    } else {
+        [Environment]::GetEnvironmentVariable('HOME')
+    }
     $p = $Path
-    if ($p -eq $home -or $p.StartsWith($home + '\', [StringComparison]::OrdinalIgnoreCase) -or
-        $p.StartsWith($home + '/', [StringComparison]::OrdinalIgnoreCase)) {
-        $p = '~' + $p.Substring($home.Length)
+    if ($userHome -and (
+            $p -eq $userHome -or
+            $p.StartsWith($userHome + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            $p.StartsWith($userHome + '/', [StringComparison]::OrdinalIgnoreCase))) {
+        $p = '~' + $p.Substring($userHome.Length)
     }
     if ($MaxWidth -gt 0 -and $p.Length -gt $MaxWidth) {
         $p = [char]0x2026 + $p.Substring($p.Length - ($MaxWidth - 1))
@@ -255,46 +376,15 @@ function Format-DsearchPath {
     return $p
 }
 
-function Ensure-ConsoleInputType {
-    if (-not ([System.Management.Automation.PSTypeName]'ConsoleInput').Type) {
-        Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class ConsoleInput {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetStdHandle(int nStdHandle);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool ReadConsoleInput(IntPtr hConsoleInput, ref INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
-    public const int STD_INPUT_HANDLE = -10;
-    public const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
-    public const uint ENABLE_EXTENDED_FLAGS = 0x0080;
-    [StructLayout(LayoutKind.Sequential)]
-    public struct COORD { public short X; public short Y; }
-    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
-    public struct KEY_EVENT_RECORD {
-        [FieldOffset(0)] public bool bKeyDown;
-        [FieldOffset(4)] public short wRepeatCount;
-        [FieldOffset(6)] public short wVirtualKeyCode;
-        [FieldOffset(8)] public short wVirtualScanCode;
-        [FieldOffset(10)] public char UnicodeChar;
-        [FieldOffset(12)] public int dwControlKeyState;
+function global:dsearch {
+    if (-not (Get-Command Read-DnavKey -ErrorAction SilentlyContinue)) {
+        function script:Read-DnavKey {
+            $ki = [Console]::ReadKey($true)
+            $ctrl = $false
+            try { $ctrl = ($ki.Modifiers -band [ConsoleModifiers]::Control) -ne 0 } catch { }
+            return [pscustomobject]@{ Key = $ki.Key; Char = $ki.KeyChar; Ctrl = $ctrl }
+        }
     }
-    [StructLayout(LayoutKind.Explicit)]
-    public struct INPUT_RECORD {
-        [FieldOffset(0)] public short EventType;
-        [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent;
-    }
-}
-"@
-    }
-}
-
-function dsearch {
-    Ensure-ConsoleInputType
 
     $idx = Get-DsearchIndexPath
     if (-not (Ensure-DsearchIndex)) {
@@ -302,168 +392,177 @@ function dsearch {
         return $false
     }
 
-    $allPaths = @(Get-Content -LiteralPath $idx -ErrorAction SilentlyContinue)
-    if ($allPaths.Count -eq 0) {
+    # Read as string[] once; do not re-parse on every key
+    $allPaths = [System.IO.File]::ReadAllLines($idx)
+    if ($null -eq $allPaths -or $allPaths.Length -eq 0) {
         Write-Host 'dsearch: index is empty.' -ForegroundColor Red
         return $false
     }
+    # Soft cap interactive working set (full file may still be large from older builds)
+    $maxLoad = Get-DsearchMaxPaths
+    if ($allPaths.Length -gt $maxLoad) {
+        $tmp = New-Object 'string[]' $maxLoad
+        [Array]::Copy($allPaths, $tmp, $maxLoad)
+        $allPaths = $tmp
+    }
 
-    $query = ''
-    $matches = @()
-    $selected = 0
-    $maxResults = 10
+    # Shared state for nested draw/update (same pitfall as dfile: $script: vs local)
+    $st = @{
+        Query     = ''
+        Matches   = @()
+        Selected  = 0
+        MaxResults = 10
+        StartRow  = 0
+    }
 
-    $handle = [ConsoleInput]::GetStdHandle([ConsoleInput]::STD_INPUT_HANDLE)
-    $mode = 0
-    [ConsoleInput]::GetConsoleMode($handle, [ref]$mode) | Out-Null
-    $newMode = ($mode -band (-bnot [ConsoleInput]::ENABLE_QUICK_EDIT_MODE)) -bor [ConsoleInput]::ENABLE_EXTENDED_FLAGS
-    [ConsoleInput]::SetConsoleMode($handle, $newMode) | Out-Null
-
-    $reserve = $maxResults + 1
+    $reserve = $st.MaxResults + 1
     for ($i = 0; $i -lt $reserve; $i++) { [Console]::WriteLine() }
-    $startRow = [Console]::CursorTop - $reserve
-
-    $record = New-Object ConsoleInput+INPUT_RECORD
-    $eventsRead = 0
+    $st.StartRow = [Console]::CursorTop - $reserve
 
     function Clear-SearchArea {
-        $winW = [Console]::WindowWidth
-        for ($r = 0; $r -le $maxResults; $r++) {
-            [Console]::SetCursorPosition(0, $startRow + $r)
-            [Console]::Write((' ' * $winW))
+        $winW = if (Get-Command Get-DnavConsoleWidth -ErrorAction SilentlyContinue) {
+            Get-DnavConsoleWidth
+        } else {
+            [Math]::Max(20, [Console]::WindowWidth)
+        }
+        for ($r = 0; $r -le $st.MaxResults; $r++) {
+            try {
+                [Console]::SetCursorPosition(0, $st.StartRow + $r)
+                [Console]::Write((' ' * $winW))
+            } catch { }
         }
     }
 
     function Draw-Search {
-        $winW = [Console]::WindowWidth
+        $winW = if (Get-Command Get-DnavConsoleWidth -ErrorAction SilentlyContinue) {
+            Get-DnavConsoleWidth
+        } else {
+            [Math]::Max(20, [Console]::WindowWidth)
+        }
         Clear-SearchArea
 
-        [Console]::SetCursorPosition(0, $startRow)
-        $label = ' DNav Search: '
+        try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
+        # Chip: leading space + "DNav Search:" — NO trailing space (space after chip is normal text)
+        # Renders like zsh: [ DNav Search:] query
+        $label = ' DNav Search:'
         Write-Host $label -ForegroundColor Black -BackgroundColor Cyan -NoNewline
-        $countStr = if ($matches.Count -gt 0) { " $($selected+1)/$($matches.Count) " } else { '' }
-        $avail = $winW - $label.Length - $countStr.Length - 1
+        try { [Console]::Write(' ') } catch { Write-Host ' ' -NoNewline }
+
+        $mc = @($st.Matches).Count
+        $countStr = if ($mc -gt 0) { " $($st.Selected + 1)/$mc " } else { '' }
+        $avail = $winW - $label.Length - 1 - $countStr.Length
         if ($avail -lt 4) { $avail = 4 }
-        $qshow = $query
+        $qshow = [string]$st.Query
         if ($qshow.Length -gt $avail) {
             $qshow = $qshow.Substring(0, $avail - 1) + [char]0x2026
         }
-        Write-Host $qshow -NoNewline
-        $pad = $winW - [Console]::CursorLeft - $countStr.Length
-        if ($pad -gt 0) { [Console]::Write((' ' * $pad)) }
+        # Query as plain text (not cyan) so it doesn't look like a second chip
+        if ($qshow.Length -gt 0) {
+            [Console]::Write($qshow)
+        }
+        try {
+            $pad = $winW - [Console]::CursorLeft - $countStr.Length
+            if ($pad -gt 0) { [Console]::Write((' ' * $pad)) }
+        } catch { }
         if ($countStr) {
             Write-Host $countStr -ForegroundColor DarkGray -NoNewline
         }
 
-        for ($i = 0; $i -lt $matches.Count -and $i -lt $maxResults; $i++) {
-            [Console]::SetCursorPosition(0, $startRow + 1 + $i)
-            $disp = Format-DsearchPath -Path $matches[$i] -MaxWidth ($winW - 4)
-            if ($i -eq $selected) {
+        for ($i = 0; $i -lt $mc -and $i -lt $st.MaxResults; $i++) {
+            try { [Console]::SetCursorPosition(0, $st.StartRow + 1 + $i) } catch { }
+            $disp = Format-DsearchPath -Path $st.Matches[$i] -MaxWidth ($winW - 4)
+            if ($i -eq $st.Selected) {
                 Write-Host (" > $disp".PadRight($winW)) -ForegroundColor Black -BackgroundColor Cyan -NoNewline
             } else {
                 Write-Host ("   $disp".PadRight($winW)) -ForegroundColor DarkGray -NoNewline
             }
         }
-        [Console]::SetCursorPosition(0, $startRow)
+        try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
     }
 
     function Update-Matches {
-        if ([string]::IsNullOrEmpty($query)) {
-            $script:matches = @()
-            $script:selected = 0
+        if ([string]::IsNullOrEmpty($st.Query)) {
+            $st.Matches = @()
+            $st.Selected = 0
             return
         }
-        $script:matches = @(Invoke-DsearchFilter -Query $query -Source $allPaths -Max $maxResults)
-        $script:selected = 0
+        $st.Matches = @(Invoke-DsearchFilter -Query $st.Query -Source $allPaths -Max $st.MaxResults)
+        $st.Selected = 0
     }
 
+    $prevVis = $true
     try {
+        try { $prevVis = [Console]::CursorVisible; [Console]::CursorVisible = $false } catch { }
         Draw-Search
         while ($true) {
-            [ConsoleInput]::ReadConsoleInput($handle, [ref]$record, 1, [ref]$eventsRead) | Out-Null
-            if ($record.EventType -ne 1) { continue }
-            if (-not $record.KeyEvent.bKeyDown) { continue }
+            $k = Read-DnavKey
+            $key = $k.Key
+            $ch = $k.Char
+            $mc = @($st.Matches).Count
 
-            $vk = $record.KeyEvent.wVirtualKeyCode
-            $ch = $record.KeyEvent.UnicodeChar
-
-            switch ($vk) {
-                38 {
-                    if ($matches.Count -gt 0 -and $selected -gt 0) {
-                        $selected--; Draw-Search
-                    }
+            if ($key -eq [ConsoleKey]::UpArrow -or ($k.Ctrl -and ($ch -eq 'p' -or $ch -eq 'P'))) {
+                if ($mc -gt 0 -and $st.Selected -gt 0) {
+                    $st.Selected--; Draw-Search
                 }
-                40 {
-                    if ($matches.Count -gt 0 -and $selected -lt ($matches.Count - 1)) {
-                        $selected++; Draw-Search
-                    }
+                continue
+            }
+            if ($key -eq [ConsoleKey]::DownArrow -or ($k.Ctrl -and ($ch -eq 'n' -or $ch -eq 'N'))) {
+                if ($mc -gt 0 -and $st.Selected -lt ($mc - 1)) {
+                    $st.Selected++; Draw-Search
                 }
-                13 {
-                    if ($matches.Count -eq 0) { continue }
-                    $target = $matches[$selected]
-                    Clear-SearchArea
-                    [Console]::SetCursorPosition(0, $startRow)
-                    if (Test-Path -LiteralPath $target -PathType Container) {
-                        Set-Location -LiteralPath $target
-                        $full = (Get-Location).Path
-                        if (Get-Command Show-DnavSuccessBar -ErrorAction SilentlyContinue) {
-                            Show-DnavSuccessBar $full
-                        } else {
-                            Write-Host $full -ForegroundColor Black -BackgroundColor Cyan
-                        }
-                        return $true
+                continue
+            }
+            if ($key -eq [ConsoleKey]::Enter) {
+                if ($mc -eq 0) { continue }
+                $target = $st.Matches[$st.Selected]
+                Clear-SearchArea
+                try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
+                if (Test-Path -LiteralPath $target -PathType Container) {
+                    Set-Location -LiteralPath $target
+                    $full = (Get-Location).Path
+                    if (Get-Command Show-DnavSuccessBar -ErrorAction SilentlyContinue) {
+                        Show-DnavSuccessBar $full
                     } else {
-                        Write-Host "Folder not found: $target" -ForegroundColor Red
-                        return $false
+                        Write-Host $full -ForegroundColor Black -BackgroundColor Cyan
                     }
-                }
-                27 {
-                    Clear-SearchArea
-                    [Console]::SetCursorPosition(0, $startRow)
+                    return $true
+                } else {
+                    Write-Host "Folder not found: $target" -ForegroundColor Red
                     return $false
                 }
-                8 {
-                    if ($query.Length -gt 0) {
-                        $query = $query.Substring(0, $query.Length - 1)
-                        Update-Matches
-                        Draw-Search
-                    }
+            }
+            if ($key -eq [ConsoleKey]::Escape) {
+                Clear-SearchArea
+                try { [Console]::SetCursorPosition(0, $st.StartRow) } catch { }
+                return $false
+            }
+            if ($key -eq [ConsoleKey]::Backspace) {
+                if ($st.Query.Length -gt 0) {
+                    $st.Query = $st.Query.Substring(0, $st.Query.Length - 1)
+                    Update-Matches
+                    Draw-Search
                 }
-                default {
-                    $ctrl = ($record.KeyEvent.dwControlKeyState -band 0x0C) -ne 0
-                    if ($ctrl -and ($ch -eq 'u' -or $ch -eq 'U')) {
-                        $query = ''
-                        Update-Matches
-                        Draw-Search
-                        continue
-                    }
-                    if ($ctrl -and ($ch -eq 'n' -or $ch -eq 'N')) {
-                        if ($matches.Count -gt 0 -and $selected -lt ($matches.Count - 1)) {
-                            $selected++; Draw-Search
-                        }
-                        continue
-                    }
-                    if ($ctrl -and ($ch -eq 'p' -or $ch -eq 'P')) {
-                        if ($matches.Count -gt 0 -and $selected -gt 0) {
-                            $selected--; Draw-Search
-                        }
-                        continue
-                    }
-                    if ($ch -ge [char]32 -and $ch -le [char]126) {
-                        $query += $ch
-                        Update-Matches
-                        Draw-Search
-                    }
-                }
+                continue
+            }
+            if ($k.Ctrl -and ($ch -eq 'u' -or $ch -eq 'U')) {
+                $st.Query = ''
+                Update-Matches
+                Draw-Search
+                continue
+            }
+            if ($ch -ge [char]32 -and $ch -le [char]126 -and -not $k.Ctrl) {
+                $st.Query = $st.Query + [string]$ch
+                Update-Matches
+                Draw-Search
             }
         }
     }
     finally {
-        [ConsoleInput]::SetConsoleMode($handle, $mode) | Out-Null
+        try { [Console]::CursorVisible = $prevVis } catch { }
     }
 }
 
-function dsearch-reindex {
+function global:dsearch-reindex {
     $idx = Get-DsearchIndexPath
     Write-Host "Rebuilding index at $idx ..." -ForegroundColor Cyan
     $n = Build-DsearchIndex -IndexPath $idx -OnProgress {

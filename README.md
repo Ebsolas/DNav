@@ -91,5 +91,27 @@ After editing: `dconfig -r` (or About → Settings).
 
 ## Requirements
 
-- **zsh**
+- **zsh** (primary), **bash 4+**, or **PowerShell 5.1+ / pwsh 7+**
 - A terminal that supports common ANSI escapes
+
+### PowerShell (cross-platform)
+
+```powershell
+# Linux: symlink or copy powershell/ → ~/.local/share/dnav-ps
+# Windows: drop into Documents\PowerShell\dnav\
+. "$HOME/.local/share/dnav-ps/dnav.ps1"   # or Windows path above
+dnav
+```
+
+See [powershell/README.md](powershell/README.md).
+
+## Tests
+
+```bash
+./tests/run.sh              # bash + zsh (default)
+./tests/run.sh --zsh        # zsh only
+./tests/run.sh --powershell # PowerShell (needs pwsh)
+./tests/run.sh --all        # all three suites
+```
+
+See [tests/README.md](tests/README.md).

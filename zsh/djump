@@ -52,16 +52,15 @@ _djump_user_path() {
 
 # Compact path for storage (~ for $HOME). Never treats bare "~" as a relative name.
 _djump_store_path() {
-  local path="$1" store
-  if [[ $path == '~' ]]; then
+  local p="$1" store
+  if [[ $p == '~' ]]; then
     store="$HOME"
-  elif [[ $path == '~/'* ]]; then
-    store="${path/#\~/$HOME}"
-  elif [[ $path == /* ]]; then
-    store="${path:A}"
+  elif [[ $p == '~/'* ]]; then
+    store="${p/#\~/$HOME}"
+  elif [[ $p == /* ]]; then
+    store="${p:A}"
   else
-    # relative → absolute from $PWD
-    store="$(cd -- "$PWD" && cd -- "$path" 2>/dev/null && pwd -P)" || store="${PWD:A}/$path"
+    store="$(cd -- "$PWD" && cd -- "$p" 2>/dev/null && pwd -P)" || store="${PWD:A}/$p"
   fi
   if [[ $store == "$HOME" ]]; then
     store="~"
@@ -159,19 +158,19 @@ _djump_ensure() {
 
 # Expand path: ~ and relatives against $PWD; print absolute if possible.
 _djump_expand() {
-  local path="$1" out
-  if [[ $path == '~' || $path == '~/'* ]]; then
-    path="${path/#\~/$HOME}"
+  local p="$1" out
+  if [[ $p == '~' || $p == '~/'* ]]; then
+    p="${p/#\~/$HOME}"
   fi
-  if [[ $path == /* ]]; then
-    print -r -- "${path:a}"
+  if [[ $p == /* ]]; then
+    print -r -- "${p:a}"
     return 0
   fi
-  out="$(cd -- "$PWD" && cd -- "$path" 2>/dev/null && pwd -P)" || out=""
+  out="$(cd -- "$PWD" && cd -- "$p" 2>/dev/null && pwd -P)" || out=""
   if [[ -n $out ]]; then
     print -r -- "$out"
   else
-    print -r -- "${PWD:a}/$path"
+    print -r -- "${PWD:a}/$p"
   fi
 }
 

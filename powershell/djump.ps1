@@ -1,10 +1,10 @@
-# djump.ps1 - directory jump table for DNav (PowerShell / Windows)
+# djump.ps1 - directory jump table for DNav (PowerShell, cross-platform)
 # Public commands and state use global: scope so they survive after load.
 #
 # Data file (first match wins):
 #   $env:DNAV_JUMPS
-#   Documents\WindowsPowerShell\dnav\config\jumps
-#   Documents\WindowsPowerShell\dnav\jumps  (package install)
+#   $DNAV_CONFIG_DIR/jumps  (Unix: ~/.config/dnav/jumps)
+#   package jumps            (seed only)
 #
 # Commands:
 #   djump [-Reload|-List|KEY]
@@ -23,6 +23,13 @@ if ($PSScriptRoot) {
     $global:DjumpSourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
+# Ensure platform helpers if djump is loaded alone
+if (-not (Get-Command Get-DnavUserHome -ErrorAction SilentlyContinue)) {
+    $__p = $null
+    if ($PSScriptRoot) { $__p = Join-Path $PSScriptRoot 'dnav.platform.ps1' }
+    if ($__p -and (Test-Path -LiteralPath $__p)) { . $__p }
+}
+
 function global:Get-DjumpPackageDir {
     if ($global:DnavInstallDir -and (Test-Path -LiteralPath $global:DnavInstallDir)) {
         return $global:DnavInstallDir
@@ -34,14 +41,23 @@ function global:Get-DjumpPackageDir {
         return $global:DjumpSourceDir
     }
     if ($PSScriptRoot) { return $PSScriptRoot }
-    $docs = [Environment]::GetFolderPath('MyDocuments')
-    if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
-    return (Join-Path $docs 'WindowsPowerShell\dnav')
+    if (Get-Command Get-DnavDefaultInstallDir -ErrorAction SilentlyContinue) {
+        return (Get-DnavDefaultInstallDir)
+    }
+    return $global:DjumpSourceDir
 }
 
 function global:Get-DjumpUserPath {
     if ($env:DNAV_JUMPS) { return $env:DNAV_JUMPS }
-    $cfg = if ($env:DNAV_CONFIG_DIR) { $env:DNAV_CONFIG_DIR } else { Join-Path (Get-DjumpPackageDir) 'config' }
+    $cfg = if (Get-Command Get-DnavConfigDir -ErrorAction SilentlyContinue) {
+        Get-DnavConfigDir
+    } elseif ($env:DNAV_CONFIG_DIR) {
+        $env:DNAV_CONFIG_DIR
+    } elseif (Get-Command Get-DnavDefaultConfigDir -ErrorAction SilentlyContinue) {
+        Get-DnavDefaultConfigDir
+    } else {
+        Join-Path (Get-DjumpPackageDir) 'config'
+    }
     if (-not (Test-Path -LiteralPath $cfg)) {
         New-Item -ItemType Directory -Path $cfg -Force | Out-Null
     }
@@ -60,14 +76,25 @@ function global:Get-DjumpDataPath {
 function global:Expand-DjumpPath {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-    if ($Path -eq '~') { return $env:USERPROFILE }
-    if ($Path.StartsWith('~/') -or $Path.StartsWith('~\')) {
-        return (Join-Path $env:USERPROFILE $Path.Substring(2))
-    }
     if ($Path -eq '..') {
         $parent = Split-Path -Parent (Get-Location).Path
         if ($parent) { return $parent }
         return (Get-Location).Path
+    }
+    if (Get-Command Expand-DnavUserPath -ErrorAction SilentlyContinue) {
+        return (Expand-DnavUserPath $Path)
+    }
+    $userHome = $null
+    if (Get-Command Get-DnavUserHome -ErrorAction SilentlyContinue) {
+        $userHome = Get-DnavUserHome
+    } elseif ($env:USERPROFILE) {
+        $userHome = $env:USERPROFILE
+    } else {
+        $userHome = [Environment]::GetEnvironmentVariable('HOME')
+    }
+    if ($Path -eq '~') { return $userHome }
+    if ($Path.StartsWith('~/') -or $Path.StartsWith('~\')) {
+        return (Join-Path $userHome $Path.Substring(2))
     }
     $expanded = [Environment]::ExpandEnvironmentVariables($Path)
     if ([System.IO.Path]::IsPathRooted($expanded)) {
@@ -81,11 +108,20 @@ function global:Format-DjumpStorePath {
     param([string]$Path)
     $full = Expand-DjumpPath $Path
     if (-not $full) { return $Path }
-    $home = $env:USERPROFILE
-    if ($full -eq $home) { return '~' }
-    if ($full.StartsWith($home + '\', [StringComparison]::OrdinalIgnoreCase) -or
-        $full.StartsWith($home + '/', [StringComparison]::OrdinalIgnoreCase)) {
-        return '~' + $full.Substring($home.Length)
+    # NOTE: never assign $home — it aliases automatic read-only $HOME
+    $userHome = $null
+    if (Get-Command Get-DnavUserHome -ErrorAction SilentlyContinue) {
+        $userHome = Get-DnavUserHome
+    } elseif ($env:USERPROFILE) {
+        $userHome = $env:USERPROFILE
+    } else {
+        $userHome = [Environment]::GetEnvironmentVariable('HOME')
+    }
+    if ($full -eq $userHome) { return '~' }
+    if ($userHome -and (
+            $full.StartsWith($userHome + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            $full.StartsWith($userHome + '/', [StringComparison]::OrdinalIgnoreCase))) {
+        return '~' + $full.Substring($userHome.Length)
     }
     return $full
 }

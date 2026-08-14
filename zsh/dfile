@@ -25,13 +25,35 @@ _dfile_cols() {
   print -rn -- "$w"
 }
 
+# Cell width for a strip label (extra for 🔒 when locked).
+_dfile_cell_w() {
+  local label="$1" locked="${2:-0}"
+  if (( locked )); then
+    print -rn -- $(( ${#label} + 5 ))   # "🔒 " + " name "
+  else
+    print -rn -- $(( ${#label} + 3 ))
+  fi
+}
+
+# 1 if path is a dir we cannot enter/list (need r+x).
+_dfile_dir_locked() {
+  local d="$1"
+  [[ -d $d ]] || return 0
+  [[ -r $d && -x $d ]] && return 1
+  return 0
+}
+
 # List basenames. kind=dirs|files. Returns 1 if unreadable; sets _DFILE_LIST_DENY.
+# For dirs, also sets _DFILE_LIST_LOCKS (parallel 0/1 array).
+typeset -ga _DFILE_LIST_LOCKS
 _dfile_list() {
   local dir="$1" kind="$2" show_hidden="$3"
-  local -a raw names
+  local -a raw names locks
   local e b
   names=()
+  locks=()
   _DFILE_LIST_DENY=""
+  _DFILE_LIST_LOCKS=()
   if [[ ! -d $dir ]]; then
     return 1
   fi
@@ -59,17 +81,47 @@ _dfile_list() {
     b="${e:t}"
     [[ $b == . || $b == .. ]] && continue
     names+=("$b")
+    if [[ $kind == dirs ]] && _dfile_dir_locked "$e"; then
+      locks+=(1)
+    else
+      locks+=(0)
+    fi
   done
-  (( $#names )) && names=("${(@o)names}")
+  if (( $#names )); then
+    # Sort names; keep locks aligned by rebuilding locks after sort
+    if [[ $kind == dirs ]]; then
+      local -a pairs sorted_names sorted_locks
+      local i
+      for (( i=1; i <= $#names; i++ )); do
+        pairs+=("${names[i]}"$'\t'"${locks[i]}")
+      done
+      pairs=("${(@o)pairs}")
+      sorted_names=()
+      sorted_locks=()
+      for e in "${pairs[@]}"; do
+        sorted_names+=("${e%%$'\t'*}")
+        sorted_locks+=("${e#*$'\t'}")
+      done
+      names=("${sorted_names[@]}")
+      locks=("${sorted_locks[@]}")
+    else
+      names=("${(@o)names}")
+      locks=()
+    fi
+  fi
+  _DFILE_LIST_LOCKS=("${locks[@]}")
   print -l -- "${names[@]}"
   return 0
 }
 
 # Windowing: reply=(win_start), _dfile_vis=(labels)
+# Optional $5 = lock array name (parallel 0/1 flags).
 _dfile_window() {
-  local aname="$1" sel="$2" win="$3" maxw="$4"
-  local -a all
+  local aname="$1" sel="$2" win="$3" maxw="$4" lockname="${5:-}"
+  local -a all locks
   all=("${(@P)aname}")
+  locks=()
+  [[ -n $lockname ]] && locks=("${(@P)lockname}")
   local n=$#all
   (( n == 0 )) && { reply=(0); _dfile_vis=(); return 0 }
 
@@ -79,7 +131,7 @@ _dfile_window() {
   (( win > sel )) && win=$sel
 
   local -a vis
-  local i w used label vcount sel_slot changed=1 guard=0
+  local i w used label vcount sel_slot changed=1 guard=0 locked
 
   while (( changed && guard < 40 )); do
     (( guard++ ))
@@ -88,7 +140,8 @@ _dfile_window() {
     used=0
     for (( i=win; i < n; i++ )); do
       label="${all[i+1]}"
-      w=$(( ${#label} + 3 ))
+      locked=${locks[i+1]:-0}
+      w="$(_dfile_cell_w "$label" $locked)"
       if (( $#vis > 0 && used + w > maxw )); then
         break
       fi
@@ -129,25 +182,28 @@ _dfile_window() {
 # Paint a horizontal strip at the current cursor line.
 # Does not emit leading newline. Clears to EOL.
 # Shows < / > when more items are scrolled off to the left / right.
-# Sets reply=(new_win)
+# Optional $6 = lock array name. Sets reply=(new_win)
 _dfile_paint_strip() {
   local aname="$1"
   local sel="$2"
   local win="$3"
   local active="$4"
   local maxw="$5"
+  local lockname="${6:-}"
   local hl rst
-  local -a items
+  local -a items locks
   items=("${(@P)aname}")
+  locks=()
+  [[ -n $lockname ]] && locks=("${(@P)lockname}")
   hl="$(_dfile_hl)"
   rst="$(_dfile_rst)"
 
   local n=$#items
   local more_l=0 more_r=0 ind_l=0 ind_r=0 content_w=$maxw
-  local i label used=0 cell_w
+  local i label used=0 cell_w locked
 
   # Pass 1: window at full width to see if overflow markers are needed
-  _dfile_window "$aname" "$sel" "$win" "$content_w"
+  _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname"
   win=$reply[1]
   (( win > 0 )) && more_l=1
   (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
@@ -158,20 +214,19 @@ _dfile_paint_strip() {
   if (( ind_l + ind_r > 0 )); then
     content_w=$(( maxw - ind_l - ind_r ))
     (( content_w < 4 )) && content_w=4
-    _dfile_window "$aname" "$sel" "$win" "$content_w"
+    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname"
     win=$reply[1]
     more_l=0
     more_r=0
     (( win > 0 )) && more_l=1
     (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
-    # If marker set changed after re-window, recompute once more
     ind_l=0
     ind_r=0
     (( more_l )) && ind_l=2
     (( more_r )) && ind_r=2
     content_w=$(( maxw - ind_l - ind_r ))
     (( content_w < 4 )) && content_w=4
-    _dfile_window "$aname" "$sel" "$win" "$content_w"
+    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname"
     win=$reply[1]
     more_l=0
     more_r=0
@@ -184,15 +239,25 @@ _dfile_paint_strip() {
   used=0
   for (( i=win; i < n; i++ )); do
     label="${items[i+1]}"
-    cell_w=$(( ${#label} + 3 ))
+    locked=${locks[i+1]:-0}
+    cell_w="$(_dfile_cell_w "$label" $locked)"
     if (( used > 0 && used + cell_w > content_w )); then
       break
     fi
     if (( used == 0 && cell_w > content_w )); then
-      label="${label[1,content_w-2]}…"
+      local room=$(( content_w - (locked ? 5 : 3) ))
+      (( room < 1 )) && room=1
+      label="${label[1,room]}…"
       cell_w=$content_w
     fi
-    if (( active && i == sel )); then
+    if (( locked )); then
+      # Red + lock for inaccessible dirs
+      if (( active && i == sel )); then
+        printf "\e[41;37m 🔒 %s \e[0m " "$label"
+      else
+        printf "\e[31m 🔒 %s \e[0m " "$label"
+      fi
+    elif (( active && i == sel )); then
       printf "${hl} %s ${rst} " "$label"
     else
       printf " %s  " "$label"
@@ -217,6 +282,7 @@ _dfile_enter() {
   local mode=browse      # browse | jump
   local jump_buf=""
   local -a siblings children files
+  local -a siblings_lock children_lock   # 1 = inaccessible (red + lock)
   local sel_s=0 sel_c=0 sel_f=0
   local win_s=0 win_c=0 win_f=0
   # body = lines below the top row (always 3 in browse: children, status, files).
@@ -251,10 +317,13 @@ _dfile_enter() {
     siblings=()
     children=()
     files=()
+    siblings_lock=()
+    children_lock=()
 
     # At filesystem root there is no parent strip of siblings — only show "/"
     if [[ $cwd == / ]]; then
       siblings=("/")
+      siblings_lock=(0)
       sel_s=0
       win_s=0
       parent="/"
@@ -264,8 +333,10 @@ _dfile_enter() {
       if (( rc != 0 )); then
         [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"
         siblings=()
+        siblings_lock=()
       else
         [[ -n $out ]] && siblings=("${(@f)out}") || siblings=()
+        siblings_lock=("${_DFILE_LIST_LOCKS[@]}")
       fi
       # Highlight current directory name among siblings
       local base="${cwd:t}" i
@@ -283,8 +354,10 @@ _dfile_enter() {
     if (( rc != 0 )); then
       [[ -n $_DFILE_LIST_DENY ]] && perm_denied="$_DFILE_LIST_DENY"
       children=()
+      children_lock=()
     else
       [[ -n $out ]] && children=("${(@f)out}") || children=()
+      children_lock=("${_DFILE_LIST_LOCKS[@]}")
     fi
 
     out="$(_dfile_list "$cwd" files $show_hidden 2>/dev/null)"
@@ -303,25 +376,16 @@ _dfile_enter() {
     _dfile_fix_focus
   }
 
-  # Keep focus on a non-empty interactive row when possible.
-  # Empty dirs → files; empty files (while on files) → dirs.
+  # Focus rules:
+  # - Stay on children even when empty (shows "Jump to: name" if files-only dir)
+  # - Only bounce files → children when files row is empty
   _dfile_fix_focus() {
-    if [[ $focus == children ]]; then
-      if (( $#children == 0 && $#files > 0 )); then
-        focus=files
-      fi
-    elif [[ $focus == files ]]; then
-      if (( $#files == 0 && $#children > 0 )); then
+    if [[ $focus == files ]]; then
+      if (( $#files == 0 )); then
         focus=children
       fi
-    else
-      if (( $#children > 0 )); then
-        focus=children
-      elif (( $#files > 0 )); then
-        focus=files
-      else
-        focus=children
-      fi
+    elif [[ $focus != children ]]; then
+      focus=children
     fi
   }
 
@@ -369,15 +433,28 @@ _dfile_enter() {
           win_s=0
         else
           # active=1 always: highlight sel_s (cwd chip, or "/" at root)
-          _dfile_paint_strip siblings $sel_s $win_s 1 $rest_w
+          _dfile_paint_strip siblings $sel_s $win_s 1 $rest_w siblings_lock
           win_s=$reply[1]
         fi
         ;;
       children)
-        [[ $focus == children ]] && active=1
         printf "\r"
-        _dfile_paint_strip children $sel_c $win_c $active $maxw
-        win_c=$reply[1]
+        if (( $#children == 0 )); then
+          # Files-only (or empty) dir: stay on folder row with Jump to: name
+          local jump_name="${cwd:t}"
+          [[ $cwd == / || -z $jump_name ]] && jump_name="/"
+          local jump_label=" Jump to: ${jump_name} "
+          if [[ $focus == children ]]; then
+            printf "${hl}%s${rst}\e[K" "$jump_label"
+          else
+            printf "\e[2m%s\e[22m\e[K" "$jump_label"
+          fi
+          win_c=0
+        else
+          [[ $focus == children ]] && active=1
+          _dfile_paint_strip children $sel_c $win_c $active $maxw children_lock
+          win_c=$reply[1]
+        fi
         ;;
       status)
         _dfile_paint_status $maxw
@@ -510,34 +587,49 @@ _dfile_enter() {
 
   # Resolve selected directory under children focus.
   # Sets reply=(dest). Returns 1 if nothing selected / not on dirs row.
+  # When children empty (Jump to: mode), dest is cwd itself.
   _dfile_sel_dir_path() {
     local name dest
     [[ $focus == children ]] || return 1
-    (( $#children )) || return 1
+    if (( $#children == 0 )); then
+      # Jump to: current folder
+      reply=("$cwd")
+      return 0
+    fi
     name="${children[sel_c+1]}"
     dest="$cwd/$name"
     reply=("$dest")
   }
 
-  # Tab / f: toggle focus between directories (children) and files only.
-  # Skips an empty target row (stays put if the other side is empty too).
+  # Tab / f: toggle focus between directories (children) and files.
+  # Children row always available (Jump to: when no subdirs). Files only if non-empty.
   _dfile_toggle_focus() {
     local prev=$focus
     if [[ $focus == files ]]; then
       focus=children
     else
+      (( $#files > 0 )) || return
       focus=files
     fi
-    _dfile_fix_focus
     [[ $focus == $prev ]] && return
     _dfile_repaint_row "$prev"
     _dfile_repaint_row "$focus"
   }
 
   # Drill into a directory inside the explorer (j / ↓). Stays in dfile.
+  # On Jump to: row (no subdirs), j does nothing (use Enter to leave at this folder).
   _dfile_enter_sel_dir() {
+    [[ $focus == children ]] || return 1
+    (( $#children == 0 )) && return 1
     _dfile_sel_dir_path || return 1
-    _dfile_go "$reply[1]"
+    # Don't drill into locked dirs — surface permission line
+    local dest="$reply[1]"
+    if _dfile_dir_locked "$dest"; then
+      perm_denied="$dest"
+      _dfile_draw
+      return 1
+    fi
+    _dfile_go "$dest"
   }
 
   # Leave dfile: cd to dest, show location bar, restore tty (optional ls).
@@ -569,9 +661,20 @@ _dfile_enter() {
   }
 
   # Enter on a directory row: leave explorer at that folder + location bar.
+  # Also handles "Jump to: name" when the current dir has no subdirectories.
   _dfile_exit_sel_dir() {
+    if [[ $focus == children && $#children == 0 ]]; then
+      _dfile_exit_to "$cwd"
+      return $?
+    fi
     _dfile_sel_dir_path || return 1
-    _dfile_exit_to "$reply[1]"
+    local dest="$reply[1]"
+    if _dfile_dir_locked "$dest"; then
+      perm_denied="$dest"
+      _dfile_draw
+      return 1
+    fi
+    _dfile_exit_to "$dest"
   }
 
   # Open selected file: location bar, restore tty, then editor/xdg-open.

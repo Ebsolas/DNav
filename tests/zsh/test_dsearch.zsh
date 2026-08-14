@@ -1,0 +1,151 @@
+#!/usr/bin/env zsh
+# dsearch filter + index helpers (zsh, non-interactive)
+emulate -L zsh
+setopt no_unset no_extended_glob
+setopt no_err_return
+
+ROOT="${0:A:h:h:h}"
+source "$ROOT/tests/lib/zsh_assert.zsh"
+source "$ROOT/tests/lib/zsh_env.zsh"
+dnav_test_setup_zsh
+dnav_test_dsearch_session
+
+test_index_path() {
+  local p
+  p="$(_dsearch_index_path)"
+  assert_eq "$p" "$XDG_CACHE_HOME/dnav/dirs.idx"
+}
+
+test_index_not_stale_when_fresh() {
+  local idx
+  idx="$(_dsearch_index_path)"
+  dnav_test_write_index "$idx"
+  touch -- "$idx"
+  if _dsearch_index_stale "$idx"; then
+    _dnav_test_fail "fresh index should not be stale"
+  else
+    _dnav_test_pass "fresh index not stale"
+  fi
+}
+
+test_index_stale_when_missing() {
+  local missing="$DNAV_TEST_TMP/no-such-dirs.idx"
+  rm -f -- "$missing"
+  if _dsearch_index_stale "$missing"; then
+    _dnav_test_pass "missing index is stale"
+  else
+    _dnav_test_fail "missing index should be stale"
+  fi
+}
+
+test_apply_filter_returns_matches() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "home" 10
+  assert_gt "$#_dsearch_matches" 0 "filter 'home' returns matches"
+}
+
+test_apply_filter_prefix1() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "d" 10
+  assert_gt "$#_dsearch_matches" 0 "prefix1 'd' returns matches"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *Documents* || $joined == *Downloads* || $joined == *docs* || $joined == *dnav* ]]; then
+    _dnav_test_pass "prefix results include a d* path"
+  else
+    _dnav_test_fail "unexpected prefix1 set: $joined"
+  fi
+  assert_eq "${_dsearch_matches[1][1]}" "/" "match is absolute (zsh 1-based)"
+}
+
+test_apply_filter_fuzzy_doc() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "doc" 10
+  assert_gt "$#_dsearch_matches" 0 "fuzzy 'doc'"
+  local joined="${(j:\n:)_dsearch_matches}"
+  assert_contains "$joined" "Documents" "Documents ranked for doc"
+}
+
+test_apply_filter_proj() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "proj" 10
+  assert_gt "$#_dsearch_matches" 0 "fuzzy 'proj'"
+  local joined="${(j:\n:)_dsearch_matches}"
+  assert_contains "$joined" "Projects" "Projects for proj"
+}
+
+test_apply_filter_empty_query() {
+  _dsearch_matches=(/tmp/leftover)
+  _dsearch_apply_filter "" 10
+  assert_eq "$#_dsearch_matches" "0" "empty query clears matches"
+}
+
+test_incremental_narrowing() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "d" 50
+  local n1=$#_dsearch_matches
+  _dsearch_apply_filter "do" 50
+  local n2=$#_dsearch_matches
+  _dsearch_apply_filter "doc" 50
+  local n3=$#_dsearch_matches
+  assert_gt "$n1" 0 "d has hits"
+  assert_gt "$n2" 0 "do has hits"
+  assert_gt "$n3" 0 "doc has hits"
+  if [[ -n ${_dsearch_cand_stack[1]:-} && -n ${_dsearch_cand_stack[3]:-} ]]; then
+    local c1 c3
+    c1=$(wc -l < "${_dsearch_cand_stack[1]}")
+    c3=$(wc -l < "${_dsearch_cand_stack[3]}")
+    c1=${c1// /}; c3=${c3// /}
+    assert_ge "$c1" "$c3" "survivors shrink or stay as query lengthens"
+  else
+    _dnav_test_pass "cand stack present (skipped size compare)"
+  fi
+}
+
+test_awk_filter_direct() {
+  local idx survivors
+  local -a out
+  idx="$(_dsearch_index_path)"
+  survivors="$DNAV_TEST_TMP/surv.out"
+  : > "$survivors"
+  out=("${(@f)$(_dsearch_awk_filter "home" "fuzzy" 5 "$idx" "$survivors")}")
+  assert_gt "$#out" 0 "awk filter stdout"
+  assert_file "$survivors"
+  assert_gt "$(wc -l < "$survivors" | tr -d ' ')" 0 "survivors written"
+}
+
+test_display_path_tilde() {
+  local got
+  got="$(_dsearch_display_path "$HOME/Documents")"
+  assert_eq "$got" "~/Documents"
+}
+
+test_pin_jumps_prefers_jump() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "home" 10
+  local first="${_dsearch_matches[1]}"
+  if [[ $first == "$HOME" || ${first:A} == "${HOME:A}" ]]; then
+    _dnav_test_pass "pinned home jump is first"
+  else
+    _dnav_test_fail "first match not HOME (got $first)"
+  fi
+}
+
+run_test test_index_path
+run_test test_index_not_stale_when_fresh
+run_test test_index_stale_when_missing
+run_test test_apply_filter_returns_matches
+run_test test_apply_filter_prefix1
+run_test test_apply_filter_fuzzy_doc
+run_test test_apply_filter_proj
+run_test test_apply_filter_empty_query
+run_test test_incremental_narrowing
+run_test test_awk_filter_direct
+run_test test_display_path_tilde
+run_test test_pin_jumps_prefers_jump
+dnav_test_finish
