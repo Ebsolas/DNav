@@ -190,7 +190,24 @@ _dfile_enter() {
   _dfile_paint_status() {
     local w="$1" hid_mark left right fill
     (( show_hidden )) && hid_mark="●" || hid_mark="○"
-    left="- Show Hidden ${hid_mark} "
+    local dir_lbl file_lbl
+    case ${DNAV_CFG_DFILE_SORT_DIRS:-alpha} in
+      hidden_first|hidden|dot_first) dir_lbl=Dot ;;
+      *) dir_lbl=Alpha ;;
+    esac
+    case ${DNAV_CFG_DFILE_SORT_FILES:-alpha} in
+      ext|extension) file_lbl=Ext ;;
+      dot_first|hidden_first|dot) file_lbl=Dot ;;
+      dot_ext|dot_extension|hidden_ext) file_lbl=Dot/Ext ;;
+      *) file_lbl=Alpha ;;
+    esac
+    left="- Show Hidden ${hid_mark} -- Dir: ${dir_lbl} -- File: ${file_lbl} "
+    if (( ${#left} > w )); then
+      left="- Hidden ${hid_mark} -- Dir: ${dir_lbl} -- File: ${file_lbl} "
+    fi
+    if (( ${#left} > w )); then
+      left="- ${hid_mark} -- D:${dir_lbl} -- F:${file_lbl} "
+    fi
     if [[ -n $perm_denied ]]; then
       right=" Permission Denied: ${perm_denied} "
       if (( ${#left} + ${#right} > w )); then

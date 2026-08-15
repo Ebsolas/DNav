@@ -4,10 +4,12 @@
 # Layout (browse):
 #   [ DNav Files:] [cwd] sib …         ← brand + parent strip (cwd chip fixed, not focusable)
 #   [Jump to: cwd] child1 …            ← stay-here chip + dirs (focusable)
-#   - Show Hidden ○ ----…---- [perm]   ← status / permission line
+#   - Show Hidden ○ -- Dir: Alpha -- File: Ext ---- [perm]
+#   (<47 cols: - SH ○ - D: A - F: DE ----)
 #   file1 file2 …                      ← files in cwd (focusable)
 #
-# Keys: hjkl / arrows, Tab/f toggle dirs↔files, . hidden, Enter exit/open, Esc, d Jump, s|/ Search
+# Keys: hjkl / arrows, Tab/f dirs↔files, . hidden, o/O dir/file order,
+#       Enter exit/open, Esc, d Jump, s|/ Search
 
 _dfile_available() { return 0 }
 
@@ -19,13 +21,32 @@ _dfile_is_open() { (( _DFILE_OPEN )) }
 
 _dfile_hl() { print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}" }
 _dfile_rst() { print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}" }
-_dfile_cols() {
-  local w=${COLUMNS:-80}
+_dfile_term_cols() {
+  local w r c
+  if (( $+functions[_dnav_term_cols] )); then
+    w="$(_dnav_term_cols)"
+  elif read -r r c <<< "$(stty size 2>/dev/null)"; then
+    w=$c
+  else
+    w=${COLUMNS:-80}
+  fi
   [[ $w == <-> ]] || w=80
   (( w < 8 )) && w=80
+  print -rn -- "$w"
+}
+
+_dfile_cols() {
+  local w="$(_dfile_term_cols)"
   # Never write the last column — that wraps and each dfile move adds a line.
   (( w > 1 )) && (( w-- ))
   print -rn -- "$w"
+}
+
+# 1 when the terminal is narrower than 47 columns (compact status).
+_dfile_status_compact() {
+  local w="${1:-}"
+  [[ $w == <-> ]] || w="$(_dfile_term_cols)"
+  (( w < 47 ))
 }
 
 # Current-folder name for the Jump to: chip. Keeps the start; cuts the end
@@ -45,6 +66,56 @@ _dfile_jump_name() {
 
 _dfile_jump_label() {
   print -rn -- " Jump to: $(_dfile_jump_name "$1" ${2:-}) "
+}
+
+# Short status-bar labels for dfile_sort_dirs / dfile_sort_files.
+_dfile_sort_dir_label() {
+  case ${1:-${DNAV_CFG_DFILE_SORT_DIRS:-alpha}} in
+    hidden_first|hidden|dot_first) print -rn -- Dot ;;
+    *) print -rn -- Alpha ;;
+  esac
+}
+
+_dfile_sort_file_label() {
+  case ${1:-${DNAV_CFG_DFILE_SORT_FILES:-alpha}} in
+    ext|extension) print -rn -- Ext ;;
+    dot_first|hidden_first|dot) print -rn -- Dot ;;
+    dot_ext|dot_extension|hidden_ext) print -rn -- Dot/Ext ;;
+    *) print -rn -- Alpha ;;
+  esac
+}
+
+# Compact status tokens: D: A|D   F: A|D|E|DE
+_dfile_sort_dir_short() {
+  case ${1:-${DNAV_CFG_DFILE_SORT_DIRS:-alpha}} in
+    hidden_first|hidden|dot_first) print -rn -- D ;;
+    *) print -rn -- A ;;
+  esac
+}
+
+_dfile_sort_file_short() {
+  case ${1:-${DNAV_CFG_DFILE_SORT_FILES:-alpha}} in
+    ext|extension) print -rn -- E ;;
+    dot_first|hidden_first|dot) print -rn -- D ;;
+    dot_ext|dot_extension|hidden_ext) print -rn -- DE ;;
+    *) print -rn -- A ;;
+  esac
+}
+
+_dfile_cycle_dir_sort() {
+  case ${DNAV_CFG_DFILE_SORT_DIRS:-alpha} in
+    alpha) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;;
+    *)     DNAV_CFG_DFILE_SORT_DIRS=alpha ;;
+  esac
+}
+
+_dfile_cycle_file_sort() {
+  case ${DNAV_CFG_DFILE_SORT_FILES:-alpha} in
+    alpha)     DNAV_CFG_DFILE_SORT_FILES=ext ;;
+    ext)       DNAV_CFG_DFILE_SORT_FILES=dot_first ;;
+    dot_first) DNAV_CFG_DFILE_SORT_FILES=dot_ext ;;
+    *)         DNAV_CFG_DFILE_SORT_FILES=alpha ;;
+  esac
 }
 
 # Cell width for a strip label (extra for 🔒 when locked).
@@ -338,9 +409,11 @@ _dfile_enter() {
   local start="${1:-}"
   local hl rst maxw
   local key key2 key3
-  # Default from ~/.config/dnav/config show_hidden (toggle with .)
+  # Session copies — . / o / O do not write ~/.config/dnav/config
   local show_hidden=${DNAV_CFG_SHOW_HIDDEN:-0}
   (( show_hidden = show_hidden ? 1 : 0 ))
+  local DNAV_CFG_DFILE_SORT_DIRS="${DNAV_CFG_DFILE_SORT_DIRS:-alpha}"
+  local DNAV_CFG_DFILE_SORT_FILES="${DNAV_CFG_DFILE_SORT_FILES:-alpha}"
   # Focus only toggles dirs (children) ↔ files. Parent strip is display-only.
   local focus=children   # children | files
   local mode=browse      # browse | jump
@@ -461,23 +534,33 @@ _dfile_enter() {
   }
 
   _dfile_paint_status() {
-    local w="$1" hid_mark left right fill
+    local w="$1" hid_mark left right fill vis
+    local dir_lbl file_lbl raw
     if (( show_hidden )); then hid_mark="●"; else hid_mark="○"; fi
-    left="- Show Hidden ${hid_mark} "
+    raw="$(_dfile_term_cols)"
+    if _dfile_status_compact $raw; then
+      dir_lbl="$(_dfile_sort_dir_short)"
+      file_lbl="$(_dfile_sort_file_short)"
+      left="- SH ${hid_mark} - D: ${dir_lbl} - F: ${file_lbl} "
+    else
+      dir_lbl="$(_dfile_sort_dir_label)"
+      file_lbl="$(_dfile_sort_file_label)"
+      left="- Show Hidden ${hid_mark} -- Dir: ${dir_lbl} -- File: ${file_lbl} "
+    fi
+    vis=${#left}
+    printf "\r%s" "$left"
     if [[ -n $perm_denied ]]; then
       right=" Permission Denied: ${perm_denied} "
-      # truncate right if needed
-      if (( ${#left} + ${#right} > w )); then
-        local room=$(( w - ${#left} - 5 ))
+      if (( vis + ${#right} > w )); then
+        local room=$(( w - vis - 5 ))
         (( room < 8 )) && room=8
         right=" …${right:$(( ${#right} - room ))} "
       fi
     else
       right=""
     fi
-    fill=$(( w - ${#left} - ${#right} ))
+    fill=$(( w - vis - ${#right} ))
     (( fill < 0 )) && fill=0
-    printf "\r%s" "$left"
     printf '%*s' $fill '' | tr ' ' '-'
     printf "%s\e[K" "$right"
   }
@@ -580,13 +663,16 @@ _dfile_enter() {
         (( n++ ))
       done
       leftover=$(( old_body - n ))
-      for (( i=0; i < leftover; i++ )); do
-        printf "\n\r\e[2K"
-      done
-      if (( leftover > 0 )); then
-        printf "\e[%dA" $leftover
+      if (( !_DNAV_RESIZING )); then
+        for (( i=0; i < leftover; i++ )); do
+          printf "\n\r\e[2K"
+        done
+        if (( leftover > 0 )); then
+          printf "\e[%dA" $leftover
+        fi
       fi
       body=$n
+      printf "\e[J"
       if (( body > 0 )); then
         printf "\e[%dA" $body
       fi
@@ -605,14 +691,17 @@ _dfile_enter() {
 
     # Blank leftover lines when shrinking from jump (or taller) layout
     leftover=$(( old_body - 3 ))
-    for (( i=0; i < leftover; i++ )); do
-      printf "\n\r\e[2K"
-    done
-    if (( leftover > 0 )); then
-      printf "\e[%dA" $leftover
+    if (( !_DNAV_RESIZING )); then
+      for (( i=0; i < leftover; i++ )); do
+        printf "\n\r\e[2K"
+      done
+      if (( leftover > 0 )); then
+        printf "\e[%dA" $leftover
+      fi
     fi
 
     body=3
+    printf "\e[J"
     # Park cursor on top row for the next draw/erase/partial paint.
     printf "\e[3A\r"
   }
@@ -830,7 +919,12 @@ _dfile_enter() {
   while true; do
     # Abort already tore down UI (via _dnav_abort); just leave the explorer
     (( ${DNAV_ABORT:-0} )) && { _DFILE_OPEN=0; return 130; }
-    read -k 1 key || true
+    if (( $+functions[_dnav_read_key] )); then
+      _dnav_read_key || true
+      key="$REPLY"
+    else
+      read -k 1 key || true
+    fi
     (( ${DNAV_ABORT:-0} )) && { _DFILE_OPEN=0; return 130; }
     if [[ $key == $'\x03' ]]; then
       if (( $+functions[_dnav_abort] )); then
@@ -849,6 +943,9 @@ _dfile_enter() {
           if read -t 0.05 -k 1 key2 2>/dev/null; then
             [[ $key2 == '[' ]] && read -k 1 key3
           else
+            if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
+              continue
+            fi
             mode=browse
             jump_buf=""
             _dfile_draw
@@ -898,6 +995,9 @@ _dfile_enter() {
             esac
           fi
         else
+          if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
+            continue
+          fi
           _dfile_erase
           _DFILE_OPEN=0
           return 1
@@ -913,6 +1013,16 @@ _dfile_enter() {
         ;;
       .)
         show_hidden=$(( 1 - show_hidden ))
+        _dfile_refresh
+        _dfile_draw
+        ;;
+      o)
+        _dfile_cycle_dir_sort
+        _dfile_refresh
+        _dfile_draw
+        ;;
+      O)
+        _dfile_cycle_file_sort
         _dfile_refresh
         _dfile_draw
         ;;

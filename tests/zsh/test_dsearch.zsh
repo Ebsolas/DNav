@@ -77,6 +77,27 @@ test_apply_filter_proj() {
   assert_contains "$joined" "Projects" "Projects for proj"
 }
 
+test_query_caret_edit() {
+  _dsearch_q=""
+  _dsearch_cur=0
+  _dsearch_insert p
+  _dsearch_insert r
+  _dsearch_insert j
+  assert_eq "$_dsearch_q" "prj" "typed prj"
+  assert_eq "$_dsearch_cur" "3" "caret at end"
+  _dsearch_cur=2
+  _dsearch_insert o
+  assert_eq "$_dsearch_q" "proj" "insert o between r and j"
+  assert_eq "$_dsearch_cur" "3" "caret after insert"
+  _dsearch_backspace
+  assert_eq "$_dsearch_q" "prj" "backspace at caret"
+  assert_eq "$_dsearch_cur" "2"
+  _dsearch_cur=1
+  _dsearch_delete
+  assert_eq "$_dsearch_q" "pj" "forward delete"
+  assert_eq "$_dsearch_cur" "1"
+}
+
 test_apply_filter_empty_query() {
   _dsearch_matches=(/tmp/leftover)
   _dsearch_apply_filter "" 10
@@ -143,6 +164,7 @@ run_test test_apply_filter_returns_matches
 run_test test_apply_filter_prefix1
 run_test test_apply_filter_fuzzy_doc
 run_test test_apply_filter_proj
+run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 run_test test_incremental_narrowing
 run_test test_awk_filter_direct

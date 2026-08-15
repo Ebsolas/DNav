@@ -16,6 +16,16 @@ test_modules_available() {
   assert_ok _dfile_available
 }
 
+test_winch_helpers_exist() {
+  assert_fn _dnav_sync_term_size
+  assert_fn _dnav_handle_winch
+  assert_fn _dnav_maybe_resize
+  assert_fn _dnav_read_key
+  assert_fn _dnav_usable_cols
+  _dnav_sync_term_size
+  _dnav_test_pass "sync_term_size callable"
+}
+
 test_public_commands_defined() {
   assert_fn dnav
   assert_fn dhelp
@@ -69,6 +79,7 @@ test_syntax_zsh_scripts() {
 }
 
 run_test test_modules_available
+run_test test_winch_helpers_exist
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated

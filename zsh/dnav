@@ -741,6 +741,135 @@ _dnav_term_cols() {
   print -rn -- 80
 }
 
+_dnav_sync_term_size() {
+  local r c
+  if read -r r c <<< "$(stty size 2>/dev/null)"; then
+    if [[ $c == <-> ]] && (( c >= 8 )); then
+      COLUMNS=$c
+    fi
+    if [[ $r == <-> ]] && (( r >= 4 )); then
+      LINES=$r
+    fi
+  fi
+}
+
+# Paint width: never the last column (that wraps and adds a line).
+_dnav_usable_cols() {
+  local w="$(_dnav_term_cols)"
+  (( w > 1 )) && (( w-- ))
+  (( w < 8 )) && w=8
+  print -rn -- "$w"
+}
+
+typeset -gi _DNAV_RESIZING=0
+typeset -gi _DNAV_INLINE_EDIT=0
+typeset -gi _DNAV_WINCH=0
+typeset -gi _DNAV_LAST_COLS=0
+typeset -gi _DNAV_LAST_LINES=0
+typeset -gi _DNAV_PEND_COLS=0
+typeset -gi _DNAV_PEND_LINES=0
+
+_dnav_mark_size() {
+  _DNAV_LAST_COLS=${COLUMNS:-0}
+  _DNAV_LAST_LINES=${LINES:-0}
+}
+
+# Call from the TUI read loop (correct locals). Returns 0 if a redraw ran.
+# Waits until the size stays put for one poll so a drag is one redraw, not many.
+_dnav_maybe_resize() {
+  local c l
+  (( ${DNAV_ABORT:-0} )) && return 1
+  (( _DNAV_INLINE_EDIT )) && return 1
+  _dnav_sync_term_size
+  c=${COLUMNS:-0}
+  l=${LINES:-0}
+  if (( c == _DNAV_LAST_COLS && l == _DNAV_LAST_LINES )); then
+    _DNAV_PEND_COLS=0
+    _DNAV_PEND_LINES=0
+    _DNAV_WINCH=0
+    return 1
+  fi
+  if (( _DNAV_LAST_COLS == 0 )); then
+    _dnav_mark_size
+    return 1
+  fi
+  if (( c != _DNAV_PEND_COLS || l != _DNAV_PEND_LINES )); then
+    _DNAV_PEND_COLS=$c
+    _DNAV_PEND_LINES=$l
+    _DNAV_WINCH=0
+    return 1
+  fi
+  _DNAV_WINCH=0
+  _dnav_handle_winch
+  _dnav_mark_size
+  _DNAV_PEND_COLS=0
+  _DNAV_PEND_LINES=0
+  return 0
+}
+
+# Blocking key read that still notices terminal resizes (WINCH often
+# does not interrupt a bare read -k). Timeout-polls ~8×/sec.
+_dnav_read_key() {
+  REPLY=""
+  while true; do
+    (( ${DNAV_ABORT:-0} )) && return 1
+    if read -t 0.12 -k 1 REPLY 2>/dev/null; then
+      (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+      [[ -n $REPLY ]] && return 0
+    else
+      (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+    fi
+  done
+}
+
+# Redraw the active TUI after the terminal size changes.
+_dnav_handle_winch() {
+  (( _DNAV_RESIZING )) && return 0
+  (( ${DNAV_ABORT:-0} )) && return 0
+  _DNAV_RESIZING=1
+  _dnav_sync_term_size
+  if [[ -n ${cols+x} ]]; then
+    cols="$(_dnav_usable_cols)"
+  fi
+  if (( _DNAV_INLINE_EDIT )); then
+    _DNAV_RESIZING=0
+    return 0
+  fi
+  # Shrink wraps old TUI lines into extra visual rows. Climb those extras
+  # (if any), then wipe downward so the next paint does not print under them.
+  local rows=1 extra=0 wrap=1
+  if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
+    rows=$(( 1 + ${_dsearch_extra_lines:-0} ))
+  elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
+    rows=$(( ${body:-3} + 1 ))
+  elif [[ ${mode:-} == about ]]; then
+    rows=$(( ${help_extra:-0} + 1 ))
+  fi
+  (( rows < 1 )) && rows=1
+  if (( _DNAV_LAST_COLS > COLUMNS && COLUMNS > 0 )); then
+    wrap=$(( (_DNAV_LAST_COLS + COLUMNS - 1) / COLUMNS ))
+    (( wrap < 1 )) && wrap=1
+    (( wrap > 4 )) && wrap=4
+    extra=$(( rows * (wrap - 1) ))
+    (( extra > LINES - 2 )) && extra=$(( LINES - 2 ))
+    (( extra < 0 )) && extra=0
+  fi
+  printf "\e[?25l"
+  (( extra > 0 )) && printf "\e[%dA" $extra
+  printf "\r\e[J"
+  if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
+    (( $+functions[_dsearch_draw] )) && _dsearch_draw "${_dsearch_q:-}"
+  elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
+    (( $+functions[_dfile_draw] )) && _dfile_draw
+  elif [[ ${mode:-} == about ]]; then
+    (( $+functions[_dnav_draw_about] )) && _dnav_draw_about
+  elif (( $+functions[_dnav_draw] )); then
+    (( $+functions[_dnav_compute_positions] )) && _dnav_compute_positions
+    _dnav_draw
+  fi
+  _DNAV_RESIZING=0
+}
+
 # Fit string to width, keep the end (most specific path tail).
 _dnav_fit_end() {
   local s="$1" w="$2"
@@ -903,7 +1032,7 @@ dnav() {
   local i
   local current
   local target
-  local cols=${COLUMNS:-80}
+  local cols="$(_dnav_usable_cols)"
   local -a item_start item_end   # column positions for animation (visible chips)
   local mode=main                # main | about
   local brand="${DNAV_CFG_BRAND:-DNav}"
@@ -960,7 +1089,7 @@ dnav() {
     # Stop background search index if still running (user left early)
     (( $+functions[_dsearch_index_cancel] )) && _dsearch_index_cancel
     [[ -n $_DNAV_STTY_ORIG ]] && stty "$_DNAV_STTY_ORIG" 2>/dev/null
-    printf "\e[?25h"
+    printf "\e[0 q\e[?25h"
     _DNAV_CLEANED=1
   }
 
@@ -1002,6 +1131,7 @@ dnav() {
   # return 130 exits the interrupted function (dnav / nested plugin loop).
   # Parents check DNAV_ABORT and propagate so we fully leave the TUI.
   trap '_dnav_abort; return 130' INT TERM QUIT
+  trap '_DNAV_WINCH=1' WINCH
 
   # Hide cursor, disable echo and line buffering (keep isig for Ctrl+C)
   stty -echo -icanon isig 2>/dev/null
@@ -1080,6 +1210,7 @@ dnav() {
 
   # Full bar paint: brand + scrolling folder chips + < > overflow.
   _dnav_draw() {
+    cols="$(_dnav_usable_cols)"
     local brand_w=$(_dnav_brand_w)
     local avail=$(( cols - brand_w ))
     (( avail < 10 )) && avail=10
@@ -1210,7 +1341,7 @@ dnav() {
       Search)
         print -r -- "/  or  s                       fuzzy directory search"
         print -r -- "In search: ↑↓  or  C-n / C-p   move through results"
-        print -r -- "In search: →                   focus Help chip; Esc back"
+        print -r -- "In search: ← →                 move caret; → at end focuses Help"
         print -r -- "Enter                          jump to selected path"
         ;;
       Files)
@@ -1219,6 +1350,7 @@ dnav() {
         print -r -- "Tab / f                        toggle directories ↔ files"
         print -r -- "Enter                          exit to folder / open file"
         print -r -- "s  or  /                       search   ·   d Jump   ·   . hidden"
+        print -r -- "o / O                          cycle dir / file order (this visit only)"
         print -r -- "Esc                            leave explorer (back to dnav)"
         ;;
       DJump)
@@ -1346,7 +1478,8 @@ dnav() {
     local prompt="$1" buf="${2:-}"
     local k k2 k3 k4
     local edit_row=$(( help_extra > 0 ? help_extra : 0 ))
-
+    _DNAV_INLINE_EDIT=1
+    {
     printf "\e[%dB" $edit_row
     printf "\e[?25h"
     # Stay in -echo -icanon so we control every key (vared mishandles Delete)
@@ -1400,6 +1533,9 @@ dnav() {
           ;;
       esac
     done
+    } always {
+      _DNAV_INLINE_EDIT=0
+    }
   }
 
   # Word/hard wrap text to width; prints one physical row per line (no terminal wrap).
@@ -1735,6 +1871,8 @@ dnav() {
     local maxw=$cols topic body_max style
     local -a display
     mode=about
+    cols="$(_dnav_usable_cols)"
+    maxw=$cols
     body_max="$(_dnav_about_body_max)"
     (( maxw < 20 )) && maxw=20
     printf "\e[?25l\r"
@@ -1805,14 +1943,17 @@ dnav() {
     fi
 
     leftover=$(( old_extra - 1 - n ))
-    for (( i=0; i < leftover; i++ )); do
-      printf "\n\r\e[2K"
-    done
-    if (( leftover > 0 )); then
-      printf "\e[%dA" $leftover
+    if (( !_DNAV_RESIZING )); then
+      for (( i=0; i < leftover; i++ )); do
+        printf "\n\r\e[2K"
+      done
+      if (( leftover > 0 )); then
+        printf "\e[%dA" $leftover
+      fi
     fi
 
     help_extra=$(( 1 + n ))
+    printf "\e[J"
     if (( help_extra > 0 )); then
       printf "\e[%dA" $help_extra
     fi
@@ -1913,7 +2054,12 @@ dnav() {
   while true; do
     # DNAV_ABORT: full UI teardown already done by _dnav_abort (trap or \x03)
     (( DNAV_ABORT )) && return 130
-    read -k 1 key || true
+    if (( $+functions[_dnav_read_key] )); then
+      _dnav_read_key || true
+      key="$REPLY"
+    else
+      read -k 1 key || true
+    fi
     (( DNAV_ABORT )) && return 130
     # Ctrl+C may arrive as a byte in some terminals even with isig
     if [[ $key == $'\x03' ]]; then
@@ -1958,6 +2104,10 @@ dnav() {
             esac
           fi
         else
+          # Timeout after Esc — resize, not a real Esc
+          if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
+            continue
+          fi
           # Plain Esc
           if [[ $mode == about ]]; then
             _dnav_leave_about

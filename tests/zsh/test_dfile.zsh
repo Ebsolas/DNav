@@ -15,7 +15,7 @@ test_dfile_available() {
 
 test_dfile_functions_exist() {
   local f
-  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_jump_name _dfile_jump_label; do
+  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact; do
     assert_fn "$f"
   done
 }
@@ -59,6 +59,51 @@ test_dfile_child_row_window_fits() {
   fi
 }
 
+test_dfile_sort_labels() {
+  assert_eq "$(_dfile_sort_dir_label alpha)" "Alpha" "dir alpha"
+  assert_eq "$(_dfile_sort_dir_label hidden_first)" "Dot" "dir hidden_first → Dot"
+  assert_eq "$(_dfile_sort_file_label alpha)" "Alpha" "file alpha"
+  assert_eq "$(_dfile_sort_file_label ext)" "Ext" "file ext"
+  assert_eq "$(_dfile_sort_file_label dot_first)" "Dot" "file dot_first → Dot"
+  assert_eq "$(_dfile_sort_file_label dot_ext)" "Dot/Ext" "file dot_ext → Dot/Ext"
+  assert_eq "$(_dfile_sort_dir_short alpha)" "A" "dir short alpha"
+  assert_eq "$(_dfile_sort_dir_short hidden_first)" "D" "dir short Dot"
+  assert_eq "$(_dfile_sort_file_short alpha)" "A" "file short alpha"
+  assert_eq "$(_dfile_sort_file_short ext)" "E" "file short Ext"
+  assert_eq "$(_dfile_sort_file_short dot_first)" "D" "file short Dot"
+  assert_eq "$(_dfile_sort_file_short dot_ext)" "DE" "file short Dot/Ext"
+}
+
+test_dfile_status_compact_threshold() {
+  if _dfile_status_compact 46; then
+    _dnav_test_pass "46 cols is compact"
+  else
+    _dnav_test_fail "46 cols should be compact"
+  fi
+  if _dfile_status_compact 47; then
+    _dnav_test_fail "47 cols should be full"
+  else
+    _dnav_test_pass "47 cols is full"
+  fi
+}
+
+test_dfile_cycle_sort() {
+  DNAV_CFG_DFILE_SORT_DIRS=alpha
+  _dfile_cycle_dir_sort
+  assert_eq "$DNAV_CFG_DFILE_SORT_DIRS" "hidden_first" "dir alpha → hidden_first"
+  _dfile_cycle_dir_sort
+  assert_eq "$DNAV_CFG_DFILE_SORT_DIRS" "alpha" "dir hidden_first → alpha"
+  DNAV_CFG_DFILE_SORT_FILES=alpha
+  _dfile_cycle_file_sort
+  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "ext" "file alpha → ext"
+  _dfile_cycle_file_sort
+  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "dot_first" "file ext → dot_first"
+  _dfile_cycle_file_sort
+  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "dot_ext" "file dot_first → dot_ext"
+  _dfile_cycle_file_sort
+  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "alpha" "file dot_ext → alpha"
+}
+
 test_dfile_dir_locked_home() {
   # HOME should be readable / not locked
   if _dfile_dir_locked "$HOME"; then
@@ -87,6 +132,9 @@ run_test test_dfile_available
 run_test test_dfile_functions_exist
 run_test test_dfile_jump_name_truncates_end
 run_test test_dfile_child_row_window_fits
+run_test test_dfile_sort_labels
+run_test test_dfile_status_compact_threshold
+run_test test_dfile_cycle_sort
 run_test test_dfile_dir_locked_home
 run_test test_dfile_list_home
 dnav_test_finish
