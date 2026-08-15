@@ -212,16 +212,20 @@ _djump_goto() {
   }
   dest="${dest:A}"
   if (( $+functions[_dnav_success_bar] )); then
-    _dnav_success_bar "$dest"
+    _dnav_success_bar "$dest" "" djump
   elif [[ -o interactive ]]; then
     print -r -- "$dest"
   fi
   if (( $+functions[_dnav_maybe_ls] )); then
-    _dnav_maybe_ls
+    _dnav_maybe_ls djump
   else
-    case ${DNAV_CFG_LS:-0} in
-      1|true|yes|on|TRUE|YES|ON)
-        command ls -a --color=auto
+    case ${DNAV_CFG_LS_DJUMP:--1} in
+      1) command ls -a --color=auto ;;
+      0) ;;
+      *)
+        case ${DNAV_CFG_LS:-0} in
+          1|true|yes|on|TRUE|YES|ON) command ls -a --color=auto ;;
+        esac
         ;;
     esac
   fi

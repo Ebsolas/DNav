@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./install.sh                 # install to ~/.local/share/dnav + seed config + hook zshrc
+#   ./install.sh --update        # refresh scripts only (keep config + rc)
 #   ./install.sh --prefix DIR    # install scripts under DIR (default: $XDG_DATA_HOME/dnav)
 #   ./install.sh --config DIR    # config dir (default: $XDG_CONFIG_HOME/dnav)
 #   ./install.sh --no-rc         # skip shell rc edits
@@ -12,7 +13,7 @@
 #
 set -euo pipefail
 
-VERSION="1.0"
+VERSION="1.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # Shell-specific package lives under zsh/ (install.sh stays at repo root)
 PACKAGE_DIR="$SCRIPT_DIR/zsh"
@@ -24,6 +25,7 @@ ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 DO_RC=1
 FORCE_CONFIG=0
 UNINSTALL=0
+UPDATE=0
 
 # Files shipped with the package (relative to PACKAGE_DIR)
 PACKAGE_FILES=(dnav dfile djump dsearch jumps)
@@ -38,7 +40,7 @@ ok()   { printf '✓ %s\n' "$*"; }
 warn() { printf '! %s\n' "$*" >&2; }
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ── Args ──────────────────────────────────────────────────────────────────
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --no-rc) DO_RC=0; shift ;;
     --force-config) FORCE_CONFIG=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --update|--upgrade) UPDATE=1; shift ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
 done
@@ -69,7 +72,41 @@ require_zsh() {
   fi
 }
 
+# When this script lives next to dnav (installed copy), zsh/ is not here.
+# Resolve the git/source tree so --update still works.
+resolve_source() {
+  local src="" line
+  if [[ -d "$PACKAGE_DIR" && -f "$PACKAGE_DIR/dnav" ]]; then
+    return 0
+  fi
+  if [[ -n "${DNAV_UPDATE_FROM:-}" ]]; then
+    src="$DNAV_UPDATE_FROM"
+  elif [[ -f "$SCRIPT_DIR/.source" ]]; then
+    IFS= read -r line < "$SCRIPT_DIR/.source" || line=""
+    src="$line"
+  elif [[ -f "$PREFIX/.source" ]]; then
+    IFS= read -r line < "$PREFIX/.source" || line=""
+    src="$line"
+  elif [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/DNav/zsh" ]]; then
+    src="${XDG_DATA_HOME:-$HOME/.local/share}/DNav"
+  elif [[ -d "$HOME/.local/share/DNav/zsh" ]]; then
+    src="$HOME/.local/share/DNav"
+  fi
+  src="${src/#\~/$HOME}"
+  if [[ -n "$src" && -f "$src/zsh/dnav" ]]; then
+    SCRIPT_DIR="$src"
+    PACKAGE_DIR="$SCRIPT_DIR/zsh"
+    return 0
+  fi
+  die "cannot find DNav source (zsh/dnav). Run from the repo, or set DNAV_UPDATE_FROM=/path/to/DNav"
+}
+
+write_source_pointer() {
+  printf '%s\n' "$SCRIPT_DIR" > "$PREFIX/.source"
+}
+
 check_package() {
+  resolve_source
   [[ -d "$PACKAGE_DIR" ]] || die "missing package directory: $PACKAGE_DIR"
   local f
   for f in "${PACKAGE_FILES[@]}"; do
@@ -92,7 +129,22 @@ install_scripts() {
   elif [[ -f "$PREFIX/install.sh" ]]; then
     chmod 0755 -- "$PREFIX/install.sh"
   fi
+  write_source_pointer
   ok "scripts → $PREFIX"
+}
+
+# If a bash prefix is already installed, refresh it too. Never overwrite config.
+update_other_shells() {
+  local bash_dest="${XDG_DATA_HOME:-$HOME/.local/share}/dnav-bash"
+  local f
+  if [[ -d "$bash_dest" && -d "$SCRIPT_DIR/bash" ]]; then
+    for f in dnav dfile djump dsearch jumps; do
+      [[ -f "$SCRIPT_DIR/bash/$f" ]] || continue
+      install -m 0644 -- "$SCRIPT_DIR/bash/$f" "$bash_dest/$f"
+    done
+    chmod 0755 -- "$bash_dest/dnav" 2>/dev/null || true
+    ok "bash scripts → $bash_dest"
+  fi
 }
 
 # ── Seed user config (never clobber unless --force-config) ────────────────
@@ -272,7 +324,7 @@ uninstall() {
   remove_rc
   if [[ -d "$PREFIX" ]]; then
     local f
-    for f in "${PACKAGE_FILES[@]}" install.sh; do
+    for f in "${PACKAGE_FILES[@]}" install.sh .source; do
       rm -f -- "$PREFIX/$f"
     done
     # Remove dir if empty
@@ -293,6 +345,22 @@ main() {
   require_zsh
   check_package
 
+  if [[ $UPDATE -eq 1 ]]; then
+    printf 'Updating DNav %s…\n' "$VERSION"
+    info "source  $PACKAGE_DIR"
+    info "prefix  $PREFIX"
+    info "config  $CONFIG_DIR (kept)"
+    printf '\n'
+    install_scripts
+    update_other_shells
+    printf '\n'
+    ok "DNav scripts updated (config unchanged)"
+    printf '\nReload:  exec zsh    or    source %s/dnav\n' "$PREFIX"
+    info "From the shell:  dupdate"
+    printf '\n'
+    exit 0
+  fi
+
   printf 'Installing DNav %s…\n' "$VERSION"
   info "source  $PACKAGE_DIR"
   info "prefix  $PREFIX"
@@ -310,6 +378,7 @@ main() {
   info "2. Try:           dnav       dhelp       dconfig -p"
   info "3. Jump:          dhome      dproj       djump -l"
   info "4. Edit config:   dconfig -e   or   About → Settings in dnav"
+  info "5. Later updates: dupdate    or    ./install.sh --update"
   printf '\nConfig files:\n'
   info "$CONFIG_DIR/config"
   info "$CONFIG_DIR/folders"

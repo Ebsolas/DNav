@@ -3,7 +3,7 @@
 #
 # Layout (browse):
 #   [ DNav Files:] [cwd] sib …         ← brand + parent strip (cwd chip fixed, not focusable)
-#   child1 child2 …                    ← dirs in cwd (focusable)
+#   [Jump to: cwd] child1 …            ← stay-here chip + dirs (focusable)
 #   - Show Hidden ○ ----…---- [perm]   ← status / permission line
 #   file1 file2 …                      ← files in cwd (focusable)
 #
@@ -20,9 +20,31 @@ _dfile_is_open() { (( _DFILE_OPEN )) }
 _dfile_hl() { print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}" }
 _dfile_rst() { print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}" }
 _dfile_cols() {
-  local w=${cols:-${COLUMNS:-80}}
-  (( w < 20 )) && w=80
+  local w=${COLUMNS:-80}
+  [[ $w == <-> ]] || w=80
+  (( w < 8 )) && w=80
+  # Never write the last column — that wraps and each dfile move adds a line.
+  (( w > 1 )) && (( w-- ))
   print -rn -- "$w"
+}
+
+# Current-folder name for the Jump to: chip. Keeps the start; cuts the end
+# once longer than DNAV_CFG_DFILE_JUMP_NAME_MAX (default 20). $2 overrides max.
+_dfile_jump_name() {
+  local cwd="${1:-}" name max
+  name="${cwd:t}"
+  [[ $cwd == / || -z $name ]] && name="/"
+  max="${2:-${DNAV_CFG_DFILE_JUMP_NAME_MAX:-20}}"
+  [[ $max == <-> ]] || max=20
+  (( max < 1 )) && max=1
+  if (( ${#name} > max )); then
+    name="${name[1,max]}"
+  fi
+  print -rn -- "$name"
+}
+
+_dfile_jump_label() {
+  print -rn -- " Jump to: $(_dfile_jump_name "$1" ${2:-}) "
 }
 
 # Cell width for a strip label (extra for 🔒 when locked).
@@ -88,24 +110,42 @@ _dfile_list() {
     fi
   done
   if (( $#names )); then
-    # Sort names; keep locks aligned by rebuilding locks after sort
+    local -a pairs sorted_names sorted_locks
+    local i key ext dot rec
+    local dmode="${DNAV_CFG_DFILE_SORT_DIRS:-alpha}"
+    local fmode="${DNAV_CFG_DFILE_SORT_FILES:-alpha}"
+    local sep=$'\x1e'
+    pairs=()
+    for (( i=1; i <= $#names; i++ )); do
+      b="${names[i]}"
+      [[ $b == .* ]] && dot=0 || dot=1
+      ext="${(L)b:e}"
+      if [[ $kind == dirs ]]; then
+        case $dmode in
+          hidden_first) key="${dot}${sep}${(L)b}" ;;
+          *)            key="${(L)b}" ;;
+        esac
+      else
+        case $fmode in
+          ext)       key="${ext}${sep}${(L)b}" ;;
+          dot_first) key="${dot}${sep}${(L)b}" ;;
+          dot_ext)   key="${dot}${sep}${ext}${sep}${(L)b}" ;;
+          *)         key="${(L)b}" ;;
+        esac
+      fi
+      pairs+=("${key}${sep}${sep}${b}${sep}${locks[i]}")
+    done
+    pairs=("${(@o)pairs}")
+    sorted_names=(); sorted_locks=()
+    for rec in "${pairs[@]}"; do
+      sorted_locks+=("${rec##*${sep}}")
+      rec="${rec%${sep}*}"
+      sorted_names+=("${rec##*${sep}${sep}}")
+    done
+    names=("${sorted_names[@]}")
     if [[ $kind == dirs ]]; then
-      local -a pairs sorted_names sorted_locks
-      local i
-      for (( i=1; i <= $#names; i++ )); do
-        pairs+=("${names[i]}"$'\t'"${locks[i]}")
-      done
-      pairs=("${(@o)pairs}")
-      sorted_names=()
-      sorted_locks=()
-      for e in "${pairs[@]}"; do
-        sorted_names+=("${e%%$'\t'*}")
-        sorted_locks+=("${e#*$'\t'}")
-      done
-      names=("${sorted_names[@]}")
       locks=("${sorted_locks[@]}")
     else
-      names=("${(@o)names}")
       locks=()
     fi
   fi
@@ -116,8 +156,9 @@ _dfile_list() {
 
 # Windowing: reply=(win_start), _dfile_vis=(labels)
 # Optional $5 = lock array name (parallel 0/1 flags).
+# Optional $6 = sticky: keep index 0 on-screen while sel still fits at win=0.
 _dfile_window() {
-  local aname="$1" sel="$2" win="$3" maxw="$4" lockname="${5:-}"
+  local aname="$1" sel="$2" win="$3" maxw="$4" lockname="${5:-}" sticky="${6:-0}"
   local -a all locks
   all=("${(@P)aname}")
   locks=()
@@ -166,11 +207,16 @@ _dfile_window() {
       continue
     fi
     if (( sel_slot == vcount - 1 && sel < n - 1 && vcount >= 2 )); then
-      local nwin=$(( sel - (vcount - 2) ))
-      (( nwin < 0 )) && nwin=0
-      if (( nwin != win )); then
-        win=$nwin
-        changed=1
+      # Sticky prefix: do not scroll Jump to: off just to peek the next folder.
+      if (( sticky && win == 0 )); then
+        :
+      else
+        local nwin=$(( sel - (vcount - 2) ))
+        (( nwin < 0 )) && nwin=0
+        if (( nwin != win )); then
+          win=$nwin
+          changed=1
+        fi
       fi
     fi
   done
@@ -190,6 +236,7 @@ _dfile_paint_strip() {
   local active="$4"
   local maxw="$5"
   local lockname="${6:-}"
+  local sticky="${7:-0}"
   local hl rst
   local -a items locks
   items=("${(@P)aname}")
@@ -203,7 +250,7 @@ _dfile_paint_strip() {
   local i label used=0 cell_w locked
 
   # Pass 1: window at full width to see if overflow markers are needed
-  _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname"
+  _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
   win=$reply[1]
   (( win > 0 )) && more_l=1
   (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
@@ -213,8 +260,8 @@ _dfile_paint_strip() {
   (( more_r )) && ind_r=2
   if (( ind_l + ind_r > 0 )); then
     content_w=$(( maxw - ind_l - ind_r ))
-    (( content_w < 4 )) && content_w=4
-    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname"
+    (( content_w < 1 )) && content_w=1
+    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
     win=$reply[1]
     more_l=0
     more_r=0
@@ -225,8 +272,8 @@ _dfile_paint_strip() {
     (( more_l )) && ind_l=2
     (( more_r )) && ind_r=2
     content_w=$(( maxw - ind_l - ind_r ))
-    (( content_w < 4 )) && content_w=4
-    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname"
+    (( content_w < 1 )) && content_w=1
+    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
     win=$reply[1]
     more_l=0
     more_r=0
@@ -234,21 +281,35 @@ _dfile_paint_strip() {
     (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
   fi
 
-  (( more_l )) && printf "\e[2m<\e[22m "
+  local printed=0 remain
+  (( more_l )) && { printf "\e[2m<\e[22m "; printed=2 }
 
   used=0
   for (( i=win; i < n; i++ )); do
     label="${items[i+1]}"
     locked=${locks[i+1]:-0}
     cell_w="$(_dfile_cell_w "$label" $locked)"
-    if (( used > 0 && used + cell_w > content_w )); then
-      break
-    fi
-    if (( used == 0 && cell_w > content_w )); then
-      local room=$(( content_w - (locked ? 5 : 3) ))
-      (( room < 1 )) && room=1
-      label="${label[1,room]}…"
-      cell_w=$content_w
+    remain=$(( maxw - printed - (more_r ? 2 : 0) ))
+    (( remain < 0 )) && remain=0
+    if (( cell_w > remain )); then
+      if (( used == 0 && remain > 0 )); then
+        local pad=3
+        (( locked )) && pad=5
+        local room=$(( remain - pad ))
+        (( room < 1 )) && room=1
+        if (( ${#label} > room )); then
+          if (( room >= 2 )); then
+            label="${label[1,room-1]}…"
+          else
+            label="${label[1,room]}"
+          fi
+        fi
+        cell_w=$(( ${#label} + pad ))
+        (( cell_w > remain )) && cell_w=$remain
+      else
+        more_r=1
+        break
+      fi
     fi
     if (( locked )); then
       # Red + lock for inaccessible dirs
@@ -263,9 +324,12 @@ _dfile_paint_strip() {
       printf " %s  " "$label"
     fi
     (( used += cell_w ))
+    (( printed += cell_w ))
   done
 
-  (( more_r )) && printf " \e[2m>\e[22m"
+  if (( more_r && printed + 2 <= maxw )); then
+    printf " \e[2m>\e[22m"
+  fi
   printf "\e[K"
   reply=($win)
 }
@@ -281,8 +345,8 @@ _dfile_enter() {
   local focus=children   # children | files
   local mode=browse      # browse | jump
   local jump_buf=""
-  local -a siblings children files
-  local -a siblings_lock children_lock   # 1 = inaccessible (red + lock)
+  local -a siblings children files child_row
+  local -a siblings_lock children_lock child_row_lock   # 1 = inaccessible (red + lock)
   local sel_s=0 sel_c=0 sel_f=0
   local win_s=0 win_c=0 win_f=0
   # body = lines below the top row (always 3 in browse: children, status, files).
@@ -369,10 +433,17 @@ _dfile_enter() {
       [[ -n $out ]] && files=("${(@f)out}") || files=()
     fi
 
-    (( $#children == 0 )) && sel_c=0
+    (( sel_c < 0 )) && sel_c=0
     (( $#files == 0 )) && sel_f=0
-    (( sel_c >= $#children && $#children > 0 )) && sel_c=$(( $#children - 1 ))
+    # sel_c 0 = Jump to: chip; 1..$#children = children[sel_c]
+    (( sel_c > $#children )) && sel_c=$#children
     (( sel_f >= $#files && $#files > 0 )) && sel_f=$(( $#files - 1 ))
+    child_row=("Jump to: $(_dfile_jump_name "$cwd")")
+    child_row_lock=(0)
+    if (( $#children )); then
+      child_row+=("${children[@]}")
+      child_row_lock+=("${children_lock[@]}")
+    fi
     _dfile_fix_focus
   }
 
@@ -438,23 +509,11 @@ _dfile_enter() {
         fi
         ;;
       children)
+        # Jump to: is child_row[1] — same strip/window as the folders.
         printf "\r"
-        if (( $#children == 0 )); then
-          # Files-only (or empty) dir: stay on folder row with Jump to: name
-          local jump_name="${cwd:t}"
-          [[ $cwd == / || -z $jump_name ]] && jump_name="/"
-          local jump_label=" Jump to: ${jump_name} "
-          if [[ $focus == children ]]; then
-            printf "${hl}%s${rst}\e[K" "$jump_label"
-          else
-            printf "\e[2m%s\e[22m\e[K" "$jump_label"
-          fi
-          win_c=0
-        else
-          [[ $focus == children ]] && active=1
-          _dfile_paint_strip children $sel_c $win_c $active $maxw children_lock
-          win_c=$reply[1]
-        fi
+        [[ $focus == children ]] && active=1
+        _dfile_paint_strip child_row $sel_c $win_c $active $maxw child_row_lock 1
+        win_c=$reply[1]
         ;;
       status)
         _dfile_paint_status $maxw
@@ -582,21 +641,22 @@ _dfile_enter() {
     fi
     _dfile_refresh
     win_c=0; win_f=0; sel_c=0; sel_f=0
+    # Land on the first real child so j/↓ can keep drilling; h selects Jump to:.
+    (( $#children > 0 )) && sel_c=1
     _dfile_draw
   }
 
   # Resolve selected directory under children focus.
   # Sets reply=(dest). Returns 1 if nothing selected / not on dirs row.
-  # When children empty (Jump to: mode), dest is cwd itself.
+  # sel_c == 0 is the Jump to: chip — dest is cwd itself.
   _dfile_sel_dir_path() {
     local name dest
     [[ $focus == children ]] || return 1
-    if (( $#children == 0 )); then
-      # Jump to: current folder
+    if (( sel_c == 0 )); then
       reply=("$cwd")
       return 0
     fi
-    name="${children[sel_c+1]}"
+    name="${children[sel_c]}"
     dest="$cwd/$name"
     reply=("$dest")
   }
@@ -617,10 +677,10 @@ _dfile_enter() {
   }
 
   # Drill into a directory inside the explorer (j / ↓). Stays in dfile.
-  # On Jump to: row (no subdirs), j does nothing (use Enter to leave at this folder).
+  # On Jump to: chip, j does nothing (use Enter to leave at this folder).
   _dfile_enter_sel_dir() {
     [[ $focus == children ]] || return 1
-    (( $#children == 0 )) && return 1
+    (( sel_c == 0 )) && return 1
     _dfile_sel_dir_path || return 1
     # Don't drill into locked dirs — surface permission line
     local dest="$reply[1]"
@@ -647,7 +707,7 @@ _dfile_enter() {
       return 0
     fi
     if (( $+functions[_dnav_success_bar] )); then
-      _dnav_success_bar "${dest:A}"
+      _dnav_success_bar "${dest:A}" "" dnav
     else
       printf "%s\n" "${dest:A}"
     fi
@@ -656,14 +716,14 @@ _dfile_enter() {
     else
       printf "\e[?25h"
     fi
-    (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls
+    (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls dnav
     return 0
   }
 
   # Enter on a directory row: leave explorer at that folder + location bar.
-  # Also handles "Jump to: name" when the current dir has no subdirectories.
+  # Jump to: chip (sel_c == 0) leaves at the current folder.
   _dfile_exit_sel_dir() {
-    if [[ $focus == children && $#children == 0 ]]; then
+    if [[ $focus == children && sel_c -eq 0 ]]; then
       _dfile_exit_to "$cwd"
       return $?
     fi
@@ -685,7 +745,7 @@ _dfile_enter() {
     _dfile_erase
     _DFILE_OPEN=0
     if (( $+functions[_dnav_success_bar] )); then
-      _dnav_success_bar "${fpath:A}"
+      _dnav_success_bar "${fpath:A}" "" dnav
     else
       printf "%s\n" "${fpath:A}"
     fi
@@ -706,14 +766,21 @@ _dfile_enter() {
 
   _dfile_scroll_to_sel() {
     local aname="$1" sel="$2" win="$3" dir="$4"
-    local n maxw="$(_dfile_cols)" vc
+    local n maxw="${5:-$(_dfile_cols)}" sticky="${6:-0}" vc
     local -a all
     all=("${(@P)aname}")
     n=$#all
     (( n == 0 )) && { reply=(0); return }
     # Match paint_strip: room for optional < > overflow markers
     (( maxw > 12 )) && (( maxw -= 4 ))
-    _dfile_window "$aname" $sel $win $maxw
+    if (( sticky )); then
+      _dfile_window "$aname" $sel 0 $maxw "" 1
+      if (( sel < $#_dfile_vis )); then
+        reply=(0)
+        return
+      fi
+    fi
+    _dfile_window "$aname" $sel $win $maxw "" $sticky
     win=$reply[1]
     vc=$#_dfile_vis
     if (( dir > 0 && sel < n - 1 && vc >= 2 )); then
@@ -725,7 +792,7 @@ _dfile_enter() {
         (( win < 0 )) && win=0
       fi
     fi
-    _dfile_window "$aname" $sel $win $maxw
+    _dfile_window "$aname" $sel $win $maxw "" $sticky
     reply=($reply[1])
   }
 
@@ -734,11 +801,11 @@ _dfile_enter() {
     # Parent strip is not interactive — only children / files.
     case $focus in
       children)
-        n=$#children; (( n == 0 )) && return
+        n=$#child_row; (( n == 0 )) && return
         (( sel_c += dir ))
         (( sel_c < 0 )) && sel_c=0
         (( sel_c >= n )) && sel_c=$(( n - 1 ))
-        _dfile_scroll_to_sel children $sel_c $win_c $dir
+        _dfile_scroll_to_sel child_row $sel_c $win_c $dir "" 1
         win_c=$reply[1]
         ;;
       files)
@@ -756,6 +823,7 @@ _dfile_enter() {
   }
 
   _dfile_refresh
+  (( $#children > 0 )) && sel_c=1
   body=0
   _dfile_draw
 

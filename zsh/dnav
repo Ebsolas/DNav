@@ -29,9 +29,16 @@ fi
 typeset -g DNAV_CONFIG_DIR
 typeset -g DNAV_CFG_COLOR_FG=30 DNAV_CFG_COLOR_BG=46
 typeset -g DNAV_CFG_LS=0 DNAV_CFG_SHOW_HIDDEN=0
+typeset -gi DNAV_CFG_LS_DNAV=-1 DNAV_CFG_LS_DJUMP=-1
 typeset -g DNAV_CFG_SUCCESS_ANIM=1 DNAV_CFG_FULL_REDRAW=0
+typeset -g DNAV_CFG_SUCCESS_BAR=1
+typeset -gi DNAV_CFG_SUCCESS_BAR_DNAV=-1 DNAV_CFG_SUCCESS_BAR_DJUMP=-1
+typeset -g DNAV_CFG_SUCCESS_ANIM_STEPS=8 DNAV_CFG_SUCCESS_ANIM_MS=25
 typeset -g DNAV_CFG_BRAND=DNav
 typeset -g DNAV_CFG_SEARCH_ROOTS=""
+typeset -g DNAV_CFG_DFILE_SORT_DIRS=alpha
+typeset -g DNAV_CFG_DFILE_SORT_FILES=alpha
+typeset -g DNAV_CFG_DFILE_JUMP_NAME_MAX=20
 typeset -ga DNAV_FOLDER_NAMES DNAV_FOLDER_PATHS
 typeset -g DNAV_HIGHLIGHT DNAV_RESET
 DNAV_HIGHLIGHT=$'\e[30;46m'
@@ -130,13 +137,25 @@ brand = DNav
 
 # ls -a after a successful select/jump
 ls_after = 0
+# ls_after_dnav = 1
+# ls_after_djump = 0
 
 # dfile: show hidden files/dirs by default (toggle still works with .)
 show_hidden = 0
+# dfile dir order: alpha | hidden_first
+dfile_sort_dirs = alpha
+# dfile file order: alpha | ext | dot_first | dot_ext
+dfile_sort_files = alpha
+# dfile Jump to: folder name max (cuts the end)
+dfile_jump_name_max = 20
+
+# Cyan path bar (0 = hide). *_dnav / *_djump override when set
+success_bar = 1
+# success_bar_dnav = 1
+# success_bar_djump = 0
 
 # Animate the expand-to-path success bar (0 = instant bar)
 success_anim = 1
-# Expand flare: steps × ms (edit these; then: dconfig -r)
 success_anim_steps = 8
 success_anim_ms = 25
 
@@ -217,12 +236,34 @@ _dnav_config_load_kv() {
       color_bg|highlight_bg|bg)     DNAV_CFG_COLOR_BG="$val" ;;
       brand)                        DNAV_CFG_BRAND="$val" ;;
       ls_after|ls)                  _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
+      ls_after_dnav)
+        case ${(L)val} in inherit|-1|'') DNAV_CFG_LS_DNAV=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_LS_DNAV=1 || DNAV_CFG_LS_DNAV=0 ;; esac ;;
+      ls_after_djump)
+        case ${(L)val} in inherit|-1|'') DNAV_CFG_LS_DJUMP=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_LS_DJUMP=1 || DNAV_CFG_LS_DJUMP=0 ;; esac ;;
       show_hidden|hidden)           _dnav_truthy "$val" && DNAV_CFG_SHOW_HIDDEN=1 || DNAV_CFG_SHOW_HIDDEN=0 ;;
+      success_bar)                  _dnav_truthy "$val" && DNAV_CFG_SUCCESS_BAR=1 || DNAV_CFG_SUCCESS_BAR=0 ;;
+      success_bar_dnav)
+        case ${(L)val} in inherit|-1|'') DNAV_CFG_SUCCESS_BAR_DNAV=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_SUCCESS_BAR_DNAV=1 || DNAV_CFG_SUCCESS_BAR_DNAV=0 ;; esac ;;
+      success_bar_djump)
+        case ${(L)val} in inherit|-1|'') DNAV_CFG_SUCCESS_BAR_DJUMP=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_SUCCESS_BAR_DJUMP=1 || DNAV_CFG_SUCCESS_BAR_DJUMP=0 ;; esac ;;
       success_anim|anim)            _dnav_truthy "$val" && DNAV_CFG_SUCCESS_ANIM=1 || DNAV_CFG_SUCCESS_ANIM=0 ;;
       success_anim_steps)           [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_STEPS=$val ;;
       success_anim_ms)              [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_MS=$val ;;
       full_redraw|redraw)           _dnav_truthy "$val" && DNAV_CFG_FULL_REDRAW=1 || DNAV_CFG_FULL_REDRAW=0 ;;
       search_roots)                 DNAV_CFG_SEARCH_ROOTS="$val" ;;
+      dfile_sort_dirs)
+        case ${(L)val} in hidden_first|hidden|dot_first) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;; *) DNAV_CFG_DFILE_SORT_DIRS=alpha ;; esac ;;
+      dfile_sort_files)
+        case ${(L)val} in
+          ext|extension) DNAV_CFG_DFILE_SORT_FILES=ext ;;
+          dot_first|hidden_first|dot) DNAV_CFG_DFILE_SORT_FILES=dot_first ;;
+          dot_ext|dot_extension|hidden_ext) DNAV_CFG_DFILE_SORT_FILES=dot_ext ;;
+          *) DNAV_CFG_DFILE_SORT_FILES=alpha ;;
+        esac ;;
+      dfile_jump_name_max|dfile_jump_max)
+        if [[ $val == <-> ]] && (( val >= 1 )); then
+          DNAV_CFG_DFILE_JUMP_NAME_MAX=$val
+        fi ;;
     esac
   done < "$f"
 }
@@ -256,16 +297,20 @@ _dnav_config_load_folders() {
 
 # Persist folders file (About is never written — hardcoded in TUI).
 _dnav_folders_save() {
-  local f="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}/folders"
-  local i path store
+  emulate -L zsh
+  setopt localoptions no_multios clobber
+  local dir="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
+  local f="$dir/folders"
+  local i dest store
+  /bin/mkdir -p -- "$dir" || return 1
   {
     print -r -- "# Main dnav bar — Label path"
     print -r -- "# About is always added by dnav (do not list it here)."
     print -r -- "#"
     for (( i=1; i <= $#DNAV_FOLDER_NAMES; i++ )); do
-      path="${DNAV_FOLDER_PATHS[i]}"
-      [[ -z $path ]] && continue
-      store="$path"
+      dest="${DNAV_FOLDER_PATHS[i]}"
+      [[ -z $dest ]] && continue
+      store="$dest"
       if [[ $store == "$HOME" ]]; then
         store="~"
       elif [[ $store == "$HOME/"* ]]; then
@@ -283,14 +328,14 @@ _dnav_jumps_save() {
     return $?
   fi
   local f="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}/jumps"
-  local k path store
+  local k dest store
   {
     print -r -- "# djump table — key becomes dKEY (home → dhome)"
     print -r -- "# Format:  key   path"
     print -r -- "#"
     for k in "${_DJUMP_KEYS[@]}"; do
-      path="${_DJUMP_MAP[$k]}"
-      store="$path"
+      dest="${_DJUMP_MAP[$k]}"
+      store="$dest"
       if [[ $store == "$HOME" ]]; then
         store="~"
       elif [[ $store == "$HOME/"* ]]; then
@@ -312,13 +357,21 @@ _dnav_config_load() {
   DNAV_CFG_COLOR_FG=30
   DNAV_CFG_COLOR_BG=46
   DNAV_CFG_LS=0
+  DNAV_CFG_LS_DNAV=-1
+  DNAV_CFG_LS_DJUMP=-1
   DNAV_CFG_SHOW_HIDDEN=0
   DNAV_CFG_SUCCESS_ANIM=1
+  DNAV_CFG_SUCCESS_BAR=1
+  DNAV_CFG_SUCCESS_BAR_DNAV=-1
+  DNAV_CFG_SUCCESS_BAR_DJUMP=-1
   DNAV_CFG_SUCCESS_ANIM_STEPS=8
   DNAV_CFG_SUCCESS_ANIM_MS=25
   DNAV_CFG_FULL_REDRAW=0
   DNAV_CFG_BRAND=DNav
   DNAV_CFG_SEARCH_ROOTS=""
+  DNAV_CFG_DFILE_SORT_DIRS=alpha
+  DNAV_CFG_DFILE_SORT_FILES=alpha
+  DNAV_CFG_DFILE_JUMP_NAME_MAX=20
   DNAV_FOLDER_NAMES=()
   DNAV_FOLDER_PATHS=()
 
@@ -353,7 +406,10 @@ dconfig() {
         print -r -- "dconfig: ${DNAV_CONFIG_DIR}"
         print -r -- "  color  fg=${DNAV_CFG_COLOR_FG} bg=${DNAV_CFG_COLOR_BG}"
         print -r -- "  brand  ${DNAV_CFG_BRAND}"
-        print -r -- "  ls_after=${DNAV_CFG_LS}  show_hidden=${DNAV_CFG_SHOW_HIDDEN}  success_anim=${DNAV_CFG_SUCCESS_ANIM}  full_redraw=${DNAV_CFG_FULL_REDRAW}"
+        print -r -- "  ls_after=${DNAV_CFG_LS}  dnav=${DNAV_CFG_LS_DNAV}  djump=${DNAV_CFG_LS_DJUMP}"
+        print -r -- "  success_bar=${DNAV_CFG_SUCCESS_BAR}  dnav=${DNAV_CFG_SUCCESS_BAR_DNAV}  djump=${DNAV_CFG_SUCCESS_BAR_DJUMP}"
+        print -r -- "  success_anim=${DNAV_CFG_SUCCESS_ANIM}  steps=${DNAV_CFG_SUCCESS_ANIM_STEPS}  ms=${DNAV_CFG_SUCCESS_ANIM_MS}  full_redraw=${DNAV_CFG_FULL_REDRAW}"
+        print -r -- "  show_hidden=${DNAV_CFG_SHOW_HIDDEN}"
         print -r -- "  folders ${#DNAV_FOLDER_NAMES}  jumps ${#_DJUMP_KEYS:-0}"
       fi
       ;;
@@ -370,6 +426,7 @@ dconfig() {
       print -r -- "  -e, --edit     open config files in \$EDITOR"
       print -r -- "  -p, --path     print config directory"
       print -r -- "files: config  folders  jumps  under \$XDG_CONFIG_HOME/dnav"
+      print -r -- "scripts: dupdate   refresh the install from the DNav repo"
       ;;
     *)
       print -u2 -- "dconfig: unknown option: $1 (try dconfig -h)"
@@ -378,7 +435,100 @@ dconfig() {
   esac
 }
 
-# Load config before plugins so jumps path / colors / flags are ready.
+# Repo root used by dupdate / install.sh --update.
+# Order: DNAV_UPDATE_FROM, $DNAV_DIR/.source, sibling DNav/, ~/.local/share/DNav
+_dnav_update_repo() {
+  local c line
+  local -a cands
+  cands=()
+  [[ -n ${DNAV_UPDATE_FROM:-} ]] && cands+=("$DNAV_UPDATE_FROM")
+  if [[ -n ${DNAV_DIR:-} && -f $DNAV_DIR/.source ]]; then
+    IFS= read -r line < "$DNAV_DIR/.source" || line=""
+    [[ -n $line ]] && cands+=("$line")
+  fi
+  [[ -n ${DNAV_DIR:-} ]] && cands+=("${DNAV_DIR:h}/DNav" "${DNAV_DIR:h:h}/DNav")
+  cands+=("${XDG_DATA_HOME:-$HOME/.local/share}/DNav")
+  cands+=("$HOME/.local/share/DNav")
+  [[ -n ${DNAV_DIR:-} ]] && cands+=("$DNAV_DIR")
+  for c in "${cands[@]}"; do
+    [[ -n $c ]] || continue
+    if [[ -f $c/zsh/dnav ]]; then
+      print -r -- "${c:A}"
+      return 0
+    fi
+    # Candidate is the zsh/ package inside the repo
+    if [[ -f $c/dnav && -f $c/dfile && -f ${c:h}/zsh/dnav ]]; then
+      print -r -- "${c:h:A}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_dnav_update_copy() {
+  local src="$1" dest="$2"
+  shift 2
+  local f
+  command mkdir -p -- "$dest" || return 1
+  for f in "$@"; do
+    [[ -f $src/$f ]] || continue
+    command cp -f -- "$src/$f" "$dest/$f" || return 1
+    [[ -x $src/$f ]] && command chmod 0755 -- "$dest/$f"
+  done
+  return 0
+}
+
+# Refresh installed scripts from the git/source tree. Never touches ~/.config/dnav.
+dupdate() {
+  emulate -L zsh
+  setopt localoptions no_multios
+  case ${1:-} in
+    -h|--help)
+      print -r -- "usage: dupdate"
+      print -r -- "  Copy zsh (and bash, if installed) scripts from the DNav repo"
+      print -r -- "  onto this install. Config under ~/.config/dnav is left alone."
+      print -r -- "  Override source:  DNAV_UPDATE_FROM=/path/to/DNav dupdate"
+      return 0
+      ;;
+  esac
+
+  local repo dest bash_dest
+  repo="$(_dnav_update_repo)" || {
+    print -u2 -- "dupdate: cannot find the DNav repo (expected zsh/dnav)."
+    print -u2 -- "  Clone it, or:  DNAV_UPDATE_FROM=/path/to/DNav dupdate"
+    return 1
+  }
+
+  dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
+  if [[ ${dest:A} == ${repo:A}/zsh ]]; then
+    print -r -- "dupdate: already running from $repo/zsh (git pull if you want new commits)"
+    return 0
+  fi
+
+  print -r -- "dupdate: $repo  →  $dest"
+  _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch jumps || {
+    print -u2 -- "dupdate: failed to copy zsh scripts"
+    return 1
+  }
+  if [[ -f $repo/install.sh ]]; then
+    command cp -f -- "$repo/install.sh" "$dest/install.sh"
+    command chmod 0755 -- "$dest/install.sh"
+  fi
+  print -r -- "$repo" > "$dest/.source"
+
+  bash_dest="${XDG_DATA_HOME:-$HOME/.local/share}/dnav-bash"
+  if [[ -d $bash_dest && -d $repo/bash ]]; then
+    _dnav_update_copy "$repo/bash" "$bash_dest" dnav dfile djump dsearch jumps || {
+      print -u2 -- "dupdate: failed to copy bash scripts"
+      return 1
+    }
+    print -r -- "dupdate: bash  →  $bash_dest"
+  fi
+
+  # Reload this shell so the new files are live.
+  source "$dest/dnav"
+  print -r -- "dupdate: reloaded $dest/dnav  (config unchanged: ${DNAV_CONFIG_DIR:-$(_dnav_config_dir)})"
+}
 _dnav_config_load
 
 # ── Optional modules ──────────────────────────────────────────────────────
@@ -397,77 +547,148 @@ _dnav_config_load
 #   _djump_resolve / _djump_match_query
 
 # After successful navigation (call only once terminal is restored). No-op on cancel paths.
-# Controlled by config ls_after (DNAV_CFG_LS).
-_dnav_maybe_ls() {
-  case ${DNAV_CFG_LS:-0} in
-    1|true|yes|on|TRUE|YES|ON)
-      command ls -a --color=auto
-      ;;
+# $1 = dnav | djump  (specific flags inherit ls_after when unset / -1)
+_dnav_want_ls() {
+  local ctx="${1:-dnav}"
+  case $ctx in
+    djump)
+      if (( DNAV_CFG_LS_DJUMP >= 0 )); then (( DNAV_CFG_LS_DJUMP )); else (( DNAV_CFG_LS )); fi ;;
+    *)
+      if (( DNAV_CFG_LS_DNAV >= 0 )); then (( DNAV_CFG_LS_DNAV )); else (( DNAV_CFG_LS )); fi ;;
   esac
 }
 
+_dnav_want_bar() {
+  local ctx="${1:-dnav}"
+  case $ctx in
+    djump)
+      if (( DNAV_CFG_SUCCESS_BAR_DJUMP >= 0 )); then (( DNAV_CFG_SUCCESS_BAR_DJUMP )); else (( DNAV_CFG_SUCCESS_BAR )); fi ;;
+    *)
+      if (( DNAV_CFG_SUCCESS_BAR_DNAV >= 0 )); then (( DNAV_CFG_SUCCESS_BAR_DNAV )); else (( DNAV_CFG_SUCCESS_BAR )); fi ;;
+  esac
+}
+
+_dnav_maybe_ls() {
+  _dnav_want_ls "${1:-dnav}" || return 0
+  command ls -a --color=auto
+}
+
+_dnav_term_cols() {
+  local r c
+  if read -r r c <<< "$(stty size 2>/dev/null)"; then
+    if [[ $c == <-> ]] && (( c >= 8 )); then
+      print -rn -- "$c"
+      return 0
+    fi
+  fi
+  if [[ ${COLUMNS:-0} == <-> ]] && (( COLUMNS >= 8 )); then
+    print -rn -- "$COLUMNS"
+    return 0
+  fi
+  print -rn -- 80
+}
+
+# Fit string to width, keep the end (most specific path tail).
+_dnav_fit_end() {
+  local s="$1" w="$2"
+  (( w < 1 )) && { print -rn -- ""; return }
+  if (( ${#s} <= w )); then
+    print -r -- "$s"
+    return
+  fi
+  if (( w == 1 )); then
+    print -r -- "…"
+    return
+  fi
+  print -r -- "…${s: -$((w - 1))}"
+}
+
 # Set a key=value in ~/.config/dnav/config (preserves other lines / comments).
+# Creates the file if needed. Always writes through a temp file + mv.
 _dnav_config_set() {
+  emulate -L zsh
+  setopt localoptions no_multios clobber
   local key="$1" val="$2"
-  local f="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}/config"
+  local dir="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
+  local f="$dir/config"
   local tmp line k found=0 stripped
   local key_l="${(L)key}"
-  [[ -f $f ]] || return 1
+  [[ -n $key ]] || return 1
+  /bin/mkdir -p -- "$dir" || return 1
+  [[ -f $f ]] || print -r -- "# DNav settings" > "$f" || return 1
   tmp="${f}.tmp.$$"
-  while IFS= read -r line || [[ -n $line ]]; do
-    stripped="${line#"${line%%[![:space:]]*}"}"
-    if [[ -z $stripped || $stripped == \#* ]]; then
-      print -r -- "$line"
-      continue
-    fi
-    if [[ $line == *=* ]]; then
-      k="${line%%=*}"
-      k="${k%"${k##*[![:space:]]}"}"
-      k="${k#"${k%%[![:space:]]*}"}"
-      if [[ ${(L)k} == $key_l ]]; then
-        print -r -- "$key = $val"
-        found=1
+  {
+    while IFS= read -r line || [[ -n $line ]]; do
+      stripped="${line#"${line%%[![:space:]]*}"}"
+      if [[ -z $stripped || $stripped == \#* ]]; then
+        print -r -- "$line"
         continue
       fi
-    fi
-    print -r -- "$line"
-  done < "$f" > "$tmp"
-  (( found )) || print -r -- "$key = $val" >> "$tmp"
-  mv -f -- "$tmp" "$f"
+      if [[ $line == *=* ]]; then
+        k="${line%%=*}"
+        k="${k%"${k##*[![:space:]]}"}"
+        k="${k#"${k%%[![:space:]]*}"}"
+        if [[ ${(L)k} == $key_l ]]; then
+          print -r -- "$key = $val"
+          found=1
+          continue
+        fi
+      fi
+      print -r -- "$line"
+    done
+    (( found )) || print -r -- "$key = $val"
+  } < "$f" > "$tmp" || { /bin/rm -f -- "$tmp"; return 1 }
+  /bin/mv -f -- "$tmp" "$f" || { /bin/rm -f -- "$tmp"; return 1 }
+  return 0
+}
+
+# Persist inherit/-1/1/0 cycle3 flags as inherit|1|0 in the config file.
+_dnav_cfg_cycle3_store() {
+  case $1 in
+    -1) print -rn -- inherit ;;
+    1)  print -rn -- 1 ;;
+    *)  print -rn -- 0 ;;
+  esac
 }
 
 # Shared location bar (TUI select, dsearch, and shell djump/dKEY).
-# $1 = path to show; $2 = optional expand origin column (default: center).
+# $1 = path; $2 = optional expand origin column; $3 = dnav|djump (bar visibility).
+# Always one terminal row: width from stty, tail-truncate, never fill last column.
 _dnav_success_bar() {
   local bar_path="$1"
   local origin_mid="${2:-}"
+  local ctx="${3:-dnav}"
   local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
   local rst="${DNAV_RESET:-\e[0m}"
-  local max_w=${COLUMNS:-80}
+  local max_w usable
   local step left right width half display
   local anim=${DNAV_CFG_SUCCESS_ANIM:-1}
   local steps=${DNAV_CFG_SUCCESS_ANIM_STEPS:-8}
   local ms=${DNAV_CFG_SUCCESS_ANIM_MS:-25}
   local cs delay
 
-  (( max_w < 20 )) && max_w=80
+  _dnav_want_bar "$ctx" || return 0
+
+  max_w="$(_dnav_term_cols)"
+  # Last column wrap (iSH / narrow ttys): keep one spare cell
+  usable=$(( max_w > 1 ? max_w - 1 : 1 ))
   (( steps < 1 )) && steps=1
   (( ms < 1 )) && ms=1
   if [[ -z $origin_mid ]]; then
-    origin_mid=$(( max_w / 2 ))
+    origin_mid=$(( usable / 2 ))
   fi
+  (( origin_mid >= usable )) && origin_mid=$(( usable / 2 ))
 
   if (( anim )); then
-    # zselect -t is centiseconds (ms/10); /bin/sleep uses fractional seconds
     cs=$(( (ms + 5) / 10 ))
     (( cs < 1 )) && cs=1
     delay=$(printf '0.%03d' $ms)
     for (( step=1; step <= steps; step++ )); do
-      half=$(( (max_w * step) / (2 * steps) ))
+      half=$(( (usable * step) / (2 * steps) ))
       left=$(( origin_mid - half ))
       right=$(( origin_mid + half ))
       (( left < 0 )) && left=0
-      (( right > max_w )) && right=$max_w
+      (( right > usable )) && right=$usable
       width=$(( right - left ))
       printf "\r\e[2K"
       printf "\e[${left}C${hl}%*s${rst}" $width ""
@@ -479,12 +700,8 @@ _dnav_success_bar() {
     done
   fi
 
-  display=$bar_path
-  if (( ${#display} > max_w )); then
-    display="${display:0:$((max_w - 1))}…"
-  fi
-  printf "\r\e[2K"
-  printf "${hl}%-${max_w}s${rst}\n" "$display"
+  display="$(_dnav_fit_end "$bar_path" $usable)"
+  printf "\r${hl}%-${usable}s${rst}\e[K\n" "$display"
 }
 
 # List shell-facing DNav commands (not in-TUI plugins).
@@ -497,6 +714,7 @@ dhelp() {
   print -r -- "  dnav                 open the folder navigator"
   print -r -- "  dhelp                this command list"
   print -r -- "  dconfig              reload/edit config (~/.config/dnav)"
+  print -r -- "  dupdate              copy latest scripts onto this install"
   print -r -- "  djump                list jump aliases (djump -l)"
   print -r -- "  djump KEY            jump to KEY (same as dKEY)"
   print -r -- "  djump -r             reload jumps file + dKEY commands"
@@ -873,8 +1091,9 @@ dnav() {
         print -r -- "  config                       colors, brand, ls_after, hidden…"
         print -r -- "  folders                      main bar labels + paths"
         print -r -- "  jumps                        dKEY aliases"
-        print -r -- "In About → Settings            edit from inside dnav"
+        print -r -- "In About → Settings            edit from inside dnav (saved to config)"
         print -r -- "dconfig -r / -e                reload / open in \$EDITOR"
+        print -r -- "dupdate                        refresh installed scripts from the repo"
         print -r -- "ls_after=1 in config           ls after select/jump"
         print -r -- "full_redraw=1                 full bar redraw (compat mode)"
         ;;
@@ -897,11 +1116,32 @@ dnav() {
     case $tab in
       General)
         (( DNAV_CFG_LS )) && onoff=on || onoff=off
-        about_body_lines+=("ls_after          $onoff          Enter toggle")
+        about_body_lines+=("ls_after          $onoff          Enter toggle (default)")
         about_row_kind+=(toggle) about_row_key+=(ls_after) about_row_idx+=(-1)
+        (( DNAV_CFG_LS_DNAV < 0 )) && onoff=inherit || { (( DNAV_CFG_LS_DNAV )) && onoff=on || onoff=off; }
+        about_body_lines+=("ls_after_dnav     $onoff          Enter cycle inherit/on/off")
+        about_row_kind+=(cycle3) about_row_key+=(ls_after_dnav) about_row_idx+=(-1)
+        (( DNAV_CFG_LS_DJUMP < 0 )) && onoff=inherit || { (( DNAV_CFG_LS_DJUMP )) && onoff=on || onoff=off; }
+        about_body_lines+=("ls_after_djump    $onoff          Enter cycle inherit/on/off")
+        about_row_kind+=(cycle3) about_row_key+=(ls_after_djump) about_row_idx+=(-1)
+        (( DNAV_CFG_SUCCESS_BAR )) && onoff=on || onoff=off
+        about_body_lines+=("success_bar       $onoff          Enter toggle (default)")
+        about_row_kind+=(toggle) about_row_key+=(success_bar) about_row_idx+=(-1)
+        (( DNAV_CFG_SUCCESS_BAR_DNAV < 0 )) && onoff=inherit || { (( DNAV_CFG_SUCCESS_BAR_DNAV )) && onoff=on || onoff=off; }
+        about_body_lines+=("success_bar_dnav  $onoff          Enter cycle inherit/on/off")
+        about_row_kind+=(cycle3) about_row_key+=(success_bar_dnav) about_row_idx+=(-1)
+        (( DNAV_CFG_SUCCESS_BAR_DJUMP < 0 )) && onoff=inherit || { (( DNAV_CFG_SUCCESS_BAR_DJUMP )) && onoff=on || onoff=off; }
+        about_body_lines+=("success_bar_djump $onoff          Enter cycle inherit/on/off")
+        about_row_kind+=(cycle3) about_row_key+=(success_bar_djump) about_row_idx+=(-1)
         (( DNAV_CFG_SHOW_HIDDEN )) && onoff=on || onoff=off
         about_body_lines+=("show_hidden       $onoff          Enter toggle")
         about_row_kind+=(toggle) about_row_key+=(show_hidden) about_row_idx+=(-1)
+        about_body_lines+=("dfile_sort_dirs   ${DNAV_CFG_DFILE_SORT_DIRS}          Enter cycle alpha/hidden_first")
+        about_row_kind+=(cycle_dirs) about_row_key+=(dfile_sort_dirs) about_row_idx+=(-1)
+        about_body_lines+=("dfile_sort_files  ${DNAV_CFG_DFILE_SORT_FILES}          Enter cycle alpha/ext/dot_first/dot_ext")
+        about_row_kind+=(cycle_files) about_row_key+=(dfile_sort_files) about_row_idx+=(-1)
+        about_body_lines+=("dfile_jump_name_max ${DNAV_CFG_DFILE_JUMP_NAME_MAX}        Enter edit (Jump to: name max)")
+        about_row_kind+=(value) about_row_key+=(dfile_jump_name_max) about_row_idx+=(-1)
         (( DNAV_CFG_SUCCESS_ANIM )) && onoff=on || onoff=off
         about_body_lines+=("success_anim      $onoff          Enter toggle")
         about_row_kind+=(toggle) about_row_key+=(success_anim) about_row_idx+=(-1)
@@ -1126,13 +1366,17 @@ dnav() {
     local kind="${about_row_kind[settings_row+1]}"
     local rkey="${about_row_key[settings_row+1]}"
     local ridx="${about_row_idx[settings_row+1]}"
-    local val label path k
+    local val label dest k
     case $kind in
       toggle)
         case $rkey in
           ls_after)
             DNAV_CFG_LS=$(( 1 - DNAV_CFG_LS ))
             _dnav_config_set ls_after "$DNAV_CFG_LS"
+            ;;
+          success_bar)
+            DNAV_CFG_SUCCESS_BAR=$(( 1 - DNAV_CFG_SUCCESS_BAR ))
+            _dnav_config_set success_bar "$DNAV_CFG_SUCCESS_BAR"
             ;;
           show_hidden)
             DNAV_CFG_SHOW_HIDDEN=$(( 1 - DNAV_CFG_SHOW_HIDDEN ))
@@ -1148,11 +1392,64 @@ dnav() {
             ;;
         esac
         ;;
+      cycle3)
+        case $rkey in
+          ls_after_dnav)
+            case $DNAV_CFG_LS_DNAV in
+              -1) DNAV_CFG_LS_DNAV=1 ;;
+              1)  DNAV_CFG_LS_DNAV=0 ;;
+              *)  DNAV_CFG_LS_DNAV=-1 ;;
+            esac
+            _dnav_config_set ls_after_dnav "$(_dnav_cfg_cycle3_store "$DNAV_CFG_LS_DNAV")"
+            ;;
+          ls_after_djump)
+            case $DNAV_CFG_LS_DJUMP in
+              -1) DNAV_CFG_LS_DJUMP=1 ;;
+              1)  DNAV_CFG_LS_DJUMP=0 ;;
+              *)  DNAV_CFG_LS_DJUMP=-1 ;;
+            esac
+            _dnav_config_set ls_after_djump "$(_dnav_cfg_cycle3_store "$DNAV_CFG_LS_DJUMP")"
+            ;;
+          success_bar_dnav)
+            case $DNAV_CFG_SUCCESS_BAR_DNAV in
+              -1) DNAV_CFG_SUCCESS_BAR_DNAV=1 ;;
+              1)  DNAV_CFG_SUCCESS_BAR_DNAV=0 ;;
+              *)  DNAV_CFG_SUCCESS_BAR_DNAV=-1 ;;
+            esac
+            _dnav_config_set success_bar_dnav "$(_dnav_cfg_cycle3_store "$DNAV_CFG_SUCCESS_BAR_DNAV")"
+            ;;
+          success_bar_djump)
+            case $DNAV_CFG_SUCCESS_BAR_DJUMP in
+              -1) DNAV_CFG_SUCCESS_BAR_DJUMP=1 ;;
+              1)  DNAV_CFG_SUCCESS_BAR_DJUMP=0 ;;
+              *)  DNAV_CFG_SUCCESS_BAR_DJUMP=-1 ;;
+            esac
+            _dnav_config_set success_bar_djump "$(_dnav_cfg_cycle3_store "$DNAV_CFG_SUCCESS_BAR_DJUMP")"
+            ;;
+        esac
+        ;;
+      cycle_dirs)
+        case $DNAV_CFG_DFILE_SORT_DIRS in
+          alpha) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;;
+          *)     DNAV_CFG_DFILE_SORT_DIRS=alpha ;;
+        esac
+        _dnav_config_set dfile_sort_dirs "$DNAV_CFG_DFILE_SORT_DIRS"
+        ;;
+      cycle_files)
+        case $DNAV_CFG_DFILE_SORT_FILES in
+          alpha)     DNAV_CFG_DFILE_SORT_FILES=ext ;;
+          ext)       DNAV_CFG_DFILE_SORT_FILES=dot_first ;;
+          dot_first) DNAV_CFG_DFILE_SORT_FILES=dot_ext ;;
+          *)         DNAV_CFG_DFILE_SORT_FILES=alpha ;;
+        esac
+        _dnav_config_set dfile_sort_files "$DNAV_CFG_DFILE_SORT_FILES"
+        ;;
       value)
         case $rkey in
           color_fg) _dnav_inline_edit "color_fg (Esc cancel): " "$DNAV_CFG_COLOR_FG" || return 1 ;;
           color_bg) _dnav_inline_edit "color_bg (Esc cancel): " "$DNAV_CFG_COLOR_BG" || return 1 ;;
           brand)    _dnav_inline_edit "brand (Esc cancel): " "$DNAV_CFG_BRAND" || return 1 ;;
+          dfile_jump_name_max) _dnav_inline_edit "dfile_jump_name_max (Esc cancel): " "$DNAV_CFG_DFILE_JUMP_NAME_MAX" || return 1 ;;
           *) return 1 ;;
         esac
         val="${REPLY//[$'\r\n']/}"
@@ -1175,6 +1472,11 @@ dnav() {
             DNAV_CFG_BRAND="$val"
             brand="$val"
             ;;
+          dfile_jump_name_max)
+            [[ $val == <-> ]] && (( val >= 1 )) || return 1
+            _dnav_config_set dfile_jump_name_max "$val"
+            DNAV_CFG_DFILE_JUMP_NAME_MAX=$val
+            ;;
         esac
         ;;
       folder)
@@ -1194,10 +1496,10 @@ dnav() {
         label="${REPLY//[$'\r\n']/}"
         [[ -z $label ]] && return 1
         _dnav_inline_edit "path for $label (Esc cancel): " "~" || return 1
-        path="${REPLY//[$'\r\n']/}"
-        [[ -z $path ]] && return 1
+        dest="${REPLY//[$'\r\n']/}"
+        [[ -z $dest ]] && return 1
         DNAV_FOLDER_NAMES+=("$label")
-        DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$path")")
+        DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$dest")")
         _dnav_folders_save
         ;;
       jump)
@@ -1214,12 +1516,12 @@ dnav() {
         k="${k#d}"
         [[ $k =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || return 1
         _dnav_inline_edit "path for d$k (Esc cancel): " "~" || return 1
-        path="${REPLY//[$'\r\n']/}"
-        [[ -z $path ]] && return 1
+        dest="${REPLY//[$'\r\n']/}"
+        [[ -z $dest ]] && return 1
         if [[ -z ${_DJUMP_MAP[$k]:-} ]]; then
           _DJUMP_KEYS+=("$k")
         fi
-        _DJUMP_MAP[$k]="$path"
+        _DJUMP_MAP[$k]="$dest"
         _dnav_jumps_save
         ;;
     esac
@@ -1449,7 +1751,7 @@ dnav() {
     local origin_start=${item_start[selected+1]:-0}
     local origin_end=${item_end[selected+1]:-$cols}
     local origin_mid=$(( (origin_start + origin_end) / 2 ))
-    _dnav_success_bar "$sel_path" "$origin_mid"
+    _dnav_success_bar "$sel_path" "$origin_mid" dnav
   }
 
   _dnav_compute_positions
@@ -1539,7 +1841,7 @@ dnav() {
           }
           _dnav_success_from_sel "${target:A}"
           _dnav_cleanup
-          _dnav_maybe_ls
+          _dnav_maybe_ls dnav
           return 0
         else
           _dnav_clear_menu

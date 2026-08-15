@@ -1086,12 +1086,12 @@ _dsearch_start() {
             return 0
           }
           if (( $+functions[_dnav_success_bar] )); then
-            _dnav_success_bar "${target:A}"
+            _dnav_success_bar "${target:A}" "" dnav
           else
             printf "%s\n" "${target:A}"
           fi
           (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
-          (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls
+          (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls dnav
           return 0
         else
           if (( _DSEARCH_FOR_DFILE )); then

@@ -20,6 +20,7 @@ test_public_commands_defined() {
   assert_fn dnav
   assert_fn dhelp
   assert_fn dconfig
+  assert_fn dupdate
   assert_fn djump
   assert_fn dfavorite
   assert_fn _dsearch_start
@@ -48,6 +49,14 @@ test_config_dir_isolated() {
   assert_file "$DNAV_TEST_CONFIG/jumps"
 }
 
+test_update_repo_finds_source() {
+  local got
+  got="$(_dnav_update_repo)"
+  assert_file "$got/zsh/dnav" "dupdate locates repo with zsh/dnav"
+  got="$(DNAV_UPDATE_FROM="$DNAV_REPO_ROOT" _dnav_update_repo)"
+  assert_eq "${got:A}" "${DNAV_REPO_ROOT:A}" "DNAV_UPDATE_FROM wins"
+}
+
 test_syntax_zsh_scripts() {
   local f
   for f in dnav dfile djump dsearch; do
@@ -63,5 +72,6 @@ run_test test_modules_available
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated
+run_test test_update_repo_finds_source
 run_test test_syntax_zsh_scripts
 dnav_test_finish

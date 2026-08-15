@@ -84,6 +84,82 @@ test_dconfig_path() {
   assert_eq "$got" "$DNAV_TEST_CONFIG"
 }
 
+test_config_set_updates_and_appends() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+# keep this comment
+brand = OldBrand
+ls_after = 0
+EOF
+  _dnav_config_set brand NewBrand
+  _dnav_config_set show_hidden 1
+  _dnav_config_set dfile_sort_dirs hidden_first
+  assert_file "$DNAV_TEST_CONFIG/config"
+  local txt
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "brand = NewBrand" "replaces existing key"
+  assert_contains "$txt" "show_hidden = 1" "appends missing key"
+  assert_contains "$txt" "dfile_sort_dirs = hidden_first" "appends dfile_sort_dirs"
+  assert_contains "$txt" "# keep this comment" "keeps comments"
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_BRAND" "NewBrand" "reload sees written brand"
+  assert_eq "$DNAV_CFG_SHOW_HIDDEN" "1" "reload sees written show_hidden"
+  assert_eq "$DNAV_CFG_DFILE_SORT_DIRS" "hidden_first" "reload sees written sort"
+}
+
+test_folders_save_persists() {
+  DNAV_FOLDER_NAMES=(Home Labs)
+  DNAV_FOLDER_PATHS=("$HOME" "$HOME/Projects")
+  _dnav_folders_save
+  assert_file "$DNAV_TEST_CONFIG/folders"
+  local txt
+  txt="$(<"$DNAV_TEST_CONFIG/folders")"
+  assert_contains "$txt" "Home" "writes Home"
+  assert_contains "$txt" "Labs" "writes Labs"
+  _dnav_config_load_folders "$DNAV_TEST_CONFIG/folders"
+  assert_eq "${DNAV_FOLDER_NAMES[2]}" "Labs" "reload sees saved folder"
+}
+
+test_config_set_works_when_path_local_empty() {
+  # zsh ties local path to PATH; Settings used to declare `local path` and
+  # then mv/mkdir vanished. Simulate that caller.
+  local path
+  path=()
+  _dnav_config_set brand PathSafe
+  local txt
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "brand = PathSafe" "save survives empty local path"
+}
+
+test_config_set_creates_missing_file() {
+  command rm -f -- "$DNAV_TEST_CONFIG/config"
+  _dnav_config_set brand Created
+  assert_file "$DNAV_TEST_CONFIG/config" "creates config if missing"
+  local txt
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "brand = Created"
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_BRAND" "Created"
+}
+
+test_dfile_jump_name_max_config() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+color_fg = black
+color_bg = cyan
+brand = ZshTestNav
+dfile_jump_name_max = 12
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_DFILE_JUMP_NAME_MAX" "12" "parses dfile_jump_name_max"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+color_fg = black
+color_bg = cyan
+brand = ZshTestNav
+dfile_jump_name_max = 0
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_DFILE_JUMP_NAME_MAX" "20" "rejects 0, keeps default"
+}
+
 run_test test_truthy
 run_test test_expand_path_tilde
 run_test test_color_num
@@ -91,4 +167,9 @@ run_test test_seeded_config_loaded
 run_test test_reload_picks_up_edits
 run_test test_folders_skip_about_help
 run_test test_dconfig_path
+run_test test_config_set_updates_and_appends
+run_test test_folders_save_persists
+run_test test_config_set_works_when_path_local_empty
+run_test test_config_set_creates_missing_file
+run_test test_dfile_jump_name_max_config
 dnav_test_finish

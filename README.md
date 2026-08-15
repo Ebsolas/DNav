@@ -38,11 +38,37 @@ The installer will:
 
 ```text
 ./install.sh                 # default install
+./install.sh --update        # refresh scripts only (keeps config)
 ./install.sh --prefix DIR    # install scripts elsewhere
 ./install.sh --config DIR    # alternate config directory
 ./install.sh --no-rc         # skip .zshrc edit
 ./install.sh --force-config  # overwrite config/folders/jumps with defaults
 ./install.sh --uninstall     # remove scripts + rc hook (keeps config)
+```
+
+### Update an existing install
+
+From a new shell, either:
+
+```bash
+dupdate                          # copies repo → ~/.local/share/dnav and reloads
+```
+
+or from the clone:
+
+```bash
+cd /path/to/DNav
+git pull                         # if you use git
+./install.sh --update
+exec zsh
+```
+
+`dupdate` / `--update` overwrite scripts only. `~/.config/dnav/` is never touched.
+
+If the repo is not next to the install, point at it:
+
+```bash
+DNAV_UPDATE_FROM=~/src/DNav dupdate
 ```
 
 ### Manual install
