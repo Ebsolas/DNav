@@ -371,6 +371,30 @@ _dnav_config_defaults() {
   print -r -- "full_redraw 0"
 }
 
+# One-line note written above a key in the user config.
+_dnav_config_key_note() {
+  case $1 in
+    color_fg) print -r -- "fg: color name or ANSI 30–37 / 90–97 (black red green yellow blue magenta cyan white)" ;;
+    color_bg) print -r -- "bg: color name or ANSI 40–47 / 100–107" ;;
+    brand) print -r -- "Brand chip label on the main bar" ;;
+    ls_after) print -r -- "ls -a after a successful select/jump (1/0)" ;;
+    ls_after_dnav) print -r -- "ls after dnav: 1/0/inherit (inherit uses ls_after)" ;;
+    ls_after_djump) print -r -- "ls after djump: 1/0/inherit (inherit uses ls_after)" ;;
+    show_hidden) print -r -- "dfile: show hidden files/dirs by default (toggle with .)" ;;
+    dfile_sort_dirs) print -r -- "dfile dir order: alpha | hidden_first" ;;
+    dfile_sort_files) print -r -- "dfile file order: alpha | ext | dot_first | dot_ext" ;;
+    dfile_jump_name_max) print -r -- "dfile Jump to: folder name max (cuts the end)" ;;
+    success_bar) print -r -- "Cyan path bar after select (0 = hide)" ;;
+    success_bar_dnav) print -r -- "path bar after dnav: 1/0/inherit (inherit uses success_bar)" ;;
+    success_bar_djump) print -r -- "path bar after djump: 1/0/inherit (inherit uses success_bar)" ;;
+    success_anim) print -r -- "Animate the expand-to-path success bar (0 = instant)" ;;
+    success_anim_steps) print -r -- "success bar expand: number of animation steps" ;;
+    success_anim_ms) print -r -- "success bar expand: milliseconds between steps" ;;
+    full_redraw) print -r -- "1 = full line redraw every move; 0 = partial chip repaint" ;;
+    *) print -rn -- "" ;;
+  esac
+}
+
 _dnav_config_canon_key() {
   case ${(L)1} in
     ls|ls_after) print -r -- ls_after ;;
@@ -399,14 +423,15 @@ _dnav_config_existing_keys() {
   done < "$f"
 }
 
-# Append any missing default keys. Never changes existing values/comments.
-# Prints the number of keys added.
+# Append any missing default keys and ensure each known key has its note.
+# Never changes existing values. Prints the number of keys added.
 _dnav_config_merge_defaults() {
   emulate -L zsh
   setopt localoptions no_multios clobber
   local dir="${1:-${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}}"
   local f="$dir/config"
-  local tmp rec key val k added=0
+  local tmp rec key val k added=0 changed=0
+  local line stripped prev_comment=0 note last_comment=""
   typeset -A have
   /bin/mkdir -p -- "$dir" || return 1
   [[ -f $f ]] || print -r -- "# DNav settings" > "$f" || return 1
@@ -414,7 +439,40 @@ _dnav_config_merge_defaults() {
     have[$k]=1
   done
   tmp="${f}.tmp.$$"
-  /bin/cp -f -- "$f" "$tmp" || return 1
+  {
+    while IFS= read -r line || [[ -n $line ]]; do
+      stripped="${line#"${line%%[![:space:]]*}"}"
+      if [[ -z $stripped ]]; then
+        print -r -- "$line"
+        prev_comment=0
+        continue
+      fi
+      if [[ $stripped == \#* ]]; then
+        print -r -- "$line"
+        prev_comment=1
+        last_comment="$stripped"
+        continue
+      fi
+      if [[ $stripped == *=* ]]; then
+        k="${stripped%%=*}"
+        k="${k%"${k##*[![:space:]]}"}"
+        k="${k#"${k%%[![:space:]]*}"}"
+        k="$(_dnav_config_canon_key "$k")"
+        note="$(_dnav_config_key_note "$k")"
+        if [[ -n $note ]]; then
+          if (( prev_comment == 0 )) || [[ $last_comment == '# added by dupdate'* ]]; then
+            print -r -- "# $note"
+            changed=1
+          fi
+        fi
+        print -r -- "$line"
+        prev_comment=0
+        continue
+      fi
+      print -r -- "$line"
+      prev_comment=0
+    done
+  } < "$f" > "$tmp"
   while IFS= read -r rec; do
     key="${rec%% *}"
     val="${rec#* }"
@@ -422,12 +480,17 @@ _dnav_config_merge_defaults() {
     if (( added == 0 )); then
       print -r -- "" >> "$tmp"
       print -r -- "# added by dupdate (previous values were kept)" >> "$tmp"
+    else
+      print -r -- "" >> "$tmp"
     fi
+    note="$(_dnav_config_key_note "$key")"
+    [[ -n $note ]] && print -r -- "# $note" >> "$tmp"
     print -r -- "$key = $val" >> "$tmp"
     have[$key]=1
     (( added++ ))
+    changed=1
   done < <(_dnav_config_defaults)
-  if (( added )); then
+  if (( changed )); then
     /bin/mv -f -- "$tmp" "$f" || { /bin/rm -f -- "$tmp"; return 1 }
   else
     /bin/rm -f -- "$tmp"

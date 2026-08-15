@@ -157,7 +157,9 @@ EOF
   assert_contains "$txt" "show_hidden = 1" "keeps existing show_hidden"
   assert_contains "$txt" "# keep me" "keeps comments"
   assert_contains "$txt" "dfile_jump_name_max = 20" "adds new key"
+  assert_contains "$txt" "# dfile Jump to: folder name max (cuts the end)" "notes Jump to: max"
   assert_contains "$txt" "success_bar = 1" "adds success_bar"
+  assert_contains "$txt" "# Cyan path bar after select (0 = hide)" "notes success_bar"
   added="$(_dnav_config_merge_defaults "$DNAV_TEST_CONFIG")"
   assert_eq "$added" "0" "second merge is a no-op"
   txt="$(<"$DNAV_TEST_CONFIG/config")"
@@ -194,6 +196,21 @@ EOF
   assert_gt "$added" 0 "still adds unrelated missing keys"
 }
 
+test_config_merge_notes_bare_existing_keys() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = KeepBrand
+# added by dupdate (previous values were kept)
+full_redraw = 1
+EOF
+  _dnav_config_merge_defaults "$DNAV_TEST_CONFIG" >/dev/null
+  local txt
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "brand = KeepBrand" "keeps brand value"
+  assert_contains "$txt" "full_redraw = 1" "keeps full_redraw value"
+  assert_contains "$txt" "# Brand chip label on the main bar" "notes brand"
+  assert_contains "$txt" "# 1 = full line redraw every move; 0 = partial chip repaint" "notes full_redraw"
+}
+
 test_dfile_jump_name_max_config() {
   cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
 color_fg = black
@@ -226,5 +243,6 @@ run_test test_config_set_works_when_path_local_empty
 run_test test_config_set_creates_missing_file
 run_test test_config_merge_adds_missing_keeps_values
 run_test test_config_merge_treats_alias_as_present
+run_test test_config_merge_notes_bare_existing_keys
 run_test test_dfile_jump_name_max_config
 dnav_test_finish
