@@ -38,7 +38,7 @@ The installer will:
 
 ```text
 ./install.sh                 # default install
-./install.sh --update        # refresh scripts only (keeps config)
+./install.sh --update        # refresh scripts + merge new config keys (keeps values)
 ./install.sh --prefix DIR    # install scripts elsewhere
 ./install.sh --config DIR    # alternate config directory
 ./install.sh --no-rc         # skip .zshrc edit
@@ -63,7 +63,7 @@ git pull                         # if you use git
 exec zsh
 ```
 
-`dupdate` / `--update` overwrite scripts only. `~/.config/dnav/` is never touched.
+`dupdate` / `--update` overwrite scripts and add any new keys to `~/.config/dnav/config`. Existing values, comments, folders, and jumps are left as they are.
 
 If the repo is not next to the install, point at it:
 

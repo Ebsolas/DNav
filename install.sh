@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./install.sh                 # install to ~/.local/share/dnav + seed config + hook zshrc
-#   ./install.sh --update        # refresh scripts only (keep config + rc)
+#   ./install.sh --update        # refresh scripts + merge new config keys (keep values)
 #   ./install.sh --prefix DIR    # install scripts under DIR (default: $XDG_DATA_HOME/dnav)
 #   ./install.sh --config DIR    # config dir (default: $XDG_CONFIG_HOME/dnav)
 #   ./install.sh --no-rc         # skip shell rc edits
@@ -154,6 +154,8 @@ write_default_config() {
 #
 # Colors: names (cyan, blue, …) or ANSI numbers
 #   fg: 30–37 / 90–97    bg: 40–47 / 100–107
+#   names: black red green yellow blue magenta cyan white
+#          bright-red bright-cyan …
 color_fg = black
 color_bg = cyan
 
@@ -162,12 +164,27 @@ brand = DNav
 
 # ls -a after a successful select/jump
 ls_after = 0
+# ls_after_dnav = inherit
+# ls_after_djump = inherit
 
 # dfile: show hidden files/dirs by default (toggle still works with .)
 show_hidden = 0
+# dfile dir order: alpha | hidden_first
+dfile_sort_dirs = alpha
+# dfile file order: alpha | ext | dot_first | dot_ext
+dfile_sort_files = alpha
+# dfile Jump to: folder name max (cuts the end)
+dfile_jump_name_max = 20
+
+# Cyan path bar (0 = hide). *_dnav / *_djump override when set
+success_bar = 1
+# success_bar_dnav = inherit
+# success_bar_djump = inherit
 
 # Animate the expand-to-path success bar (0 = instant bar)
 success_anim = 1
+success_anim_steps = 8
+success_anim_ms = 25
 
 # 1 = full line redraw every move; 0 = partial chip repaint
 full_redraw = 0
@@ -175,6 +192,34 @@ full_redraw = 0
 # dsearch roots (space-separated). Empty = built-in defaults
 # search_roots = $HOME /opt /mnt
 EOF
+}
+
+# Add any keys the current package knows about; never overwrite existing values.
+merge_user_config() {
+  local out
+  mkdir -p -- "$CONFIG_DIR"
+  if [[ ! -f "$CONFIG_DIR/config" ]]; then
+    write_default_config
+    info "wrote $CONFIG_DIR/config"
+    return 0
+  fi
+  out="$(
+    DNAV_CONFIG_DIR="$CONFIG_DIR" zsh -f -c '
+      emulate -L zsh
+      DNAV_CONFIG_DIR="$1"
+      source "$2"
+      _dnav_config_merge_defaults
+    ' zsh "$CONFIG_DIR" "$PACKAGE_DIR/dnav"
+  )" || {
+    warn "could not merge $CONFIG_DIR/config"
+    return 0
+  }
+  out="${out##*$'\n'}"
+  if [[ "$out" =~ ^[0-9]+$ && "$out" -gt 0 ]]; then
+    ok "config +$out new keys (previous values kept) → $CONFIG_DIR/config"
+  else
+    info "config already current (previous values kept)"
+  fi
 }
 
 write_default_folders() {
@@ -349,12 +394,13 @@ main() {
     printf 'Updating DNav %s…\n' "$VERSION"
     info "source  $PACKAGE_DIR"
     info "prefix  $PREFIX"
-    info "config  $CONFIG_DIR (kept)"
+    info "config  $CONFIG_DIR (values kept, new keys merged)"
     printf '\n'
     install_scripts
     update_other_shells
+    merge_user_config
     printf '\n'
-    ok "DNav scripts updated (config unchanged)"
+    ok "DNav updated"
     printf '\nReload:  exec zsh    or    source %s/dnav\n' "$PREFIX"
     info "From the shell:  dupdate"
     printf '\n'

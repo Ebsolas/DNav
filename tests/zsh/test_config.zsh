@@ -141,6 +141,59 @@ test_config_set_creates_missing_file() {
   assert_eq "$DNAV_CFG_BRAND" "Created"
 }
 
+test_config_merge_adds_missing_keeps_values() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+# keep me
+brand = KeepBrand
+ls_after = 1
+show_hidden = 1
+EOF
+  local added txt
+  added="$(_dnav_config_merge_defaults "$DNAV_TEST_CONFIG")"
+  assert_gt "$added" 0 "adds missing keys"
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "brand = KeepBrand" "keeps existing brand"
+  assert_contains "$txt" "ls_after = 1" "keeps existing ls_after"
+  assert_contains "$txt" "show_hidden = 1" "keeps existing show_hidden"
+  assert_contains "$txt" "# keep me" "keeps comments"
+  assert_contains "$txt" "dfile_jump_name_max = 20" "adds new key"
+  assert_contains "$txt" "success_bar = 1" "adds success_bar"
+  added="$(_dnav_config_merge_defaults "$DNAV_TEST_CONFIG")"
+  assert_eq "$added" "0" "second merge is a no-op"
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  local n
+  n="$(print -r -- "$txt" | grep -c '^brand = ' || true)"
+  assert_eq "$n" "1" "does not duplicate brand"
+}
+
+test_config_merge_treats_alias_as_present() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = KeepBrand
+ls = 1
+hidden = 1
+fg = red
+EOF
+  local added txt
+  added="$(_dnav_config_merge_defaults "$DNAV_TEST_CONFIG")"
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  if [[ $txt == *$'\nls_after ='* ]]; then
+    _dnav_test_fail "should not add ls_after when ls is set"
+  else
+    _dnav_test_pass "ls alias counts as ls_after"
+  fi
+  if [[ $txt == *$'\nshow_hidden ='* ]]; then
+    _dnav_test_fail "should not add show_hidden when hidden is set"
+  else
+    _dnav_test_pass "hidden alias counts as show_hidden"
+  fi
+  if [[ $txt == *$'\ncolor_fg ='* ]]; then
+    _dnav_test_fail "should not add color_fg when fg is set"
+  else
+    _dnav_test_pass "fg alias counts as color_fg"
+  fi
+  assert_gt "$added" 0 "still adds unrelated missing keys"
+}
+
 test_dfile_jump_name_max_config() {
   cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
 color_fg = black
@@ -171,5 +224,7 @@ run_test test_config_set_updates_and_appends
 run_test test_folders_save_persists
 run_test test_config_set_works_when_path_local_empty
 run_test test_config_set_creates_missing_file
+run_test test_config_merge_adds_missing_keeps_values
+run_test test_config_merge_treats_alias_as_present
 run_test test_dfile_jump_name_max_config
 dnav_test_finish

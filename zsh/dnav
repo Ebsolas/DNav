@@ -350,6 +350,91 @@ _dnav_jumps_save() {
   fi
 }
 
+# Current config keys + built-in defaults. One "key value" per line.
+_dnav_config_defaults() {
+  print -r -- "color_fg black"
+  print -r -- "color_bg cyan"
+  print -r -- "brand DNav"
+  print -r -- "ls_after 0"
+  print -r -- "ls_after_dnav inherit"
+  print -r -- "ls_after_djump inherit"
+  print -r -- "show_hidden 0"
+  print -r -- "dfile_sort_dirs alpha"
+  print -r -- "dfile_sort_files alpha"
+  print -r -- "dfile_jump_name_max 20"
+  print -r -- "success_bar 1"
+  print -r -- "success_bar_dnav inherit"
+  print -r -- "success_bar_djump inherit"
+  print -r -- "success_anim 1"
+  print -r -- "success_anim_steps 8"
+  print -r -- "success_anim_ms 25"
+  print -r -- "full_redraw 0"
+}
+
+_dnav_config_canon_key() {
+  case ${(L)1} in
+    ls|ls_after) print -r -- ls_after ;;
+    hidden|show_hidden) print -r -- show_hidden ;;
+    anim|success_anim) print -r -- success_anim ;;
+    fg|highlight_fg|color_fg) print -r -- color_fg ;;
+    bg|highlight_bg|color_bg) print -r -- color_bg ;;
+    redraw|full_redraw) print -r -- full_redraw ;;
+    dfile_jump_max|dfile_jump_name_max) print -r -- dfile_jump_name_max ;;
+    *) print -r -- "${(L)1}" ;;
+  esac
+}
+
+# Uncommented assignment keys in a config file (canonical names).
+_dnav_config_existing_keys() {
+  local f="$1" line stripped k
+  [[ -f $f ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    stripped="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $stripped || $stripped == \#* ]] && continue
+    [[ $stripped == *=* ]] || continue
+    k="${stripped%%=*}"
+    k="${k%"${k##*[![:space:]]}"}"
+    k="${k#"${k%%[![:space:]]*}"}"
+    [[ -n $k ]] && _dnav_config_canon_key "$k"
+  done < "$f"
+}
+
+# Append any missing default keys. Never changes existing values/comments.
+# Prints the number of keys added.
+_dnav_config_merge_defaults() {
+  emulate -L zsh
+  setopt localoptions no_multios clobber
+  local dir="${1:-${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}}"
+  local f="$dir/config"
+  local tmp rec key val k added=0
+  typeset -A have
+  /bin/mkdir -p -- "$dir" || return 1
+  [[ -f $f ]] || print -r -- "# DNav settings" > "$f" || return 1
+  for k in $(_dnav_config_existing_keys "$f"); do
+    have[$k]=1
+  done
+  tmp="${f}.tmp.$$"
+  /bin/cp -f -- "$f" "$tmp" || return 1
+  while IFS= read -r rec; do
+    key="${rec%% *}"
+    val="${rec#* }"
+    [[ -n ${have[$key]:-} ]] && continue
+    if (( added == 0 )); then
+      print -r -- "" >> "$tmp"
+      print -r -- "# added by dupdate (previous values were kept)" >> "$tmp"
+    fi
+    print -r -- "$key = $val" >> "$tmp"
+    have[$key]=1
+    (( added++ ))
+  done < <(_dnav_config_defaults)
+  if (( added )); then
+    /bin/mv -f -- "$tmp" "$f" || { /bin/rm -f -- "$tmp"; return 1 }
+  else
+    /bin/rm -f -- "$tmp"
+  fi
+  print -r -- "$added"
+}
+
 # Load (and seed) user config. Safe to call multiple times (dconfig -r).
 _dnav_config_load() {
   DNAV_CONFIG_DIR="$(_dnav_config_dir)"
@@ -426,7 +511,7 @@ dconfig() {
       print -r -- "  -e, --edit     open config files in \$EDITOR"
       print -r -- "  -p, --path     print config directory"
       print -r -- "files: config  folders  jumps  under \$XDG_CONFIG_HOME/dnav"
-      print -r -- "scripts: dupdate   refresh the install from the DNav repo"
+      print -r -- "scripts: dupdate   refresh install + merge new config keys"
       ;;
     *)
       print -u2 -- "dconfig: unknown option: $1 (try dconfig -h)"
@@ -478,7 +563,8 @@ _dnav_update_copy() {
   return 0
 }
 
-# Refresh installed scripts from the git/source tree. Never touches ~/.config/dnav.
+# Refresh installed scripts from the git/source tree.
+# Merges new config keys into ~/.config/dnav/config; never overwrites existing values.
 dupdate() {
   emulate -L zsh
   setopt localoptions no_multios
@@ -486,13 +572,13 @@ dupdate() {
     -h|--help)
       print -r -- "usage: dupdate"
       print -r -- "  Copy zsh (and bash, if installed) scripts from the DNav repo"
-      print -r -- "  onto this install. Config under ~/.config/dnav is left alone."
+      print -r -- "  onto this install. Adds any new config keys; keeps your values."
       print -r -- "  Override source:  DNAV_UPDATE_FROM=/path/to/DNav dupdate"
       return 0
       ;;
   esac
 
-  local repo dest bash_dest
+  local repo dest bash_dest added
   repo="$(_dnav_update_repo)" || {
     print -u2 -- "dupdate: cannot find the DNav repo (expected zsh/dnav)."
     print -u2 -- "  Clone it, or:  DNAV_UPDATE_FROM=/path/to/DNav dupdate"
@@ -500,34 +586,38 @@ dupdate() {
   }
 
   dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
-  if [[ ${dest:A} == ${repo:A}/zsh ]]; then
-    print -r -- "dupdate: already running from $repo/zsh (git pull if you want new commits)"
-    return 0
-  fi
-
-  print -r -- "dupdate: $repo  →  $dest"
-  _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch jumps || {
-    print -u2 -- "dupdate: failed to copy zsh scripts"
-    return 1
-  }
-  if [[ -f $repo/install.sh ]]; then
-    command cp -f -- "$repo/install.sh" "$dest/install.sh"
-    command chmod 0755 -- "$dest/install.sh"
-  fi
-  print -r -- "$repo" > "$dest/.source"
-
-  bash_dest="${XDG_DATA_HOME:-$HOME/.local/share}/dnav-bash"
-  if [[ -d $bash_dest && -d $repo/bash ]]; then
-    _dnav_update_copy "$repo/bash" "$bash_dest" dnav dfile djump dsearch jumps || {
-      print -u2 -- "dupdate: failed to copy bash scripts"
+  if [[ ${dest:A} != ${repo:A}/zsh ]]; then
+    print -r -- "dupdate: $repo  →  $dest"
+    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch jumps || {
+      print -u2 -- "dupdate: failed to copy zsh scripts"
       return 1
     }
-    print -r -- "dupdate: bash  →  $bash_dest"
+    if [[ -f $repo/install.sh ]]; then
+      command cp -f -- "$repo/install.sh" "$dest/install.sh"
+      command chmod 0755 -- "$dest/install.sh"
+    fi
+    print -r -- "$repo" > "$dest/.source"
+
+    bash_dest="${XDG_DATA_HOME:-$HOME/.local/share}/dnav-bash"
+    if [[ -d $bash_dest && -d $repo/bash ]]; then
+      _dnav_update_copy "$repo/bash" "$bash_dest" dnav dfile djump dsearch jumps || {
+        print -u2 -- "dupdate: failed to copy bash scripts"
+        return 1
+      }
+      print -r -- "dupdate: bash  →  $bash_dest"
+    fi
+    source "$dest/dnav"
+  else
+    print -r -- "dupdate: already running from $repo/zsh"
   fi
 
-  # Reload this shell so the new files are live.
-  source "$dest/dnav"
-  print -r -- "dupdate: reloaded $dest/dnav  (config unchanged: ${DNAV_CONFIG_DIR:-$(_dnav_config_dir)})"
+  added="$(_dnav_config_merge_defaults)"
+  _dnav_config_load
+  if [[ $added == <-> && added -gt 0 ]]; then
+    print -r -- "dupdate: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
+  else
+    print -r -- "dupdate: config already current (previous values kept)  ${DNAV_CONFIG_DIR}/config"
+  fi
 }
 _dnav_config_load
 
@@ -714,7 +804,7 @@ dhelp() {
   print -r -- "  dnav                 open the folder navigator"
   print -r -- "  dhelp                this command list"
   print -r -- "  dconfig              reload/edit config (~/.config/dnav)"
-  print -r -- "  dupdate              copy latest scripts onto this install"
+  print -r -- "  dupdate              update scripts + merge new config keys"
   print -r -- "  djump                list jump aliases (djump -l)"
   print -r -- "  djump KEY            jump to KEY (same as dKEY)"
   print -r -- "  djump -r             reload jumps file + dKEY commands"
@@ -1093,7 +1183,7 @@ dnav() {
         print -r -- "  jumps                        dKEY aliases"
         print -r -- "In About → Settings            edit from inside dnav (saved to config)"
         print -r -- "dconfig -r / -e                reload / open in \$EDITOR"
-        print -r -- "dupdate                        refresh installed scripts from the repo"
+        print -r -- "dupdate                        refresh scripts + merge new config keys"
         print -r -- "ls_after=1 in config           ls after select/jump"
         print -r -- "full_redraw=1                 full bar redraw (compat mode)"
         ;;
