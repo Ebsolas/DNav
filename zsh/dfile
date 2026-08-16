@@ -149,8 +149,9 @@ _dfile_entry_locked() {
 }
 
 # List basenames. kind=dirs|files. Returns 1 if unreadable; sets _DFILE_LIST_DENY.
-# For dirs, also sets _DFILE_LIST_LOCKS (parallel 0/1 array).
-typeset -ga _DFILE_LIST_LOCKS
+# Fills _DFILE_LIST_NAMES and parallel _DFILE_LIST_LOCKS (1 = inaccessible).
+# Callers must invoke this directly (not via $()) so the lock array survives.
+typeset -ga _DFILE_LIST_LOCKS _DFILE_LIST_NAMES
 _dfile_list() {
   local dir="$1" kind="$2" show_hidden="$3"
   local -a raw names locks
@@ -158,6 +159,7 @@ _dfile_list() {
   names=()
   locks=()
   _DFILE_LIST_DENY=""
+  _DFILE_LIST_NAMES=()
   _DFILE_LIST_LOCKS=()
   if [[ ! -d $dir ]]; then
     return 1
@@ -226,12 +228,9 @@ _dfile_list() {
       sorted_names+=("${rec##*${sep}${sep}}")
     done
     names=("${sorted_names[@]}")
-    if [[ $kind == dirs ]]; then
-      locks=("${sorted_locks[@]}")
-    else
-      locks=()
-    fi
+    locks=("${sorted_locks[@]}")
   fi
+  _DFILE_LIST_NAMES=("${names[@]}")
   _DFILE_LIST_LOCKS=("${locks[@]}")
   print -l -- "${names[@]}"
   return 0
@@ -293,7 +292,7 @@ _dfile_cancel_restore() {
 }
 
 _dfile_refresh() {
-  local out rc
+  local rc
   _DFILE_CWD="${PWD:a}"
   _DFILE_PARENT="${_DFILE_CWD:h}"
   [[ -z $_DFILE_PARENT ]] && _DFILE_PARENT="/"
@@ -313,7 +312,7 @@ _dfile_refresh() {
     _DFILE_WIN_S=0
     _DFILE_PARENT="/"
   else
-    out="$(_dfile_list "$_DFILE_PARENT" dirs $_DFILE_SHOW_HIDDEN 2>/dev/null)"
+    _dfile_list "$_DFILE_PARENT" dirs $_DFILE_SHOW_HIDDEN >/dev/null
     rc=$?
     if (( rc != 0 )); then
       [[ -n $_DFILE_LIST_DENY ]] && (( $+functions[_dnav_status_set] )) && \
@@ -321,7 +320,7 @@ _dfile_refresh() {
       _DFILE_SIBLINGS=()
       _DFILE_SIBLINGS_LOCK=()
     else
-      [[ -n $out ]] && _DFILE_SIBLINGS=("${(@f)out}") || _DFILE_SIBLINGS=()
+      _DFILE_SIBLINGS=("${_DFILE_LIST_NAMES[@]}")
       _DFILE_SIBLINGS_LOCK=("${_DFILE_LIST_LOCKS[@]}")
     fi
     # Highlight current directory name among _DFILE_SIBLINGS
@@ -335,7 +334,7 @@ _dfile_refresh() {
     done
   fi
 
-  out="$(_dfile_list "$_DFILE_CWD" dirs $_DFILE_SHOW_HIDDEN 2>/dev/null)"
+  _dfile_list "$_DFILE_CWD" dirs $_DFILE_SHOW_HIDDEN >/dev/null
   rc=$?
   if (( rc != 0 )); then
     [[ -n $_DFILE_LIST_DENY ]] && (( $+functions[_dnav_status_set] )) && \
@@ -343,11 +342,11 @@ _dfile_refresh() {
     _DFILE_CHILDREN=()
     _DFILE_CHILDREN_LOCK=()
   else
-    [[ -n $out ]] && _DFILE_CHILDREN=("${(@f)out}") || _DFILE_CHILDREN=()
+    _DFILE_CHILDREN=("${_DFILE_LIST_NAMES[@]}")
     _DFILE_CHILDREN_LOCK=("${_DFILE_LIST_LOCKS[@]}")
   fi
 
-  out="$(_dfile_list "$_DFILE_CWD" files $_DFILE_SHOW_HIDDEN 2>/dev/null)"
+  _dfile_list "$_DFILE_CWD" files $_DFILE_SHOW_HIDDEN >/dev/null
   rc=$?
   if (( rc != 0 )); then
     [[ -n $_DFILE_LIST_DENY ]] && (( $+functions[_dnav_status_set] )) && \
@@ -355,7 +354,7 @@ _dfile_refresh() {
     _DFILE_FILES=()
     _DFILE_FILES_LOCK=()
   else
-    [[ -n $out ]] && _DFILE_FILES=("${(@f)out}") || _DFILE_FILES=()
+    _DFILE_FILES=("${_DFILE_LIST_NAMES[@]}")
     _DFILE_FILES_LOCK=("${_DFILE_LIST_LOCKS[@]}")
   fi
 

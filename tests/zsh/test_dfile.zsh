@@ -131,6 +131,28 @@ test_dfile_list_symlink_to_file() {
   assert_contains "$out" "linkdir" "lists symlink-to-dir"
 }
 
+test_dfile_list_locks_inaccessible_dir() {
+  local dir="$DNAV_TEST_TMP/dfilelockdirs" i found=0
+  mkdir -p -- "$dir/open" "$dir/secret"
+  chmod 000 -- "$dir/secret"
+  _dfile_list "$dir" dirs 0 >/dev/null
+  chmod 755 -- "$dir/secret"
+  for (( i=1; i <= $#_DFILE_LIST_NAMES; i++ )); do
+    if [[ ${_DFILE_LIST_NAMES[i]} == secret ]]; then
+      found=1
+      assert_eq "${_DFILE_LIST_LOCKS[i]}" "1" "secret dir is locked"
+    fi
+    if [[ ${_DFILE_LIST_NAMES[i]} == open ]]; then
+      assert_eq "${_DFILE_LIST_LOCKS[i]}" "0" "open dir is not locked"
+    fi
+  done
+  if (( found )); then
+    _dnav_test_pass "listed the inaccessible dir"
+  else
+    _dnav_test_fail "inaccessible dir missing from list"
+  fi
+}
+
 test_dfile_entry_locked_unreadable_file() {
   local dir="$DNAV_TEST_TMP/dfilelock" f
   mkdir -p -- "$dir"
@@ -176,4 +198,5 @@ run_test test_dfile_dir_locked_home
 run_test test_dfile_list_home
 run_test test_dfile_list_symlink_to_file
 run_test test_dfile_entry_locked_unreadable_file
+run_test test_dfile_list_locks_inaccessible_dir
 dnav_test_finish
