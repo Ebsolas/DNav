@@ -1807,6 +1807,7 @@ _dnav_help_topic_body() {
       ;;
     Search)
       print -r -- "/  or  s                       fuzzy directory search"
+      print -r -- "Spaces in a query              every word must appear (any order)"
       print -r -- "In search: ↑↓  or  C-n / C-p   move through results"
       print -r -- "In search: ← →                 move caret; → at end focuses Help"
       print -r -- "Enter                          jump to selected path"

@@ -98,6 +98,37 @@ test_query_caret_edit() {
   assert_eq "$_dsearch_cur" "1"
 }
 
+test_apply_filter_and_tokens_any_order() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "dnav config" 10
+  assert_gt "$#_dsearch_matches" 0 "dnav config has hits"
+  local p bad=0
+  for p in "${_dsearch_matches[@]}"; do
+    if [[ ${(L)p} != *dnav* || ${(L)p} != *config* ]]; then
+      bad=1
+      _dnav_test_fail "AND leaked path missing a word: $p"
+    fi
+  done
+  (( bad == 0 )) && _dnav_test_pass "every hit contains both words"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/dnav* || $joined == *dnav-demo/config* ]]; then
+    _dnav_test_pass "hits a path that has both words"
+  else
+    _dnav_test_fail "missed both-word paths: $joined"
+  fi
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "config dnav" 10
+  assert_gt "$#_dsearch_matches" 0 "order does not matter"
+  joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/dnav* || $joined == *dnav-demo/config* ]]; then
+    _dnav_test_pass "config dnav still hits both-word paths"
+  else
+    _dnav_test_fail "reversed tokens missed both-word paths: $joined"
+  fi
+}
+
 test_apply_filter_empty_query() {
   _dsearch_matches=(/tmp/leftover)
   _dsearch_apply_filter "" 10
@@ -258,6 +289,7 @@ run_test test_apply_filter_returns_matches
 run_test test_apply_filter_prefix1
 run_test test_apply_filter_fuzzy_doc
 run_test test_apply_filter_proj
+run_test test_apply_filter_and_tokens_any_order
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 run_test test_incremental_narrowing
