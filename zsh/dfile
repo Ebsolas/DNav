@@ -491,6 +491,12 @@ _dfile_repaint_row() {
 # Cursor starts and ends on top row (_DFILE_BODY invariant).
 _dfile_draw() {
   local old_body=$_DFILE_BODY leftover i n maxw hl rst
+  # A resize already in progress: do not emit the 4-line browse body
+  # (first open used to paint files on top of the short chip).
+  if (( ${_DNAV_RESIZE_MODE:-0} )); then
+    (( $+functions[_dnav_paint_resize_chip] )) && _dnav_paint_resize_chip
+    return
+  fi
   maxw="$(_dfile_cols)"
   hl="$(_dfile_hl)"
   rst="$(_dfile_rst)"
@@ -763,7 +769,7 @@ _dfile_enter() {
 
   _dfile_refresh
   (( $#_DFILE_CHILDREN > 0 )) && _DFILE_SEL_C=1
-  _DFILE_BODY=0
+  _DFILE_BODY=3
   _dfile_draw
 
   while true; do
@@ -882,7 +888,7 @@ _dfile_enter() {
             _DFILE_OPEN=0
             return 130
           fi
-          _DFILE_BODY=0
+          _DFILE_BODY=3
           _dfile_draw
         fi
         ;;

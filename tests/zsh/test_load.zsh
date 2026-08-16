@@ -95,6 +95,22 @@ test_abort_flag_helper() {
   DNAV_ABORT=0
 }
 
+test_tui_below_dfile_browse_wipes_three() {
+  _DSEARCH_OPEN=0
+  _DFILE_OPEN=1
+  _DFILE_MODE=browse
+  _DFILE_BODY=0
+  assert_eq "$(_dnav_tui_below)" "3" "browse wipes 3 even when BODY is still 0"
+  _DFILE_BODY=3
+  assert_eq "$(_dnav_tui_below)" "3" "browse stays 3 after draw"
+  _DFILE_MODE=jump
+  _DFILE_BODY=2
+  assert_eq "$(_dnav_tui_below)" "2" "jump uses recorded extra rows"
+  _DFILE_OPEN=0
+  _DFILE_MODE=browse
+  _DFILE_BODY=0
+}
+
 test_resize_chip_label_search() {
   _DSEARCH_OPEN=1
   _dsearch_extra_lines=7
@@ -305,6 +321,7 @@ run_test test_winch_helpers_exist
 run_test test_resize_waits_for_steady_stty
 run_test test_resize_chip_label_main
 run_test test_resize_chip_label_about
+run_test test_tui_below_dfile_browse_wipes_three
 run_test test_abort_flag_helper
 run_test test_resize_chip_label_search
 run_test test_usable_from_spares_two

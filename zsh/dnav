@@ -1279,7 +1279,14 @@ _dnav_tui_below() {
   if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
     print -rn -- "${_dsearch_extra_lines:-0}"
   elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
-    print -rn -- "${_DFILE_BODY:-3}"
+    # Browse is always 3 rows under the brand line. ${_DFILE_BODY:-3} is 0
+    # when BODY is 0 (set before the first draw), so the first resize
+    # would leave the files row on screen.
+    if [[ ${_DFILE_MODE:-browse} == jump ]]; then
+      print -rn -- "${_DFILE_BODY:-0}"
+    else
+      print -rn -- 3
+    fi
   elif [[ ${_DNAV_MODE:-} == about ]]; then
     print -rn -- "${_DNAV_HELP_EXTRA:-0}"
   else
