@@ -54,6 +54,9 @@ test_winch_helpers_exist() {
 
 test_resize_waits_for_steady_stty() {
   assert_ge "$_DNAV_STEADY_NEED" 4 "several identical stty samples before restore"
+  # maybe_resize must poll stty every idle tick; WINCH alone is not enough.
+  assert_fn _dnav_maybe_resize
+  assert_fn _dnav_sync_term_size
 }
 
 test_resize_chip_label_main() {

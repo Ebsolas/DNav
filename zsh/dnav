@@ -1325,14 +1325,13 @@ _dnav_resize_finish() {
 
 # Call from the TUI read loop. Compact chip while WINCH fires or stty is
 # still changing. Full redraw only after STEADY_NEED identical samples.
+# Always sample stty here: WINCH often does not arrive (or does not
+# interrupt read -k). Painters still read the COLUMNS cache, not stty.
 _dnav_maybe_resize() {
   local c l
   (( ${DNAV_ABORT:-0} )) && return 1
   (( _DNAV_INLINE_EDIT )) && return 1
-  # Idle polls read the cache. stty only on WINCH, first sample, or resize mode.
-  if (( _DNAV_RESIZE_MODE || _DNAV_WINCH || _DNAV_LAST_COLS == 0 )); then
-    _dnav_sync_term_size
-  fi
+  _dnav_sync_term_size
   c=${COLUMNS:-0}
   l=${LINES:-0}
   if (( _DNAV_LAST_COLS == 0 )); then
@@ -1388,7 +1387,7 @@ _dnav_read_key() {
       [[ -n $REPLY ]] && return 0
     else
       (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
-      if _dnav_status_tick; then
+      if (( ! _DNAV_RESIZE_MODE )) && _dnav_status_tick; then
         _dnav_status_repaint
       fi
     fi
