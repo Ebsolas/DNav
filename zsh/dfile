@@ -36,9 +36,13 @@ _dfile_term_cols() {
 }
 
 _dfile_cols() {
+  if (( $+functions[_dnav_usable_cols] )); then
+    _dnav_usable_cols
+    return
+  fi
   local w="$(_dfile_term_cols)"
-  # Never write the last column — that wraps and each dfile move adds a line.
-  (( w > 1 )) && (( w-- ))
+  (( w > 2 )) && (( w -= 2 ))
+  (( w < 8 )) && w=8
   print -rn -- "$w"
 }
 
@@ -428,6 +432,7 @@ _dfile_enter() {
   local body=0
   local cwd parent
   local perm_denied=""   # path string if unreadable
+  local origin="${PWD:A}"
 
   _DFILE_OPEN=1
   hl="$(_dfile_hl)"
@@ -436,6 +441,8 @@ _dfile_enter() {
   if [[ -n $start && -d $start ]]; then
     cd -- "$start" 2>/dev/null || true
   fi
+  # Cancel (Esc) returns here; Enter is what commits a new folder.
+  origin="${PWD:A}"
 
   # If bg index still running, show Indexing... N then clear before explorer draws
   if (( $+functions[_dsearch_index_running] )) && _dsearch_index_running; then
@@ -918,15 +925,24 @@ _dfile_enter() {
 
   while true; do
     # Abort already tore down UI (via _dnav_abort); just leave the explorer
-    (( ${DNAV_ABORT:-0} )) && { _DFILE_OPEN=0; return 130; }
+    (( ${DNAV_ABORT:-0} )) && {
+      [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
+      _DFILE_OPEN=0
+      return 130
+    }
     if (( $+functions[_dnav_read_key] )); then
       _dnav_read_key || true
       key="$REPLY"
     else
       read -k 1 key || true
     fi
-    (( ${DNAV_ABORT:-0} )) && { _DFILE_OPEN=0; return 130; }
+    (( ${DNAV_ABORT:-0} )) && {
+      [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
+      _DFILE_OPEN=0
+      return 130
+    }
     if [[ $key == $'\x03' ]]; then
+      [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
       if (( $+functions[_dnav_abort] )); then
         _dnav_abort
       else
@@ -998,6 +1014,8 @@ _dfile_enter() {
           if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
             continue
           fi
+          # Esc cancels: restore the directory we opened in, do not keep drills.
+          [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
           _dfile_erase
           _DFILE_OPEN=0
           return 1

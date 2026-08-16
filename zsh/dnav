@@ -105,6 +105,38 @@ _dnav_apply_colors() {
   DNAV_RESET=$'\e[0m'
 }
 
+# Trim leading/trailing whitespace. Safe under EXTENDED_GLOB.
+_dnav_trim() {
+  emulate -L zsh
+  setopt localoptions no_extended_glob
+  local s="$1"
+  s="${s%"${s##*[![:space:]]}"}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  print -r -- "$s"
+}
+
+# Strip a # comment: only at start of line (after indent) or after whitespace.
+# Foo#Bar and /tmp/proj#2 are kept. "Foo # note" drops " # note".
+_dnav_strip_comment() {
+  emulate -L zsh
+  setopt localoptions no_extended_glob
+  local s="$1" t i ch prev=""
+  t="${s#"${s%%[![:space:]]*}"}"
+  if [[ -z $t || $t == \#* ]]; then
+    print -r -- ""
+    return
+  fi
+  for (( i=1; i <= ${#s}; i++ )); do
+    ch="${s[i]}"
+    if [[ $ch == '#' && $prev == [[:space:]] ]]; then
+      print -r -- "${s[1,i-1]}"
+      return
+    fi
+    prev="$ch"
+  done
+  print -r -- "$s"
+}
+
 # Expand ~ in a path; empty stays empty.
 _dnav_expand_path() {
   local p="$1"
@@ -210,12 +242,12 @@ EOF
 }
 
 _dnav_config_load_kv() {
+  emulate -L zsh
+  setopt localoptions no_extended_glob
   local f="$1" line key val
   [[ -f $f ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
-    line="${line%%#*}"
-    line="${line%"${line##*[![:space:]]}"}"
-    line="${line#"${line%%[![:space:]]*}"}"
+    line="$(_dnav_trim "$(_dnav_strip_comment "$line")")"
     [[ -z $line ]] && continue
     if [[ $line != *=* ]]; then
       continue
@@ -269,28 +301,28 @@ _dnav_config_load_kv() {
 }
 
 _dnav_config_load_folders() {
-  local f="$1" line label path
+  emulate -L zsh
+  setopt localoptions no_extended_glob
+  local f="$1" line label fpath
   DNAV_FOLDER_NAMES=()
   DNAV_FOLDER_PATHS=()
   [[ -f $f ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
-    line="${line%%#*}"
-    line="${line%"${line##*[![:space:]]}"}"
-    line="${line#"${line%%[![:space:]]*}"}"
+    line="$(_dnav_trim "$(_dnav_strip_comment "$line")")"
     [[ -z $line ]] && continue
     label="${line%%[[:space:]]*}"
-    path="${line#"$label"}"
-    path="${path#"${path%%[![:space:]]*}"}"
+    fpath="${line#"$label"}"
+    fpath="${fpath#"${fpath%%[![:space:]]*}"}"
     [[ -z $label ]] && continue
     # Skip legacy Help/About rows — About is always hardcoded by dnav
-    if [[ -z $path || $path == - ]]; then
+    if [[ -z $fpath || $fpath == - ]]; then
       continue
     fi
     if [[ ${(L)label} == help || ${(L)label} == about ]]; then
       continue
     fi
     DNAV_FOLDER_NAMES+=("$label")
-    DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$path")")
+    DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$fpath")")
   done < "$f"
   (( ${#DNAV_FOLDER_NAMES} > 0 ))
 }
@@ -301,8 +333,9 @@ _dnav_folders_save() {
   setopt localoptions no_multios clobber
   local dir="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
   local f="$dir/folders"
-  local i dest store
+  local tmp i dest store
   /bin/mkdir -p -- "$dir" || return 1
+  tmp="${f}.tmp.$$"
   {
     print -r -- "# Main dnav bar — Label path"
     print -r -- "# About is always added by dnav (do not list it here)."
@@ -318,10 +351,11 @@ _dnav_folders_save() {
       fi
       print -r -- "${DNAV_FOLDER_NAMES[i]}  $store"
     done
-  } > "$f"
+  } > "$tmp" || { /bin/rm -f -- "$tmp"; return 1 }
+  /bin/mv -f -- "$tmp" "$f" || { /bin/rm -f -- "$tmp"; return 1 }
 }
 
-# Persist jumps file from current map (shared with dfavorite).
+# Persist jumps file from current map (shared with djump add|edit|remove).
 _dnav_jumps_save() {
   if (( $+functions[_djump_save] )); then
     _djump_save
@@ -460,7 +494,7 @@ _dnav_config_merge_defaults() {
         k="$(_dnav_config_canon_key "$k")"
         note="$(_dnav_config_key_note "$k")"
         if [[ -n $note ]]; then
-          if (( prev_comment == 0 )) || [[ $last_comment == '# added by dupdate'* ]]; then
+          if (( prev_comment == 0 )) || [[ $last_comment == '# added by dnav'* || $last_comment == '# added by dupdate'* ]]; then
             print -r -- "# $note"
             changed=1
           fi
@@ -479,7 +513,7 @@ _dnav_config_merge_defaults() {
     [[ -n ${have[$key]:-} ]] && continue
     if (( added == 0 )); then
       print -r -- "" >> "$tmp"
-      print -r -- "# added by dupdate (previous values were kept)" >> "$tmp"
+      print -r -- "# added by dnav (previous values were kept)" >> "$tmp"
     else
       print -r -- "" >> "$tmp"
     fi
@@ -574,7 +608,7 @@ dconfig() {
       print -r -- "  -e, --edit     open config files in \$EDITOR"
       print -r -- "  -p, --path     print config directory"
       print -r -- "files: config  folders  jumps  under \$XDG_CONFIG_HOME/dnav"
-      print -r -- "scripts: dupdate   refresh install + merge new config keys"
+      print -r -- "scripts: dnav --update   refresh install + merge new config keys"
       ;;
     *)
       print -u2 -- "dconfig: unknown option: $1 (try dconfig -h)"
@@ -583,7 +617,7 @@ dconfig() {
   esac
 }
 
-# Repo root used by dupdate / install.sh --update.
+# Repo root used by dnav --update / install.sh --update.
 # Order: DNAV_UPDATE_FROM, $DNAV_DIR/.source, sibling DNav/, ~/.local/share/DNav
 _dnav_update_repo() {
   local c line
@@ -628,31 +662,31 @@ _dnav_update_copy() {
 
 # Refresh installed scripts from the git/source tree.
 # Merges new config keys into ~/.config/dnav/config; never overwrites existing values.
-dupdate() {
+_dnav_update() {
   emulate -L zsh
   setopt localoptions no_multios
   case ${1:-} in
     -h|--help)
-      print -r -- "usage: dupdate"
+      print -r -- "usage: dnav --update"
       print -r -- "  Copy zsh (and bash, if installed) scripts from the DNav repo"
       print -r -- "  onto this install. Adds any new config keys; keeps your values."
-      print -r -- "  Override source:  DNAV_UPDATE_FROM=/path/to/DNav dupdate"
+      print -r -- "  Override source:  DNAV_UPDATE_FROM=/path/to/DNav dnav --update"
       return 0
       ;;
   esac
 
   local repo dest bash_dest added
   repo="$(_dnav_update_repo)" || {
-    print -u2 -- "dupdate: cannot find the DNav repo (expected zsh/dnav)."
-    print -u2 -- "  Clone it, or:  DNAV_UPDATE_FROM=/path/to/DNav dupdate"
+    print -u2 -- "dnav: cannot find the DNav repo (expected zsh/dnav)."
+    print -u2 -- "  Clone it, or:  DNAV_UPDATE_FROM=/path/to/DNav dnav --update"
     return 1
   }
 
   dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
   if [[ ${dest:A} != ${repo:A}/zsh ]]; then
-    print -r -- "dupdate: $repo  →  $dest"
+    print -r -- "dnav: $repo  →  $dest"
     _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch jumps || {
-      print -u2 -- "dupdate: failed to copy zsh scripts"
+      print -u2 -- "dnav: failed to copy zsh scripts"
       return 1
     }
     if [[ -f $repo/install.sh ]]; then
@@ -664,31 +698,31 @@ dupdate() {
     bash_dest="${XDG_DATA_HOME:-$HOME/.local/share}/dnav-bash"
     if [[ -d $bash_dest && -d $repo/bash ]]; then
       _dnav_update_copy "$repo/bash" "$bash_dest" dnav dfile djump dsearch jumps || {
-        print -u2 -- "dupdate: failed to copy bash scripts"
+        print -u2 -- "dnav: failed to copy bash scripts"
         return 1
       }
-      print -r -- "dupdate: bash  →  $bash_dest"
+      print -r -- "dnav: bash  →  $bash_dest"
     fi
     source "$dest/dnav"
   else
-    print -r -- "dupdate: already running from $repo/zsh"
+    print -r -- "dnav: already running from $repo/zsh"
   fi
 
   added="$(_dnav_config_merge_defaults)"
   _dnav_config_load
   if [[ $added == <-> && added -gt 0 ]]; then
-    print -r -- "dupdate: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
+    print -r -- "dnav: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
   else
-    print -r -- "dupdate: config already current (previous values kept)  ${DNAV_CONFIG_DIR}/config"
+    print -r -- "dnav: config already current (previous values kept)  ${DNAV_CONFIG_DIR}/config"
   fi
 }
 _dnav_config_load
 
 # ── Optional modules ──────────────────────────────────────────────────────
 # Load if present. Real implementations will override the stubs below.
-[[ -f $DNAV_DIR/djump   ]] && source $DNAV_DIR/djump
-[[ -f $DNAV_DIR/dfile   ]] && source $DNAV_DIR/dfile
-[[ -f $DNAV_DIR/dsearch ]] && source $DNAV_DIR/dsearch
+[[ -f "$DNAV_DIR/djump"   ]] && source "$DNAV_DIR/djump"
+[[ -f "$DNAV_DIR/dfile"   ]] && source "$DNAV_DIR/dfile"
+[[ -f "$DNAV_DIR/dsearch" ]] && source "$DNAV_DIR/dsearch"
 
 # Stubs – real modules replace these. Safe to call even when modules are absent.
 (( $+functions[_dfile_available]   )) || _dfile_available()   { return 1 }
@@ -753,29 +787,102 @@ _dnav_sync_term_size() {
   fi
 }
 
-# Paint width: never the last column (that wraps and adds a line).
-_dnav_usable_cols() {
-  local w="$(_dnav_term_cols)"
-  (( w > 1 )) && (( w-- ))
+# Paint width. Spare 2, not 1: a line painted at COLUMNS-1 becomes exactly
+# full-width after a 1-col shrink, the terminal soft-wraps, and the screen
+# scrolls (bar walks up; blank lines pile up below). COLUMNS-2 stays short.
+_dnav_usable_from() {
+  local w="${1:-0}"
+  [[ $w == <-> ]] || w=80
+  (( w > 2 )) && (( w -= 2 ))
   (( w < 8 )) && w=8
   print -rn -- "$w"
 }
 
+_dnav_usable_cols() {
+  _dnav_usable_from "$(_dnav_term_cols)"
+}
+
+# DECAWM (CSI ? 7). Off: write/shrink clips on the right instead of wrapping
+# onto the next row. Must be restored in cleanup or the user's shell wraps wrong.
+_dnav_autowrap_off() { printf '\e[?7l'; }
+_dnav_autowrap_on()  { printf '\e[?7h'; }
+
 typeset -gi _DNAV_RESIZING=0
+typeset -gi _DNAV_RESIZE_MODE=0
 typeset -gi _DNAV_INLINE_EDIT=0
 typeset -gi _DNAV_WINCH=0
 typeset -gi _DNAV_LAST_COLS=0
 typeset -gi _DNAV_LAST_LINES=0
 typeset -gi _DNAV_PEND_COLS=0
 typeset -gi _DNAV_PEND_LINES=0
+typeset -gi _DNAV_STEADY=0
+# Identical stty samples required before leaving resize mode (~6×0.04s).
+typeset -gi _DNAV_STEADY_NEED=6
+
+# Brand chip text only — same bytes as the live TUI, no extra spaces.
+_dnav_resize_chip_label() {
+  if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
+    print -r -- " DNav Search:"
+  elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
+    print -r -- " DNav Files:"
+  elif [[ ${mode:-} == about ]]; then
+    print -r -- " DNav About:"
+  else
+    print -r -- " ${DNAV_CFG_BRAND:-DNav} "
+  fi
+}
+
+# Rows currently painted below the top TUI line (search 0–10, dfile 3, …).
+_dnav_tui_below() {
+  if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
+    print -rn -- "${_dsearch_extra_lines:-0}"
+  elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
+    print -rn -- "${body:-3}"
+  elif [[ ${mode:-} == about ]]; then
+    print -rn -- "${help_extra:-0}"
+  else
+    print -rn -- 0
+  fi
+}
+
+_dnav_wipe_below() {
+  local n="${1:-0}" i
+  [[ $n == <-> ]] || n=0
+  (( n > 0 )) || return 0
+  for (( i=0; i < n; i++ )); do
+    printf "\n\r\e[2K"
+  done
+  printf "\e[%dA" $n
+}
+
+_dnav_paint_resize_chip() {
+  local hl rst label below
+  hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
+  rst="${DNAV_RESET:-\e[0m}"
+  label="$(_dnav_resize_chip_label)"
+  below="$(_dnav_tui_below)"
+  printf "\e[?25l\r${hl}%s${rst}\e[K" "$label"
+  _dnav_wipe_below "$below"
+  printf "\r"
+}
 
 _dnav_mark_size() {
   _DNAV_LAST_COLS=${COLUMNS:-0}
   _DNAV_LAST_LINES=${LINES:-0}
 }
 
-# Call from the TUI read loop (correct locals). Returns 0 if a redraw ran.
-# Waits until the size stays put for one poll so a drag is one redraw, not many.
+_dnav_resize_finish() {
+  _DNAV_RESIZE_MODE=0
+  _DNAV_STEADY=0
+  _DNAV_PEND_COLS=0
+  _DNAV_PEND_LINES=0
+  _DNAV_WINCH=0
+  _dnav_handle_winch
+  _dnav_mark_size
+}
+
+# Call from the TUI read loop. Compact chip while WINCH fires or stty is
+# still changing. Full redraw only after STEADY_NEED identical samples.
 _dnav_maybe_resize() {
   local c l
   (( ${DNAV_ABORT:-0} )) && return 1
@@ -783,37 +890,55 @@ _dnav_maybe_resize() {
   _dnav_sync_term_size
   c=${COLUMNS:-0}
   l=${LINES:-0}
-  if (( c == _DNAV_LAST_COLS && l == _DNAV_LAST_LINES )); then
-    _DNAV_PEND_COLS=0
-    _DNAV_PEND_LINES=0
-    _DNAV_WINCH=0
-    return 1
-  fi
   if (( _DNAV_LAST_COLS == 0 )); then
     _dnav_mark_size
     return 1
   fi
-  if (( c != _DNAV_PEND_COLS || l != _DNAV_PEND_LINES )); then
-    _DNAV_PEND_COLS=$c
-    _DNAV_PEND_LINES=$l
-    _DNAV_WINCH=0
-    return 1
+
+  if (( _DNAV_WINCH || c != _DNAV_LAST_COLS || l != _DNAV_LAST_LINES )); then
+    if (( _DNAV_WINCH || c != _DNAV_PEND_COLS || l != _DNAV_PEND_LINES || ! _DNAV_RESIZE_MODE )); then
+      _DNAV_PEND_COLS=$c
+      _DNAV_PEND_LINES=$l
+      _DNAV_STEADY=0
+      _DNAV_WINCH=0
+      _DNAV_RESIZE_MODE=1
+      _dnav_paint_resize_chip
+      return 1
+    fi
+    # Same stty size as last sample, no new WINCH — still counting.
+    (( _DNAV_STEADY++ ))
+    if (( _DNAV_STEADY < _DNAV_STEADY_NEED )); then
+      return 1
+    fi
+    _dnav_resize_finish
+    return 0
   fi
+
+  # stty matches the pre-resize size. Stay compact until WINCH/stty settle.
+  if (( _DNAV_RESIZE_MODE )); then
+    (( _DNAV_STEADY++ ))
+    if (( _DNAV_STEADY < _DNAV_STEADY_NEED )); then
+      return 1
+    fi
+    _dnav_resize_finish
+    return 0
+  fi
+
   _DNAV_WINCH=0
-  _dnav_handle_winch
-  _dnav_mark_size
-  _DNAV_PEND_COLS=0
-  _DNAV_PEND_LINES=0
-  return 0
+  return 1
 }
 
 # Blocking key read that still notices terminal resizes (WINCH often
-# does not interrupt a bare read -k). Timeout-polls ~8×/sec.
+# does not interrupt a bare read -k). Poll ~25×/sec so resize mode starts
+# before the bar can reflow.
 _dnav_read_key() {
   REPLY=""
   while true; do
     (( ${DNAV_ABORT:-0} )) && return 1
-    if read -t 0.12 -k 1 REPLY 2>/dev/null; then
+    if (( _DNAV_WINCH )); then
+      (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+    fi
+    if read -t 0.04 -k 1 REPLY 2>/dev/null; then
       (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
       [[ -n $REPLY ]] && return 0
     else
@@ -822,7 +947,8 @@ _dnav_read_key() {
   done
 }
 
-# Redraw the active TUI after the terminal size changes.
+# Redraw in place. Autowrap is off so shrink clips on the right; do not CUU
+# (that is what walked the bar up the screen).
 _dnav_handle_winch() {
   (( _DNAV_RESIZING )) && return 0
   (( ${DNAV_ABORT:-0} )) && return 0
@@ -835,28 +961,7 @@ _dnav_handle_winch() {
     _DNAV_RESIZING=0
     return 0
   fi
-  # Shrink wraps old TUI lines into extra visual rows. Climb those extras
-  # (if any), then wipe downward so the next paint does not print under them.
-  local rows=1 extra=0 wrap=1
-  if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
-    rows=$(( 1 + ${_dsearch_extra_lines:-0} ))
-  elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
-    rows=$(( ${body:-3} + 1 ))
-  elif [[ ${mode:-} == about ]]; then
-    rows=$(( ${help_extra:-0} + 1 ))
-  fi
-  (( rows < 1 )) && rows=1
-  if (( _DNAV_LAST_COLS > COLUMNS && COLUMNS > 0 )); then
-    wrap=$(( (_DNAV_LAST_COLS + COLUMNS - 1) / COLUMNS ))
-    (( wrap < 1 )) && wrap=1
-    (( wrap > 4 )) && wrap=4
-    extra=$(( rows * (wrap - 1) ))
-    (( extra > LINES - 2 )) && extra=$(( LINES - 2 ))
-    (( extra < 0 )) && extra=0
-  fi
-  printf "\e[?25l"
-  (( extra > 0 )) && printf "\e[%dA" $extra
-  printf "\r\e[J"
+  printf "\e[?25l\r\e[2K\e[J"
   if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
     (( $+functions[_dsearch_draw] )) && _dsearch_draw "${_dsearch_q:-}"
   elif (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
@@ -994,13 +1099,13 @@ dhelp() {
 
   print -r -- "${hl} DNav ${rst}"
   print -r -- "  dnav                 open the folder navigator"
+  print -r -- "  dnav --update        refresh scripts + merge new config keys"
   print -r -- "  dhelp                this command list"
   print -r -- "  dconfig              reload/edit config (~/.config/dnav)"
-  print -r -- "  dupdate              update scripts + merge new config keys"
   print -r -- "  djump                list jump aliases (djump -l)"
   print -r -- "  djump KEY            jump to KEY (same as dKEY)"
+  print -r -- "  djump add|edit|rm    manage jump favorites"
   print -r -- "  djump -r             reload jumps file + dKEY commands"
-  print -r -- "  dfavorite …          add/edit/remove jump favorites"
   print -r -- "  config dir           ${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
   print -r -- "  ls_after             set in config (not an env var)"
 
@@ -1014,11 +1119,27 @@ dhelp() {
         path="${_DJUMP_MAP[$k]}"
         print -r -- "  ${(r:18:)cmd}  $path"
       done
+      (( $+functions[_djump_warn_stolen] )) && _djump_warn_stolen
     fi
   fi
 }
 
 dnav() {
+  case ${1:-} in
+    -u|--update)
+      shift
+      _dnav_update "$@"
+      return $?
+      ;;
+    -h|--help)
+      print -r -- "usage: dnav [--update]"
+      print -r -- "  (no args)      open the folder navigator"
+      print -r -- "  -u, --update   copy scripts from the DNav repo + merge new config keys"
+      print -r -- "  -h, --help     this help"
+      return 0
+      ;;
+  esac
+
   # ── Style from config (~/.config/dnav/config) ───────────────────────────
   local HIGHLIGHT_FG=${DNAV_CFG_COLOR_FG:-30}
   local HIGHLIGHT_BG=${DNAV_CFG_COLOR_BG:-46}
@@ -1089,6 +1210,7 @@ dnav() {
     # Stop background search index if still running (user left early)
     (( $+functions[_dsearch_index_cancel] )) && _dsearch_index_cancel
     [[ -n $_DNAV_STTY_ORIG ]] && stty "$_DNAV_STTY_ORIG" 2>/dev/null
+    _dnav_autowrap_on
     printf "\e[0 q\e[?25h"
     _DNAV_CLEANED=1
   }
@@ -1136,6 +1258,7 @@ dnav() {
   # Hide cursor, disable echo and line buffering (keep isig for Ctrl+C)
   stty -echo -icanon isig 2>/dev/null
   printf "\e[?25l"
+  _dnav_autowrap_off
 
   # Warm the directory search index in the background (interruptible on exit)
   if (( $+functions[_dsearch_index_start_bg] )); then
@@ -1252,6 +1375,7 @@ dnav() {
       printf "\e[K"
     fi
     _dnav_compute_positions
+    printf "\r"
   }
 
   # Repaint one visible chip (partial redraw). idx = 0-based into names.
@@ -1351,7 +1475,7 @@ dnav() {
         print -r -- "Enter                          exit to folder / open file"
         print -r -- "s  or  /                       search   ·   d Jump   ·   . hidden"
         print -r -- "o / O                          cycle dir / file order (this visit only)"
-        print -r -- "Esc                            leave explorer (back to dnav)"
+        print -r -- "Esc                            leave explorer (keep the folder you opened in)"
         ;;
       DJump)
         print -r -- "In dfile: d                    Jump mode (type dKEY)"
@@ -1362,8 +1486,8 @@ dnav() {
       DKEY)
         print -r -- "Each jumps key installs dKEY   e.g. home → dhome"
         print -r -- "dhome, dproj, …                shell jump + cyan path bar"
-        print -r -- "dfavorite add LABEL [PATH]     save favorite (default: \$PWD)"
-        print -r -- "dfavorite edit/remove LABEL    change or drop a favorite"
+        print -r -- "djump add LABEL [PATH]         save favorite (default: \$PWD)"
+        print -r -- "djump edit/remove LABEL        change or drop a favorite"
         print -r -- "Reload after hand-edits        djump -r  or  dconfig -r"
         ;;
       DHelp)
@@ -1378,7 +1502,7 @@ dnav() {
         print -r -- "  jumps                        dKEY aliases"
         print -r -- "In About → Settings            edit from inside dnav (saved to config)"
         print -r -- "dconfig -r / -e                reload / open in \$EDITOR"
-        print -r -- "dupdate                        refresh scripts + merge new config keys"
+        print -r -- "dnav --update                  refresh scripts + merge new config keys"
         print -r -- "ls_after=1 in config           ls after select/jump"
         print -r -- "full_redraw=1                 full bar redraw (compat mode)"
         ;;
@@ -1642,6 +1766,7 @@ dnav() {
     ${=ed} -- "$file"
     stty -echo -icanon isig 2>/dev/null
     printf "\e[?25l"
+    _dnav_autowrap_off
     _dnav_config_load
     _dnav_about_refresh_style
     if [[ $file == */jumps ]] && (( $+functions[_djump_load] )); then
@@ -1796,22 +1921,18 @@ dnav() {
         _dnav_inline_edit "path d$rkey (Esc cancel): " "${_DJUMP_MAP[$rkey]}" || return 1
         val="${REPLY//[$'\r\n']/}"
         [[ -z $val ]] && return 1
-        _DJUMP_MAP[$rkey]="$val"
-        _dnav_jumps_save
+        (( $+functions[_djump_edit] )) || return 1
+        _djump_edit "$rkey" "$val" || return 1
         ;;
       jump_add)
         _dnav_inline_edit "jump key e.g. home (Esc cancel): " "" || return 1
         k="${REPLY//[$'\r\n']/}"
-        k="${k#d}"
-        [[ $k =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || return 1
+        [[ -z $k ]] && return 1
         _dnav_inline_edit "path for d$k (Esc cancel): " "~" || return 1
         dest="${REPLY//[$'\r\n']/}"
         [[ -z $dest ]] && return 1
-        if [[ -z ${_DJUMP_MAP[$k]:-} ]]; then
-          _DJUMP_KEYS+=("$k")
-        fi
-        _DJUMP_MAP[$k]="$dest"
-        _dnav_jumps_save
+        (( $+functions[_djump_add] )) || return 1
+        _djump_add "$k" "$dest" || return 1
         ;;
     esac
     return 0
@@ -1841,14 +1962,18 @@ dnav() {
         ;;
       jump)
         [[ -n $rkey ]] || return
-        unset "_DJUMP_MAP[$rkey]"
-        nkeys=()
-        for k in "${_DJUMP_KEYS[@]}"; do
-          [[ $k == "$rkey" ]] && continue
-          nkeys+=("$k")
-        done
-        _DJUMP_KEYS=("${nkeys[@]}")
-        _dnav_jumps_save
+        if (( $+functions[_djump_remove] )); then
+          _djump_remove "$rkey" || return
+        else
+          unset "_DJUMP_MAP[$rkey]"
+          nkeys=()
+          for k in "${_DJUMP_KEYS[@]}"; do
+            [[ $k == "$rkey" ]] && continue
+            nkeys+=("$k")
+          done
+          _DJUMP_KEYS=("${nkeys[@]}")
+          _dnav_jumps_save
+        fi
         (( settings_row > 0 )) && (( settings_row-- ))
         ;;
       *) return ;;
@@ -2050,6 +2175,8 @@ dnav() {
 
   _dnav_compute_positions
   _dnav_draw
+  _dnav_sync_term_size
+  _dnav_mark_size
 
   while true; do
     # DNAV_ABORT: full UI teardown already done by _dnav_abort (trap or \x03)

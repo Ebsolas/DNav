@@ -402,7 +402,7 @@ main() {
     printf '\n'
     ok "DNav updated"
     printf '\nReload:  exec zsh    or    source %s/dnav\n' "$PREFIX"
-    info "From the shell:  dupdate"
+    info "From the shell:  dnav --update"
     printf '\n'
     exit 0
   fi
@@ -424,7 +424,7 @@ main() {
   info "2. Try:           dnav       dhelp       dconfig -p"
   info "3. Jump:          dhome      dproj       djump -l"
   info "4. Edit config:   dconfig -e   or   About → Settings in dnav"
-  info "5. Later updates: dupdate    or    ./install.sh --update"
+  info "5. Later updates: dnav --update    or    ./install.sh --update"
   printf '\nConfig files:\n'
   info "$CONFIG_DIR/config"
   info "$CONFIG_DIR/folders"

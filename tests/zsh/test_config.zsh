@@ -211,6 +211,54 @@ EOF
   assert_contains "$txt" "# 1 = full line redraw every move; 0 = partial chip repaint" "notes full_redraw"
 }
 
+test_strip_comment_keeps_hash_in_value() {
+  assert_eq "$(_dnav_strip_comment 'brand = Foo#Bar')" "brand = Foo#Bar" "hash in value"
+  assert_eq "$(_dnav_trim "$(_dnav_strip_comment 'brand = Foo # trailing')")" "brand = Foo" "space-hash is comment"
+  assert_eq "$(_dnav_trim "$(_dnav_strip_comment '  # whole line')")" "" "indented comment"
+  assert_eq "$(_dnav_strip_comment 'Hashy  /tmp/proj#2')" "Hashy  /tmp/proj#2" "hash in path"
+}
+
+test_config_brand_with_hash() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+color_fg = black
+color_bg = cyan
+brand = Foo#Bar
+ls_after = 0
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_BRAND" "Foo#Bar" "brand keeps #"
+}
+
+test_folders_hash_in_path() {
+  mkdir -p -- "$DNAV_TEST_TMP/proj#2"
+  cat > "$DNAV_TEST_CONFIG/folders" <<EOF
+Home        ~
+Hashy       $DNAV_TEST_TMP/proj#2
+EOF
+  _dnav_config_load_folders "$DNAV_TEST_CONFIG/folders"
+  local i found=0
+  for (( i=1; i <= $#DNAV_FOLDER_NAMES; i++ )); do
+    if [[ ${DNAV_FOLDER_NAMES[i]} == Hashy ]]; then
+      found=1
+      assert_eq "${DNAV_FOLDER_PATHS[i]}" "$DNAV_TEST_TMP/proj#2" "folder path keeps #"
+    fi
+  done
+  (( found )) || _dnav_test_fail "Hashy folder not loaded"
+}
+
+test_config_load_under_extended_glob() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+color_fg = black
+color_bg = cyan
+brand = Ext#Glob
+ls_after = 0
+EOF
+  setopt extended_glob
+  _dnav_config_load
+  unsetopt extended_glob
+  assert_eq "$DNAV_CFG_BRAND" "Ext#Glob" "load under EXTENDED_GLOB"
+}
+
 test_dfile_jump_name_max_config() {
   cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
 color_fg = black
@@ -244,5 +292,9 @@ run_test test_config_set_creates_missing_file
 run_test test_config_merge_adds_missing_keeps_values
 run_test test_config_merge_treats_alias_as_present
 run_test test_config_merge_notes_bare_existing_keys
+run_test test_strip_comment_keeps_hash_in_value
+run_test test_config_brand_with_hash
+run_test test_folders_hash_in_path
+run_test test_config_load_under_extended_glob
 run_test test_dfile_jump_name_max_config
 dnav_test_finish

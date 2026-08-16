@@ -157,6 +157,56 @@ test_pin_jumps_prefers_jump() {
   fi
 }
 
+test_constrained_env_busybox_on_path() {
+  local bindir="$DNAV_TEST_TMP/fakebin" path_save="$PATH"
+  mkdir -p -- "$bindir"
+  print -r -- $'#!/bin/sh\nexit 0\n' > "$bindir/busybox"
+  chmod +x -- "$bindir/busybox"
+  PATH="$bindir:$PATH"
+  unset DNAV_SEARCH_LIGHT
+  if _dsearch_constrained_env; then
+    _dnav_test_fail "busybox on PATH must not force light mode"
+  else
+    _dnav_test_pass "busybox on PATH is not light mode"
+  fi
+  PATH="$path_save"
+}
+
+test_constrained_env_light_flag() {
+  DNAV_SEARCH_LIGHT=1
+  assert_ok _dsearch_constrained_env
+  unset DNAV_SEARCH_LIGHT
+}
+
+test_collect_roots_space_in_home() {
+  local oldhome="$HOME" dir roots_out
+  local -a roots
+  dir="$DNAV_TEST_TMP/My Docs"
+  mkdir -p -- "$dir"
+  HOME="$dir"
+  DNAV_SEARCH_LIGHT=1
+  unset DNAV_SEARCH_ROOTS
+  roots=("${(@f)$(_dsearch_collect_roots)}")
+  HOME="$oldhome"
+  unset DNAV_SEARCH_LIGHT
+  if (( $#roots == 1 )) && [[ ${roots[1]:A} == "${dir:A}" ]]; then
+    _dnav_test_pass "space in path is one root"
+  else
+    _dnav_test_fail "roots($#roots)=${roots[*]}"
+  fi
+}
+
+test_index_cancel_refuses_pid_1() {
+  _DSEARCH_INDEX_PID=1
+  _DSEARCH_INDEX_HAS_SID=1
+  _dsearch_index_cancel
+  assert_eq "$_DSEARCH_INDEX_PID" "0" "pid 1 not kept"
+}
+
+run_test test_constrained_env_busybox_on_path
+run_test test_constrained_env_light_flag
+run_test test_collect_roots_space_in_home
+run_test test_index_cancel_refuses_pid_1
 run_test test_index_path
 run_test test_index_not_stale_when_fresh
 run_test test_index_stale_when_missing

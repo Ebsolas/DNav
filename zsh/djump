@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# djump — editable directory jump table for dnav plugins
+# djump — standalone jump table (works with or without dnav)
 #
 # Data file (first match wins):
 #   $DNAV_JUMPS
@@ -9,21 +9,23 @@
 # API:
 #   _djump_available
 #   _djump_load / _djump_save
+#   _djump_add / _djump_edit / _djump_remove
 #   _djump_resolve KEY     → prints absolute path, return 0/1
 #   _djump_list_keys
 #   _djump_match_query S   → keys matching s / ds (for typeahead / search pin)
 #   _djump_goto KEY        → cd to jump (for shell cmds)
-#   djump [-r|-l|KEY]      → reload / list / go
-#   dfavorite add|edit|remove|list  → manage jump favorites
+#   _djump_cmd_clash KEY   → 0 if dKEY is taken (REPLY = why)
+#   djump [-r|-l|-c|add|edit|remove|KEY]
 #
-# When sourced (via dnav), each jump key is also installed as a shell command
-# `dKEY` (e.g. key "home" → `dhome`) so you can jump without opening dnav.
+# When sourced, each jump key is also installed as `dKEY` (home → dhome)
+# unless that name is reserved or already taken on the system.
 
 _djump_available() { return 0 }
 
 typeset -gA _DJUMP_MAP
 typeset -ga _DJUMP_KEYS
 typeset -ga _DJUMP_SHELL_CMDS
+typeset -ga _DJUMP_SKIPPED
 typeset -g  _DJUMP_LOADED=0
 
 _djump_data_path() {
@@ -70,81 +72,176 @@ _djump_store_path() {
   print -r -- "$store"
 }
 
-# Persist current map to the user jumps file and reinstall dKEY commands.
+# Persist current map to the user jumps file (temp + mv) and reinstall dKEY commands.
 _djump_save() {
-  local f k path
+  emulate -L zsh
+  setopt localoptions no_multios clobber
+  local f tmp k jpath
   f="$(_djump_user_path)"
+  tmp="${f}.tmp.$$"
   {
     print -r -- "# djump table — key becomes dKEY (home → dhome)"
     print -r -- "# Format:  key   path"
-    print -r -- "# Managed by dfavorite / dnav Settings / hand-edit"
+    print -r -- "# Managed by djump add|edit|remove / dnav Settings / hand-edit"
     print -r -- "#"
     for k in "${_DJUMP_KEYS[@]}"; do
-      path="${_DJUMP_MAP[$k]}"
-      [[ -n $path ]] || continue
-      print -r -- "$k  $(_djump_store_path "$path")"
+      jpath="${_DJUMP_MAP[$k]}"
+      [[ -n $jpath ]] || continue
+      print -r -- "$k  $(_djump_store_path "$jpath")"
     done
-  } > "$f"
-  # Future loads should read the user file
+  } > "$tmp" || { /bin/rm -f -- "$tmp"; return 1 }
+  /bin/mv -f -- "$tmp" "$f" || { /bin/rm -f -- "$tmp"; return 1 }
   _DJUMP_LOADED=0
   _djump_load 2>/dev/null || {
-    # load may fail only if empty; still install what we have
     _DJUMP_LOADED=1
     _djump_install_cmds
   }
   return 0
 }
 
-# Validate jump label (must form a valid dKEY function name body).
+# Label as stored (do not strip a leading "d" — "docs" stays "docs").
 _djump_valid_label() {
-  local key="${1#d}"
-  [[ $key =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]]
+  [[ $1 =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]]
 }
 
-# Remove previously installed dKEY shell functions.
+# True if dNAME is a jump function we installed (body still calls _djump_goto).
+_djump_owned() {
+  local jname="$1"
+  (( $+functions[$jname] )) || return 1
+  [[ ${functions[$jname]} == *_djump_goto* ]]
+}
+
+# 0 = clash (REPLY = reserved|alias|builtin|function|command). 1 = free or ours.
+_djump_cmd_clash() {
+  local key="$1"
+  local jname="d${key}"
+  local kind
+  REPLY=""
+  case $jname in
+    dnav|djump|dconfig|dhelp)
+      REPLY=reserved
+      return 0
+      ;;
+  esac
+  if _djump_owned "$jname"; then
+    return 1
+  fi
+  kind="$(whence -w -- "$jname" 2>/dev/null)"
+  kind="${kind#*: }"
+  case $kind in
+    none|'') return 1 ;;
+    alias) REPLY=alias; return 0 ;;
+    builtin) REPLY=builtin; return 0 ;;
+    function) REPLY=function; return 0 ;;
+    *) REPLY=command; return 0 ;;
+  esac
+}
+
+# Remove previously installed dKEY functions we still own.
 _djump_uninstall_cmds() {
   local cmd
   for cmd in "${_DJUMP_SHELL_CMDS[@]}"; do
-    (( $+functions[$cmd] )) && unfunction "$cmd"
+    if _djump_owned "$cmd"; then
+      unfunction "$cmd"
+    fi
   done
   _DJUMP_SHELL_CMDS=()
 }
 
 # Install one shell function per jump: dhome, dproj, …
-# Only safe identifier keys (letters/digits/_) become commands.
+# Skip reserved / already-taken names; keep the table row.
 _djump_install_cmds() {
-  local key cmd
+  local key cmd why
+  local -a skipped
   _djump_uninstall_cmds
+  skipped=()
   for key in "${_DJUMP_KEYS[@]}"; do
-    # Require a valid shell function name body (no extendedglob needed)
-    [[ $key =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
+    _djump_valid_label "$key" || continue
     cmd="d${key}"
-    # Capture key by value so each function keeps its own target.
+    if _djump_cmd_clash "$key"; then
+      why="$REPLY"
+      skipped+=("${cmd}:${why}")
+      continue
+    fi
     eval "${cmd}() { _djump_goto ${(q)key}; }"
     _DJUMP_SHELL_CMDS+=("$cmd")
   done
+  _DJUMP_SKIPPED=("${skipped[@]}")
+}
+
+# One-line skip summary (for djump -r). Empty if nothing skipped.
+_djump_skip_summary() {
+  local -a names
+  local rec
+  (( $#_DJUMP_SKIPPED )) || return 1
+  names=()
+  for rec in "${_DJUMP_SKIPPED[@]}"; do
+    names+=("${rec%%:*}")
+  done
+  local plural=s
+  (( $#_DJUMP_SKIPPED == 1 )) && plural=""
+  print -r -- "djump: skipped ${#_DJUMP_SKIPPED} command${plural} that already exist (${(j:, :)names}). djump KEY still works."
+}
+
+# Same comment rule as _dnav_strip_comment. Prefer the engine when sourced via dnav.
+_djump_strip_comment() {
+  if (( $+functions[_dnav_strip_comment] )); then
+    _dnav_strip_comment "$1"
+    return
+  fi
+  emulate -L zsh
+  setopt localoptions no_extended_glob
+  local s="$1" t i ch prev=""
+  t="${s#"${s%%[![:space:]]*}"}"
+  if [[ -z $t || $t == \#* ]]; then
+    print -r -- ""
+    return
+  fi
+  for (( i=1; i <= ${#s}; i++ )); do
+    ch="${s[i]}"
+    if [[ $ch == '#' && $prev == [[:space:]] ]]; then
+      print -r -- "${s[1,i-1]}"
+      return
+    fi
+    prev="$ch"
+  done
+  print -r -- "$s"
+}
+
+_djump_trim() {
+  if (( $+functions[_dnav_trim] )); then
+    _dnav_trim "$1"
+    return
+  fi
+  emulate -L zsh
+  setopt localoptions no_extended_glob
+  local s="$1"
+  s="${s%"${s##*[![:space:]]}"}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  print -r -- "$s"
 }
 
 _djump_load() {
-  local f line key path
+  emulate -L zsh
+  setopt localoptions no_extended_glob
+  local f line key jpath
   f="$(_djump_data_path)"
   _DJUMP_MAP=()
   _DJUMP_KEYS=()
+  _DJUMP_SKIPPED=()
   _DJUMP_LOADED=0
   if [[ ! -f $f ]]; then
     _djump_uninstall_cmds
     return 1
   fi
   while IFS= read -r line || [[ -n $line ]]; do
-    line="${line%%#*}"
-    line="${line%"${line##*[![:space:]]}"}"
-    line="${line#"${line%%[![:space:]]*}"}"
+    line="$(_djump_trim "$(_djump_strip_comment "$line")")"
     [[ -z $line ]] && continue
     key="${line%%[[:space:]]*}"
-    path="${line#"$key"}"
-    path="${path#"${path%%[![:space:]]*}"}"
-    [[ -z $key || -z $path ]] && continue
-    _DJUMP_MAP[$key]="$path"
+    jpath="${line#"$key"}"
+    jpath="${jpath#"${jpath%%[![:space:]]*}"}"
+    [[ -z $key || -z $jpath ]] && continue
+    _DJUMP_MAP[$key]="$jpath"
     _DJUMP_KEYS+=("$key")
   done < "$f"
   _DJUMP_LOADED=1
@@ -154,6 +251,16 @@ _djump_load() {
 
 _djump_ensure() {
   (( _DJUMP_LOADED )) || _djump_load
+}
+
+# Empty table is a valid starting point for add (no jumps file yet).
+_djump_ensure_table() {
+  _djump_ensure 2>/dev/null || {
+    _DJUMP_MAP=()
+    _DJUMP_KEYS=()
+    _DJUMP_SKIPPED=()
+    _DJUMP_LOADED=1
+  }
 }
 
 # Expand path: ~ and relatives against $PWD; print absolute if possible.
@@ -174,23 +281,33 @@ _djump_expand() {
   fi
 }
 
-# Resolve jump key (without leading d). Also accepts dKEY → KEY.
+# Resolve jump key. Exact map key wins; only then try stripping a leading d.
 _djump_resolve() {
-  local raw="$1" key path
+  local raw="$1" key jpath
   _djump_ensure || return 1
-  key="${raw#d}"
-  # if user passed "dhome", key becomes "home"; if "home", stays
-  if [[ $raw == d* && -n ${_DJUMP_MAP[$key]:-} ]]; then
-    :
-  elif [[ -n ${_DJUMP_MAP[$raw]:-} ]]; then
+  if [[ -n ${_DJUMP_MAP[$raw]:-} ]]; then
     key="$raw"
-  elif [[ -n ${_DJUMP_MAP[$key]:-} ]]; then
-    :
+  elif [[ $raw == d* && -n ${_DJUMP_MAP[${raw#d}]:-} ]]; then
+    key="${raw#d}"
   else
     return 1
   fi
-  path="${_DJUMP_MAP[$key]}"
-  _djump_expand "$path"
+  jpath="${_DJUMP_MAP[$key]}"
+  _djump_expand "$jpath"
+}
+
+# Map "dwork" → "work" only when "dwork" is not itself a key.
+_djump_existing_label() {
+  local label="$1"
+  if [[ -n ${_DJUMP_MAP[$label]:-} ]]; then
+    print -r -- "$label"
+    return 0
+  fi
+  if [[ $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then
+    print -r -- "${label#d}"
+    return 0
+  fi
+  return 1
 }
 
 # cd to a jump target (used by dKEY shell commands and `djump KEY`).
@@ -253,40 +370,234 @@ _djump_match_query() {
   (( $#hits )) && print -l -- "${hits[@]}"
 }
 
-# User-facing helper: list, reload, or jump.
-#   djump            list keys as dKEY → path
-#   djump -l         same
-#   djump -r         reload jumps file + reinstall dKEY cmds
-#   djump home       cd to key "home" (same as dhome)
+# Mutators used by `djump` and by dnav Settings. On failure REPLY is the error.
+# On success REPLY is a one-line confirmation.
+_djump_add() {
+  local label="$1" jpath="${2:-$PWD}" dest why
+  REPLY=""
+  _djump_ensure_table
+  if [[ -z $label ]]; then
+    REPLY="usage: djump add LABEL [PATH]"
+    return 1
+  fi
+  if ! _djump_valid_label "$label"; then
+    REPLY="djump: invalid label '$label' (use letters, digits, _)"
+    return 1
+  fi
+  if _djump_cmd_clash "$label"; then
+    why="$REPLY"
+    REPLY="djump: '$label' would shadow d${label} ($why)"
+    return 1
+  fi
+  dest="$(_djump_expand "$jpath")"
+  if [[ ! -d $dest ]]; then
+    REPLY="djump: not a directory: $jpath"
+    return 1
+  fi
+  if [[ -n ${_DJUMP_MAP[$label]:-} ]]; then
+    REPLY="djump: '$label' exists (use: djump edit $label …)"
+    return 1
+  fi
+  _DJUMP_KEYS+=("$label")
+  _DJUMP_MAP[$label]="$dest"
+  _djump_save || {
+    REPLY="djump: failed to save jumps"
+    return 1
+  }
+  REPLY="djump: added d${label} → $(_djump_store_path "$dest")"
+  return 0
+}
+
+_djump_edit() {
+  local label="$1" jpath="${2:-$PWD}" dest
+  REPLY=""
+  _djump_ensure_table
+  if [[ -z $label ]]; then
+    REPLY="usage: djump edit LABEL [PATH]"
+    return 1
+  fi
+  label="$(_djump_existing_label "$label")" || {
+    REPLY="djump: unknown label '$1' (try: djump -l)"
+    return 1
+  }
+  dest="$(_djump_expand "$jpath")"
+  if [[ ! -d $dest ]]; then
+    REPLY="djump: not a directory: $jpath"
+    return 1
+  fi
+  _DJUMP_MAP[$label]="$dest"
+  _djump_save || {
+    REPLY="djump: failed to save jumps"
+    return 1
+  }
+  REPLY="djump: updated d${label} → $(_djump_store_path "$dest")"
+  return 0
+}
+
+_djump_remove() {
+  local label="$1" k
+  local -a nkeys
+  REPLY=""
+  _djump_ensure_table
+  if [[ -z $label ]]; then
+    REPLY="usage: djump remove LABEL"
+    return 1
+  fi
+  label="$(_djump_existing_label "$label")" || {
+    REPLY="djump: unknown label '$1'"
+    return 1
+  }
+  unset "_DJUMP_MAP[$label]"
+  nkeys=()
+  for k in "${_DJUMP_KEYS[@]}"; do
+    [[ $k == "$label" ]] && continue
+    nkeys+=("$k")
+  done
+  _DJUMP_KEYS=("${nkeys[@]}")
+  _djump_save || {
+    REPLY="djump: failed to save jumps"
+    return 1
+  }
+  REPLY="djump: removed d${label}"
+  return 0
+}
+
+_djump_print_list() {
+  local k
+  _djump_ensure || {
+    print -u2 -- "djump: no jumps file at $(_djump_data_path)"
+    return 1
+  }
+  if (( $#_DJUMP_KEYS == 0 )); then
+    print -r -- "djump: no jumps yet (try: djump add <label>)"
+    return 0
+  fi
+  for k in "${_DJUMP_KEYS[@]}"; do
+    print -r -- "d${k}	${_DJUMP_MAP[$k]}"
+  done
+}
+
+# Warn about dKEY names that exist but are no longer our function (alias, etc.).
+_djump_warn_stolen() {
+  local k cmd
+  _djump_ensure 2>/dev/null || return 0
+  for k in "${_DJUMP_KEYS[@]}"; do
+    cmd="d${k}"
+    if (( $+aliases[$cmd] )); then
+      print -u2 -- "djump: ${cmd} is no longer a DNav jump (now an alias). Use: djump $k"
+      continue
+    fi
+    if (( $+functions[$cmd] )) && ! _djump_owned "$cmd"; then
+      print -u2 -- "djump: ${cmd} is no longer a DNav jump (now a function). Use: djump $k"
+    fi
+  done
+}
+
+_djump_check() {
+  local k cmd rec why
+  local -a installed skipped stolen
+  _djump_ensure_table
+  installed=()
+  skipped=("${_DJUMP_SKIPPED[@]}")
+  stolen=()
+  for k in "${_DJUMP_KEYS[@]}"; do
+    cmd="d${k}"
+    if (( $+aliases[$cmd] )); then
+      stolen+=("${cmd}:alias")
+      continue
+    fi
+    if _djump_owned "$cmd"; then
+      installed+=("$cmd")
+      continue
+    fi
+    if (( $+functions[$cmd] )); then
+      stolen+=("${cmd}:function")
+    fi
+  done
+  print -r -- "djump: ${#_DJUMP_KEYS} table entries, ${#installed} commands installed"
+  if (( $#installed )); then
+    print -r -- "  installed  ${(j: :)installed}"
+  fi
+  if (( $#skipped )); then
+    print -r -- "  skipped    ${(j: :)skipped}"
+  fi
+  if (( $#stolen )); then
+    print -r -- "  stolen     ${(j: :)stolen}"
+  fi
+  (( $#stolen + $#skipped )) && return 1
+  return 0
+}
+
+# User-facing: list, reload, manage, or jump.
+#   djump                 list keys as dKEY → path
+#   djump -l              same
+#   djump -r              reload jumps file + reinstall dKEY cmds
+#   djump -c / --check    clash report
+#   djump add LABEL [PATH]
+#   djump edit LABEL [PATH]
+#   djump remove LABEL
+#   djump home            cd to key "home" (same as dhome)
 djump() {
+  local msg
   case ${1:-} in
     -r|--reload)
       _DJUMP_LOADED=0
       if _djump_load; then
         print -r -- "djump: loaded ${#_DJUMP_KEYS} jumps (${#_DJUMP_SHELL_CMDS} commands)"
+        msg="$(_djump_skip_summary)" && print -r -- "$msg"
+        _djump_warn_stolen
         return 0
       fi
       print -u2 -- "djump: failed to load $(_djump_data_path)"
       return 1
       ;;
-    -l|--list|'')
-      _djump_ensure || {
-        print -u2 -- "djump: no jumps file at $(_djump_data_path)"
-        return 1
-      }
-      local k
-      for k in "${_DJUMP_KEYS[@]}"; do
-        print -r -- "d${k}	${_DJUMP_MAP[$k]}"
-      done
+    -l|--list|list|'')
+      _djump_print_list || return 1
+      _djump_warn_stolen
       return 0
       ;;
+    -c|--check)
+      _djump_check
+      return $?
+      ;;
     -h|--help)
-      print -r -- "usage: djump [-r|-l|KEY]"
-      print -r -- "  -r, --reload   reload jumps file and dKEY commands"
-      print -r -- "  -l, --list     list dKEY → path"
-      print -r -- "  KEY            cd to jump (also: dKEY e.g. dhome)"
-      print -r -- "favorites: dfavorite add|edit|remove|list"
+      print -r -- "usage: djump [-r|-l|-c|add|edit|remove|KEY]"
+      print -r -- "  -r, --reload         reload jumps file and dKEY commands"
+      print -r -- "  -l, --list           list dKEY → path"
+      print -r -- "  -c, --check          report shadowed / stolen dKEY names"
+      print -r -- "  add LABEL [PATH]     add jump (default path: \$PWD)"
+      print -r -- "  edit LABEL [PATH]    set path (default: \$PWD)"
+      print -r -- "  remove LABEL         remove jump + dLABEL command"
+      print -r -- "  KEY                  cd to jump (also: dKEY e.g. dhome)"
       return 0
+      ;;
+    add)
+      if _djump_add "$2" "${3:-$PWD}"; then
+        print -r -- "$REPLY"
+        return 0
+      fi
+      print -u2 -- "$REPLY"
+      return 1
+      ;;
+    edit)
+      if _djump_edit "$2" "${3:-$PWD}"; then
+        print -r -- "$REPLY"
+        return 0
+      fi
+      print -u2 -- "$REPLY"
+      return 1
+      ;;
+    remove|rm|delete|del)
+      if _djump_remove "$2"; then
+        print -r -- "$REPLY"
+        return 0
+      fi
+      print -u2 -- "$REPLY"
+      return 1
+      ;;
+    -*)
+      print -u2 -- "djump: unknown option: $1 (try djump -h)"
+      return 1
       ;;
     *)
       _djump_goto "$1"
@@ -294,133 +605,9 @@ djump() {
   esac
 }
 
-# ── dfavorite — manage jump favorites from the shell ─────────────────────
-#   dfavorite add   LABEL [PATH]   add (PATH defaults to $PWD)
-#   dfavorite edit  LABEL [PATH]   change path (PATH defaults to $PWD)
-#   dfavorite remove LABEL         remove favorite + dKEY command
-#   dfavorite list                 list favorites
-#   dfavorite                      show help
-dfavorite() {
-  local cmd="${1:-}" label path dest k
-  local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
-  local rst="${DNAV_RESET:-\e[0m}"
-
-  _djump_ensure 2>/dev/null || {
-    # Empty table is fine — start fresh in user config
-    _DJUMP_MAP=()
-    _DJUMP_KEYS=()
-    _DJUMP_LOADED=1
-  }
-
-  case $cmd in
-    ''|-h|--help|help)
-      print -r -- "${hl} dfavorite ${rst}"
-      print -r -- "  dfavorite add LABEL [PATH]     add jump (default path: \$PWD)"
-      print -r -- "  dfavorite edit LABEL [PATH]    set path (default: \$PWD)"
-      print -r -- "  dfavorite remove LABEL         remove jump + dLABEL command"
-      print -r -- "  dfavorite list                 list favorites"
-      print -r -- ""
-      print -r -- "Examples:"
-      print -r -- "  dfavorite add work             # dwork → current directory"
-      print -r -- "  dfavorite add docs ~/Documents  # ddocs → ~/Documents"
-      print -r -- "  dfavorite edit work /other/path"
-      print -r -- "  dfavorite remove work"
-      return 0
-      ;;
-    list|-l|--list)
-      if (( $#_DJUMP_KEYS == 0 )); then
-        print -r -- "dfavorite: no favorites yet (try: dfavorite add <label>)"
-        return 0
-      fi
-      for k in "${_DJUMP_KEYS[@]}"; do
-        print -r -- "d${(r:14:)k}  ${_DJUMP_MAP[$k]}"
-      done
-      return 0
-      ;;
-    add)
-      # Label is stored without the dKEY prefix (add work → dwork). Do not strip
-      # a leading "d" from words like "docs".
-      label="$2"
-      path="${3:-$PWD}"
-      if [[ -z $label ]]; then
-        print -u2 -- "usage: dfavorite add LABEL [PATH]"
-        return 1
-      fi
-      if ! _djump_valid_label "$label"; then
-        print -u2 -- "dfavorite: invalid label '$label' (use letters, digits, _)"
-        return 1
-      fi
-      dest="$(_djump_expand "$path")"
-      if [[ ! -d $dest ]]; then
-        print -u2 -- "dfavorite: not a directory: $path"
-        return 1
-      fi
-      if [[ -n ${_DJUMP_MAP[$label]:-} ]]; then
-        print -u2 -- "dfavorite: '$label' exists (use: dfavorite edit $label …)"
-        return 1
-      fi
-      _DJUMP_KEYS+=("$label")
-      _DJUMP_MAP[$label]="$dest"
-      _djump_save
-      print -r -- "dfavorite: added d${label} → $(_djump_store_path "$dest")"
-      return 0
-      ;;
-    edit)
-      label="$2"
-      path="${3:-$PWD}"
-      if [[ -z $label ]]; then
-        print -u2 -- "usage: dfavorite edit LABEL [PATH]"
-        return 1
-      fi
-      # Allow dwork as well as work when editing/removing
-      if [[ -z ${_DJUMP_MAP[$label]:-} && $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then
-        label="${label#d}"
-      fi
-      if [[ -z ${_DJUMP_MAP[$label]:-} ]]; then
-        print -u2 -- "dfavorite: unknown label '$label' (try: dfavorite list)"
-        return 1
-      fi
-      dest="$(_djump_expand "$path")"
-      if [[ ! -d $dest ]]; then
-        print -u2 -- "dfavorite: not a directory: $path"
-        return 1
-      fi
-      _DJUMP_MAP[$label]="$dest"
-      _djump_save
-      print -r -- "dfavorite: updated d${label} → $(_djump_store_path "$dest")"
-      return 0
-      ;;
-    remove|rm|delete|del)
-      label="$2"
-      if [[ -z $label ]]; then
-        print -u2 -- "usage: dfavorite remove LABEL"
-        return 1
-      fi
-      if [[ -z ${_DJUMP_MAP[$label]:-} && $label == d* && -n ${_DJUMP_MAP[${label#d}]:-} ]]; then
-        label="${label#d}"
-      fi
-      if [[ -z ${_DJUMP_MAP[$label]:-} ]]; then
-        print -u2 -- "dfavorite: unknown label '$label'"
-        return 1
-      fi
-      unset "_DJUMP_MAP[$label]"
-      local -a nkeys
-      nkeys=()
-      for k in "${_DJUMP_KEYS[@]}"; do
-        [[ $k == "$label" ]] && continue
-        nkeys+=("$k")
-      done
-      _DJUMP_KEYS=("${nkeys[@]}")
-      _djump_save
-      print -r -- "dfavorite: removed d${label}"
-      return 0
-      ;;
-    *)
-      print -u2 -- "dfavorite: unknown command '$cmd' (try: dfavorite --help)"
-      return 1
-      ;;
-  esac
-}
-
-# Load once when sourced (installs dKEY commands into the shell)
+# Load once when sourced (installs dKEY commands into the shell).
+# Skipped clashes stay quiet here — use djump -r / djump --check to see them.
 _djump_load 2>/dev/null || true
+if [[ -n ${DNAV_JUMP_WARN:-} && ${DNAV_JUMP_WARN} != 0 ]]; then
+  _djump_skip_summary && true
+fi

@@ -51,7 +51,7 @@ The installer will:
 From a new shell, either:
 
 ```bash
-dupdate                          # copies repo → ~/.local/share/dnav and reloads
+dnav --update                    # copies repo → ~/.local/share/dnav and reloads
 ```
 
 or from the clone:
@@ -63,12 +63,12 @@ git pull                         # if you use git
 exec zsh
 ```
 
-`dupdate` / `--update` overwrite scripts and add any new keys to `~/.config/dnav/config`. Existing values, comments, folders, and jumps are left as they are.
+`dnav --update` / `./install.sh --update` overwrite scripts and add any new keys to `~/.config/dnav/config`. Existing values, comments, folders, and jumps are left as they are.
 
 If the repo is not next to the install, point at it:
 
 ```bash
-DNAV_UPDATE_FROM=~/src/DNav dupdate
+DNAV_UPDATE_FROM=~/src/DNav dnav --update
 ```
 
 ### Manual install
@@ -88,12 +88,13 @@ source ~/.local/share/dnav/dnav
 | `dhelp` | List shell commands + jump aliases |
 | `dconfig` / `dconfig -r` | Show/reload config |
 | `dconfig -e` | Edit config files in `$EDITOR` |
+| `dnav --update` | Refresh scripts + merge new config keys |
 | `djump -l` | List jump aliases |
 | `dhome`, `dproj`, … | Jump without opening the TUI |
-| `dfavorite add LABEL [PATH]` | Add a jump (default path: `$PWD`) |
-| `dfavorite edit LABEL [PATH]` | Update a jump path |
-| `dfavorite remove LABEL` | Remove a jump + `dLABEL` command |
-| `dfavorite list` | List favorites |
+| `djump add LABEL [PATH]` | Add a jump (default path: `$PWD`) |
+| `djump edit LABEL [PATH]` | Update a jump path |
+| `djump remove LABEL` | Remove a jump + `dLABEL` command |
+| `djump --check` | Report shadowed or stolen `dKEY` names |
 
 ### In the TUI
 
