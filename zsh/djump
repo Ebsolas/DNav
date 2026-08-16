@@ -16,6 +16,7 @@
 #   _djump_goto KEY        → cd to jump (for shell cmds)
 #   _djump_cmd_clash KEY   → 0 if dKEY is taken (REPLY = why)
 #   djump [-r|-l|-c|add|edit|remove|KEY]
+#   dhelp                      same as djump -l (jump list only)
 #
 # When sourced, each jump key is also installed as `dKEY` (home → dhome)
 # unless that name is reserved or already taken on the system.
@@ -477,6 +478,12 @@ _djump_print_list() {
   done
 }
 
+# Jump list only (plain text, pipe-friendly). Warnings go to stderr.
+dhelp() {
+  _djump_print_list || return 1
+  _djump_warn_stolen
+}
+
 # Warn about dKEY names that exist but are no longer our function (alias, etc.).
 _djump_warn_stolen() {
   local k cmd
@@ -551,7 +558,7 @@ djump() {
       print -u2 -- "djump: failed to load $(_djump_data_path)"
       return 1
       ;;
-    -l|--list|list|'')
+    -l|--list|list|help|'')
       _djump_print_list || return 1
       _djump_warn_stolen
       return 0
@@ -561,9 +568,9 @@ djump() {
       return $?
       ;;
     -h|--help)
-      print -r -- "usage: djump [-r|-l|-c|add|edit|remove|KEY]"
+      print -r -- "usage: djump [-r|-l|-c|add|edit|remove|help|KEY]"
       print -r -- "  -r, --reload         reload jumps file and dKEY commands"
-      print -r -- "  -l, --list           list dKEY → path"
+      print -r -- "  -l, --list           list dKEY → path (also: dhelp)"
       print -r -- "  -c, --check          report shadowed / stolen dKEY names"
       print -r -- "  add LABEL [PATH]     add jump (default path: \$PWD)"
       print -r -- "  edit LABEL [PATH]    set path (default: \$PWD)"

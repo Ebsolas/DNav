@@ -420,8 +420,8 @@ main() {
   ok "DNav installed"
   printf '\nNext steps:\n'
   info "1. Reload shell:  exec zsh   (or open a new terminal)"
-  info "2. Try:           dnav       dhelp       dconfig -p"
-  info "3. Jump:          dhome      dproj       djump -l"
+  info "2. Try:           dnav       dnav --help       dconfig -p"
+  info "3. Jump:          dhome      dhelp       djump -l"
   info "4. Edit config:   dconfig -e   or   About → Settings in dnav"
   info "5. Later updates: dnav --update    or    ./install.sh --update"
   printf '\nConfig files:\n'

@@ -1835,9 +1835,9 @@ _dnav_help_topic_body() {
       print -r -- "Reload after hand-edits        djump -r  or  dconfig -r"
       ;;
     DHelp)
-      print -r -- "dhelp                          list shell d-commands"
-      print -r -- "Shows dnav, dhelp, dconfig, djump, and all dKEY aliases"
-      print -r -- "Does not list dfile/dsearch    (those are in-TUI only)"
+      print -r -- "dhelp                          list jump aliases (same as djump -l)"
+      print -r -- "dnav --help                    shell commands (dnav, dconfig, djump)"
+      print -r -- "dfile/dsearch                  in-TUI only (or: dnav f / dnav s)"
       ;;
     DConfig)
       print -r -- "Config dir                     ~/.config/dnav/"
@@ -2490,41 +2490,6 @@ _dnav_success_from_sel() {
   _dnav_success_bar "$sel_path" "$origin_mid" dnav
 }
 
-# List shell-facing DNav commands (not in-TUI plugins).
-dhelp() {
-  local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
-  local rst="${DNAV_RESET:-\e[0m}"
-  local k path
-
-  print -r -- "${hl} DNav ${rst}"
-  print -r -- "  dnav                 open the folder navigator"
-  print -r -- "  dnav f [PATH]        open the file explorer (default: \$PWD)"
-  print -r -- "  dnav s [QUERY]       open fuzzy search"
-  print -r -- "  dnav --update        refresh scripts + merge new config keys"
-  print -r -- "  dhelp                this command list"
-  print -r -- "  dconfig              reload/edit config (~/.config/dnav)"
-  print -r -- "  djump                list jump aliases (djump -l)"
-  print -r -- "  djump KEY            jump to KEY (same as dKEY)"
-  print -r -- "  djump add|edit|rm    manage jump favorites"
-  print -r -- "  djump -r             reload jumps file + dKEY commands"
-  print -r -- "  config dir           ${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}"
-  print -r -- "  ls_after             set in config (not an env var)"
-
-  if (( $+functions[_djump_available] )) && _djump_available 2>/dev/null; then
-    if _djump_ensure 2>/dev/null; then
-      print -r -- ""
-      print -r -- "${hl} DJump aliases ${rst}"
-      local cmd
-      for k in "${_DJUMP_KEYS[@]}"; do
-        cmd="d${k}"
-        path="${_DJUMP_MAP[$k]}"
-        print -r -- "  ${(r:18:)cmd}  $path"
-      done
-      (( $+functions[_djump_warn_stolen] )) && _djump_warn_stolen
-    fi
-  fi
-}
-
 dnav() {
   local key target entry=main entry_arg=""
   case ${1:-} in
@@ -2540,6 +2505,10 @@ dnav() {
       print -r -- "  s, search [QUERY] open fuzzy search"
       print -r -- "  -u, --update      copy scripts from the DNav repo + merge new config keys"
       print -r -- "  -h, --help        this help"
+      print -r -- "  dconfig           reload/edit config (~/.config/dnav)"
+      print -r -- "  dhelp             list jump aliases (same as djump -l)"
+      print -r -- "  djump             list jumps; djump KEY to go; add|edit|remove to manage"
+      print -r -- "  djump -r          reload jumps file + dKEY commands"
       return 0
       ;;
     f|file)

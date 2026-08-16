@@ -85,7 +85,8 @@ source ~/.local/share/dnav/dnav
 | Command | What it does |
 |---------|----------------|
 | `dnav` | Open the navigation TUI |
-| `dhelp` | List shell commands + jump aliases |
+| `dhelp` | List jump aliases (same as `djump -l`) |
+| `dnav --help` | Shell commands |
 | `dconfig` / `dconfig -r` | Show/reload config |
 | `dconfig -e` | Edit config files in `$EDITOR` |
 | `dnav --update` | Refresh scripts + merge new config keys |

@@ -171,6 +171,29 @@ test_dnav_help_lists_entry_points() {
   got="$(dnav -h)"
   assert_contains "$got" "f, file" "help lists file entry"
   assert_contains "$got" "s, search" "help lists search entry"
+  assert_contains "$got" "dconfig" "help lists dconfig"
+  assert_contains "$got" "djump" "help lists djump"
+  if [[ $got == *$'\e'* ]]; then
+    _dnav_test_fail "dnav --help should be plain text"
+  else
+    _dnav_test_pass "dnav --help is pipe-friendly"
+  fi
+}
+
+test_dhelp_lists_jumps_only() {
+  local got
+  got="$(dhelp)"
+  assert_contains "$got" "dhome" "dhelp lists dhome"
+  if [[ $got == *"open the folder navigator"* || $got == *"dnav --update"* ]]; then
+    _dnav_test_fail "dhelp should not be the general command list"
+  else
+    _dnav_test_pass "dhelp is the jump list"
+  fi
+  if [[ $got == *$'\e'* ]]; then
+    _dnav_test_fail "dhelp should be plain text"
+  else
+    _dnav_test_pass "dhelp is pipe-friendly"
+  fi
 }
 
 test_disp_w_and_fit() {
@@ -266,6 +289,7 @@ run_test test_logical_path_no_symlink_resolve
 run_test test_resolve_dir_climbs_missing
 run_test test_status_slot_set_and_expire
 run_test test_dnav_help_lists_entry_points
+run_test test_dhelp_lists_jumps_only
 run_test test_disp_w_and_fit
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
