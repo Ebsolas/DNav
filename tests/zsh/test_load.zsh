@@ -169,6 +169,7 @@ test_status_slot_set_and_expire() {
 test_dnav_help_lists_entry_points() {
   local got
   got="$(dnav -h)"
+  assert_contains "$got" "Usage: dnav" "dnav --help starts with Usage"
   assert_contains "$got" "f, file" "help lists file entry"
   assert_contains "$got" "s, search" "help lists search entry"
   assert_contains "$got" "dconfig" "help lists dconfig"
@@ -184,7 +185,7 @@ test_dhelp_lists_jumps_only() {
   local got
   got="$(dhelp)"
   assert_contains "$got" "dhome" "dhelp lists dhome"
-  if [[ $got == *"usage: djump"* || $got == *"add LABEL"* ]]; then
+  if [[ $got == *"Usage: djump"* || $got == *"usage: djump"* || $got == *"add LABEL"* ]]; then
     _dnav_test_fail "dhelp should not print djump usage"
   else
     _dnav_test_pass "dhelp is not djump usage"
@@ -204,7 +205,7 @@ test_dhelp_lists_jumps_only() {
 test_djump_help_is_usage() {
   local got
   got="$(djump --help)"
-  assert_contains "$got" "usage: djump" "djump --help is usage"
+  assert_contains "$got" "Usage: djump" "djump --help is usage"
   assert_contains "$got" "add LABEL" "covers add"
   assert_contains "$got" "edit LABEL" "covers edit"
   assert_contains "$got" "remove LABEL" "covers remove"

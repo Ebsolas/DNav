@@ -486,16 +486,26 @@ dhelp() {
 }
 
 _djump_print_help() {
-  print -r -- "usage: djump [-r|-l|-c|add|edit|remove|KEY]"
-  print -r -- "  (no args), -l, --list   list jumps as dKEY and path"
-  print -r -- "  dhelp                   same list (not this usage text)"
-  print -r -- "  KEY                     cd to that jump (also: dKEY, e.g. dhome)"
-  print -r -- "  add LABEL [PATH]        add a jump (default path: \$PWD)"
-  print -r -- "  edit LABEL [PATH]       change a jump path (default: \$PWD)"
-  print -r -- "  remove LABEL            remove a jump and its dLABEL command"
-  print -r -- "  -r, --reload            reload the jumps file and dKEY commands"
-  print -r -- "  -c, --check             report shadowed or stolen dKEY names"
-  print -r -- "  -h, --help              this help"
+  print -r -- "Usage: djump [OPTION]... [COMMAND] [ARG]..."
+  print -r -- "       djump KEY"
+  print -r -- "Jump to a saved folder, or manage the jump table."
+  print -r -- ""
+  print -r -- "With no operands, list jumps. KEY is the same as running dKEY"
+  print -r -- "(for example, djump home and dhome both go to that folder)."
+  print -r -- ""
+  print -r -- "Commands:"
+  print -r -- "  add LABEL [PATH]     add a jump (PATH defaults to the current directory)"
+  print -r -- "  edit LABEL [PATH]    change the path for LABEL"
+  print -r -- "  remove LABEL         remove LABEL and the dLABEL command"
+  print -r -- ""
+  print -r -- "Options:"
+  print -r -- "  -l, --list           list jumps as dKEY and path"
+  print -r -- "  -r, --reload         reload the jumps file and reinstall dKEY commands"
+  print -r -- "  -c, --check          report dKEY names that clash with existing commands"
+  print -r -- "  -h, --help           display this help and exit"
+  print -r -- ""
+  print -r -- "The jump table is ~/.config/dnav/jumps."
+  print -r -- "dhelp prints the same list as djump --list."
 }
 
 # Warn about dKEY names that exist but are no longer our function (alias, etc.).
@@ -610,7 +620,8 @@ djump() {
       return 1
       ;;
     -*)
-      print -u2 -- "djump: unknown option: $1 (try djump -h)"
+      print -u2 -- "djump: unknown option: $1"
+      print -u2 -- "Try 'djump --help' for more information."
       return 1
       ;;
     *)

@@ -578,6 +578,40 @@ _dnav_config_load() {
   fi
 }
 
+_dnav_print_dconfig_help() {
+  print -r -- "Usage: dconfig [OPTION]"
+  print -r -- "Reload configuration, or open the config files."
+  print -r -- ""
+  print -r -- "Options:"
+  print -r -- "  -r, --reload         reload config and jumps (default)"
+  print -r -- "  -e, --edit           open config files in \$EDITOR"
+  print -r -- "  -p, --path           print the config directory and exit"
+  print -r -- "  -h, --help           display this help and exit"
+  print -r -- ""
+  print -r -- "Files are read from \$XDG_CONFIG_HOME/dnav (default: ~/.config/dnav):"
+  print -r -- "  config               settings"
+  print -r -- "  folders              main bar labels and paths"
+  print -r -- "  jumps                dKEY aliases"
+}
+
+_dnav_print_help() {
+  print -r -- "Usage: dnav [OPTION]... [COMMAND] [ARG]..."
+  print -r -- "Open the folder navigator."
+  print -r -- ""
+  print -r -- "Commands:"
+  print -r -- "  f, file [PATH]       open the file explorer (default: current directory)"
+  print -r -- "  s, search [QUERY]    open fuzzy directory search"
+  print -r -- ""
+  print -r -- "Options:"
+  print -r -- "  -u, --update         update installed scripts and merge new config keys"
+  print -r -- "  -h, --help           display this help and exit"
+  print -r -- ""
+  print -r -- "Related commands:"
+  print -r -- "  dconfig              reload or edit configuration"
+  print -r -- "  djump                jump to a saved folder; see djump --help"
+  print -r -- "  dhelp                list saved jumps"
+}
+
 # Reload config + jump commands.
 dconfig() {
   case ${1:-} in
@@ -606,15 +640,11 @@ dconfig() {
       print -r -- "$(_dnav_config_dir)"
       ;;
     -h|--help)
-      print -r -- "usage: dconfig [-r|-e|-p]"
-      print -r -- "  -r, --reload   reload config + jumps (default)"
-      print -r -- "  -e, --edit     open config files in \$EDITOR"
-      print -r -- "  -p, --path     print config directory"
-      print -r -- "files: config  folders  jumps  under \$XDG_CONFIG_HOME/dnav"
-      print -r -- "scripts: dnav --update   refresh install + merge new config keys"
+      _dnav_print_dconfig_help
       ;;
     *)
-      print -u2 -- "dconfig: unknown option: $1 (try dconfig -h)"
+      print -u2 -- "dconfig: unknown option: $1"
+      print -u2 -- "Try 'dconfig --help' for more information."
       return 1
       ;;
   esac
@@ -670,10 +700,11 @@ _dnav_update() {
   setopt localoptions no_multios
   case ${1:-} in
     -h|--help)
-      print -r -- "usage: dnav --update"
-      print -r -- "  Copy zsh (and bash, if installed) scripts from the DNav repo"
-      print -r -- "  onto this install. Adds any new config keys; keeps your values."
-      print -r -- "  Override source:  DNAV_UPDATE_FROM=/path/to/DNav dnav --update"
+      print -r -- "Usage: dnav --update"
+      print -r -- "Copy scripts from the local DNav repository onto this install."
+      print -r -- "New config keys are added; existing values are kept."
+      print -r -- ""
+      print -r -- "Set DNAV_UPDATE_FROM to choose the source tree."
       return 0
       ;;
   esac
@@ -1798,57 +1829,58 @@ _dnav_about_init() {
 _dnav_help_topic_body() {
   case $1 in
     Move)
-      print -r -- "h / l   or   ← / →          move selection on the main bar"
-      print -r -- "Enter                         open selected folder"
-      print -r -- "Enter on About                open this About view"
-      print -r -- "Esc                           leave dnav / leave About"
-      print -r -- "After open                    cyan path bar (+ ls if ls_after=1)"
-      print -r -- "Brand chip is not selectable; folders are cyan when focused"
+      print -r -- "h, l, ←, →                    move on the main bar"
+      print -r -- "Enter                         open the selected folder"
+      print -r -- "Enter on About                open this help"
+      print -r -- "Esc                           leave dnav, or leave About"
+      print -r -- "After a jump                  a path bar is shown (ls if ls_after=1)"
+      print -r -- "The brand chip is not selectable"
       ;;
     Search)
-      print -r -- "/  or  s                       fuzzy directory search"
-      print -r -- "Spaces in a query              every word must appear (any order)"
-      print -r -- "In search: ↑↓  or  C-n / C-p   move through results"
-      print -r -- "In search: ← →                 move caret; → at end focuses Help"
-      print -r -- "Enter                          jump to selected path"
+      print -r -- "/, s                          open fuzzy search"
+      print -r -- "words with spaces             every word must match (any order)"
+      print -r -- "↑, ↓, Ctrl+N, Ctrl+P          move through results"
+      print -r -- "←, →                          move the caret; → at the end focuses Help"
+      print -r -- "Enter                         jump to the selected path"
       ;;
     Files)
-      print -r -- "f                              open file explorer (dfile)"
-      print -r -- "hjkl / arrows                  move; j/↓ drill in; k/↑ up"
-      print -r -- "Tab / f                        toggle directories ↔ files"
-      print -r -- "Enter                          exit to folder / open file"
-      print -r -- "s  or  /                       search   ·   d Jump   ·   . hidden"
-      print -r -- "o / O                          cycle dir / file order (this visit only)"
-      print -r -- "Esc                            leave explorer (back to the folder you started in)"
+      print -r -- "f                             open the file explorer"
+      print -r -- "h, l, ←, →                    move; j / ↓ drill in; k / ↑ go up"
+      print -r -- "Tab, f                        toggle directories and files"
+      print -r -- "Enter                         leave at this folder, or open a file"
+      print -r -- "s, /                          search    d    jump    .    hidden"
+      print -r -- "o, O                          cycle dir / file order (this visit only)"
+      print -r -- "Esc                           leave and restore the starting folder"
       ;;
     DJump)
-      print -r -- "In dfile: d                    Jump mode (type dKEY)"
-      print -r -- "jumps file                     ~/.config/dnav/jumps"
-      print -r -- "djump -l / djump -r            list / reload jump table"
-      print -r -- "djump KEY                      cd without opening dnav"
+      print -r -- "d (in the explorer)           type a dKEY to jump"
+      print -r -- "djump KEY                     jump without opening dnav"
+      print -r -- "djump --list, dhelp           list saved jumps"
+      print -r -- "djump --help                  full djump usage"
+      print -r -- "jumps file                    ~/.config/dnav/jumps"
       ;;
     DKEY)
-      print -r -- "Each jumps key installs dKEY   e.g. home → dhome"
-      print -r -- "dhome, dproj, …                shell jump + cyan path bar"
-      print -r -- "djump add LABEL [PATH]         save favorite (default: \$PWD)"
-      print -r -- "djump edit/remove LABEL        change or drop a favorite"
-      print -r -- "Reload after hand-edits        djump -r  or  dconfig -r"
+      print -r -- "Each jump key installs dKEY   home → dhome"
+      print -r -- "dhome, ddoc, …                jump from the shell"
+      print -r -- "djump add LABEL [PATH]        save a jump (default: current directory)"
+      print -r -- "djump edit|remove LABEL       change or drop a jump"
+      print -r -- "After hand-edits              djump --reload  or  dconfig --reload"
       ;;
     DHelp)
-      print -r -- "dhelp                          list jump aliases (same as djump -l)"
-      print -r -- "dnav --help                    shell commands (dnav, dconfig, djump)"
-      print -r -- "dfile/dsearch                  in-TUI only (or: dnav f / dnav s)"
+      print -r -- "dhelp                         list saved jumps (same as djump --list)"
+      print -r -- "dnav --help                   command-line usage"
+      print -r -- "djump --help                  jump command usage"
+      print -r -- "dnav f, dnav s                open the explorer or search directly"
       ;;
     DConfig)
-      print -r -- "Config dir                     ~/.config/dnav/"
-      print -r -- "  config                       colors, brand, ls_after, hidden…"
-      print -r -- "  folders                      main bar labels + paths"
-      print -r -- "  jumps                        dKEY aliases"
-      print -r -- "In About → Settings            edit from inside dnav (saved to config)"
-      print -r -- "dconfig -r / -e                reload / open in \$EDITOR"
-      print -r -- "dnav --update                  refresh scripts + merge new config keys"
-      print -r -- "ls_after=1 in config           ls after select/jump"
-      print -r -- "full_redraw=1                 full bar redraw (compat mode)"
+      print -r -- "Config directory              ~/.config/dnav/"
+      print -r -- "  config                      colors, brand, ls_after, hidden, …"
+      print -r -- "  folders                     main bar labels and paths"
+      print -r -- "  jumps                       dKEY aliases"
+      print -r -- "About → Settings              edit from inside dnav"
+      print -r -- "dconfig --reload, --edit      reload, or open in \$EDITOR"
+      print -r -- "dnav --update                 refresh scripts; merge new config keys"
+      print -r -- "ls_after=1                    run ls after a successful jump"
       ;;
   esac
 }
@@ -2499,16 +2531,7 @@ dnav() {
       return $?
       ;;
     -h|--help)
-      print -r -- "usage: dnav [--update | f [PATH] | s [QUERY]]"
-      print -r -- "  (no args)         open the folder navigator"
-      print -r -- "  f, file [PATH]    open the file explorer (default: \$PWD)"
-      print -r -- "  s, search [QUERY] open fuzzy search"
-      print -r -- "  -u, --update      copy scripts from the DNav repo + merge new config keys"
-      print -r -- "  -h, --help        this help"
-      print -r -- "  dconfig           reload/edit config (~/.config/dnav)"
-      print -r -- "  dhelp             list jump aliases (same as djump -l)"
-      print -r -- "  djump             list jumps; djump KEY to go; add|edit|remove to manage"
-      print -r -- "  djump -r          reload jumps file + dKEY commands"
+      _dnav_print_help
       return 0
       ;;
     f|file)
@@ -2524,7 +2547,8 @@ dnav() {
     '')
       ;;
     *)
-      print -u2 -- "dnav: unknown option: $1 (try dnav -h)"
+      print -u2 -- "dnav: unknown option: $1"
+      print -u2 -- "Try 'dnav --help' for more information."
       return 1
       ;;
   esac

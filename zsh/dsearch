@@ -792,15 +792,15 @@ typeset -g _dsearch_view=search
 
 # Help body lines (shown under the bar when Help is opened)
 _dsearch_help_lines() {
-  print -r -- "Type to fuzzy-find; spaces AND every word (partials, any order)"
-  print -r -- "↑/↓  or  Ctrl+N / Ctrl+P    move selection"
-  print -r -- "Enter                       open selected folder"
-  print -r -- "← / →                       move in query; → at end focuses Help"
-  print -r -- "Home / End  or  Ctrl+A / E  start / end of query"
-  print -r -- "Backspace / Delete          delete before / at caret"
+  print -r -- "Type to search. Spaces require every word (partials, any order)."
+  print -r -- "↑, ↓, Ctrl+N, Ctrl+P        move selection"
+  print -r -- "Enter                       open the selected folder"
+  print -r -- "←, →                        move the caret; → at the end focuses Help"
+  print -r -- "Home, End, Ctrl+A, Ctrl+E   start or end of the query"
+  print -r -- "Backspace, Delete           delete before or at the caret"
   print -r -- "Enter on Help               show this help"
-  print -r -- "Esc                         close help / leave search"
-  print -r -- "Ctrl+U                      clear query"
+  print -r -- "Esc                         close help, or leave search"
+  print -r -- "Ctrl+U                      clear the query"
 }
 
 # Paint one row. Bar uses chip styling (not a full-width cyan fill).
