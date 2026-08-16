@@ -110,12 +110,16 @@ dnav_test_write_index() {
     print -r -- "$HOME/Projects/dnav-demo"
     print -r -- "$HOME/Projects/dnav-demo/config"
     print -r -- "$HOME/.config/dnav"
+    print -r -- "$HOME/.config/cmus"
+    print -r -- "$HOME/.config/chromium"
+    print -r -- "$HOME/.config/chromium/SafetyTips"
     print -r -- "/usr/share/doc"
     print -r -- "/usr/share/doc/bash"
     print -r -- "/tmp/dnav-synthetic-only"
   } > "$idx"
   mkdir -p "$HOME/Apps/ChaTTY/docs" "$HOME/Projects/dnav-demo/config" \
-           "$HOME/.config/dnav" 2>/dev/null || true
+           "$HOME/.config/dnav" "$HOME/.config/cmus" \
+           "$HOME/.config/chromium/SafetyTips" 2>/dev/null || true
   DNAV_TEST_INDEX="$idx"
 }
 

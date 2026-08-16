@@ -143,12 +143,11 @@ test_apply_filter_and_partial_tokens() {
   _dsearch_prev_query=""
   _dsearch_cand_stack=()
   _dsearch_apply_filter "dn cfg" 10
-  assert_gt "$#_dsearch_matches" 0 "fuzzy partials dn+cfg"
   joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *config* && $joined == *dnav* ]]; then
-    _dnav_test_pass "dn cfg still AND-matches"
+    _dnav_test_fail "dn cfg letter-skipped into config/dnav: $joined"
   else
-    _dnav_test_fail "dn cfg missed: $joined"
+    _dnav_test_pass "dn cfg is not a substring AND"
   fi
   _dsearch_prev_query=""
   _dsearch_cand_stack=()
@@ -157,6 +156,42 @@ test_apply_filter_and_partial_tokens() {
   assert_gt "$#_dsearch_matches" 0 "trailing space does not wipe hits"
   _dsearch_apply_filter "dnav c" 50
   assert_gt "$#_dsearch_matches" 0 "second word can grow from a space"
+}
+
+test_apply_filter_and_complete_strings() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "config cmus" 10
+  assert_gt "$#_dsearch_matches" 0 "config cmus hits a real cmus path"
+  local p
+  for p in "${_dsearch_matches[@]}"; do
+    if [[ ${(L)p} == *chromium* ]]; then
+      _dnav_test_fail "config cmus leaked chromium: $p"
+    fi
+    if [[ ${(L)p} != *config* || ${(L)p} != *cmus* ]]; then
+      _dnav_test_fail "config cmus leaked a non-substring path: $p"
+    fi
+  done
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/cmus* ]]; then
+    _dnav_test_pass "config cmus hits ~/.config/cmus"
+  else
+    _dnav_test_fail "missed ~/.config/cmus: $joined"
+  fi
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "cmus" 10
+  joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *chromium* ]]; then
+    _dnav_test_fail "cmus letter-skipped into chromium: $joined"
+  else
+    _dnav_test_pass "cmus does not match chromium"
+  fi
+  if [[ $joined == *.config/cmus* ]]; then
+    _dnav_test_pass "single-word cmus still hits ~/.config/cmus"
+  else
+    _dnav_test_fail "single-word cmus missed: $joined"
+  fi
 }
 
 test_apply_filter_empty_query() {
@@ -321,6 +356,7 @@ run_test test_apply_filter_fuzzy_doc
 run_test test_apply_filter_proj
 run_test test_apply_filter_and_tokens_any_order
 run_test test_apply_filter_and_partial_tokens
+run_test test_apply_filter_and_complete_strings
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 run_test test_incremental_narrowing
