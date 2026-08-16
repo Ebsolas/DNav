@@ -21,6 +21,10 @@ test_winch_helpers_exist() {
   assert_fn _dnav_handle_winch
   assert_fn _dnav_maybe_resize
   assert_fn _dnav_read_key
+  assert_fn _dnav_read_token
+  assert_fn _dnav_paint_strip
+  assert_fn _dnav_window
+  assert_fn _dnav_finish
   assert_fn _dnav_usable_cols
   assert_fn _dnav_usable_from
   assert_fn _dnav_autowrap_off

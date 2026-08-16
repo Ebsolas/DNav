@@ -718,16 +718,222 @@ _dnav_update() {
 }
 _dnav_config_load
 
-# ── Optional modules ──────────────────────────────────────────────────────
-# Load if present. Real implementations will override the stubs below.
-[[ -f "$DNAV_DIR/djump"   ]] && source "$DNAV_DIR/djump"
-[[ -f "$DNAV_DIR/dfile"   ]] && source "$DNAV_DIR/dfile"
-[[ -f "$DNAV_DIR/dsearch" ]] && source "$DNAV_DIR/dsearch"
+# ── Chip strip (engine; dfile/About/main bar all use this) ────────────────
+typeset -ga _dnav_vis
+typeset -ga _dfile_vis
 
-# Stubs – real modules replace these. Safe to call even when modules are absent.
-(( $+functions[_dfile_available]   )) || _dfile_available()   { return 1 }
-(( $+functions[_dsearch_available] )) || _dsearch_available() { return 1 }
-(( $+functions[_djump_available]   )) || _djump_available()   { return 1 }
+_dnav_cell_w() {
+  local label="$1" locked="${2:-0}"
+  if (( locked )); then
+    print -rn -- $(( ${#label} + 5 ))
+  else
+    print -rn -- $(( ${#label} + 3 ))
+  fi
+}
+
+# Windowing: reply=(win_start), _dnav_vis=(labels). Also copies to _dfile_vis.
+_dnav_window() {
+  local aname="$1" sel="$2" win="$3" maxw="$4" lockname="${5:-}" sticky="${6:-0}"
+  local -a all locks
+  all=("${(@P)aname}")
+  locks=()
+  [[ -n $lockname ]] && locks=("${(@P)lockname}")
+  local n=$#all
+  (( n == 0 )) && { reply=(0); _dnav_vis=(); _dfile_vis=(); return 0 }
+
+  (( sel < 0 )) && sel=0
+  (( sel >= n )) && sel=$(( n - 1 ))
+  (( win < 0 )) && win=0
+  (( win > sel )) && win=$sel
+
+  local -a vis
+  local i w used label vcount sel_slot changed=1 guard=0 locked
+
+  while (( changed && guard < 40 )); do
+    (( guard++ ))
+    changed=0
+    vis=()
+    used=0
+    for (( i=win; i < n; i++ )); do
+      label="${all[i+1]}"
+      locked=${locks[i+1]:-0}
+      w="$(_dnav_cell_w "$label" $locked)"
+      if (( $#vis > 0 && used + w > maxw )); then
+        break
+      fi
+      if (( $#vis == 0 && w > maxw )); then
+        vis+=("$label")
+        break
+      fi
+      vis+=("$label")
+      (( used += w ))
+    done
+    vcount=$#vis
+    (( vcount == 0 )) && break
+    sel_slot=$(( sel - win ))
+    if (( sel_slot >= vcount )); then
+      if (( vcount >= 2 )); then
+        win=$(( sel - (vcount - 2) ))
+      else
+        win=$sel
+      fi
+      (( win < 0 )) && win=0
+      changed=1
+      continue
+    fi
+    if (( sel_slot == vcount - 1 && sel < n - 1 && vcount >= 2 )); then
+      if (( sticky && win == 0 )); then
+        :
+      else
+        local nwin=$(( sel - (vcount - 2) ))
+        (( nwin < 0 )) && nwin=0
+        if (( nwin != win )); then
+          win=$nwin
+          changed=1
+        fi
+      fi
+    fi
+  done
+
+  _dnav_vis=("${vis[@]}")
+  _dfile_vis=("${vis[@]}")
+  reply=($win)
+}
+
+_dnav_paint_strip() {
+  local aname="$1"
+  local sel="$2"
+  local win="$3"
+  local active="$4"
+  local maxw="$5"
+  local lockname="${6:-}"
+  local sticky="${7:-0}"
+  local hl rst
+  local -a items locks
+  items=("${(@P)aname}")
+  locks=()
+  [[ -n $lockname ]] && locks=("${(@P)lockname}")
+  hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
+  rst="${DNAV_RESET:-\e[0m}"
+
+  local n=$#items
+  local more_l=0 more_r=0 ind_l=0 ind_r=0 content_w=$maxw
+  local i label used=0 cell_w locked
+
+  _dnav_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
+  win=$reply[1]
+  (( win > 0 )) && more_l=1
+  (( n > 0 && win + $#_dnav_vis < n )) && more_r=1
+
+  (( more_l )) && ind_l=2
+  (( more_r )) && ind_r=2
+  if (( ind_l + ind_r > 0 )); then
+    content_w=$(( maxw - ind_l - ind_r ))
+    (( content_w < 1 )) && content_w=1
+    _dnav_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
+    win=$reply[1]
+    more_l=0
+    more_r=0
+    (( win > 0 )) && more_l=1
+    (( n > 0 && win + $#_dnav_vis < n )) && more_r=1
+    ind_l=0
+    ind_r=0
+    (( more_l )) && ind_l=2
+    (( more_r )) && ind_r=2
+    content_w=$(( maxw - ind_l - ind_r ))
+    (( content_w < 1 )) && content_w=1
+    _dnav_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
+    win=$reply[1]
+    more_l=0
+    more_r=0
+    (( win > 0 )) && more_l=1
+    (( n > 0 && win + $#_dnav_vis < n )) && more_r=1
+  fi
+
+  local printed=0 remain
+  (( more_l )) && { printf "\e[2m<\e[22m "; printed=2 }
+
+  used=0
+  for (( i=win; i < n; i++ )); do
+    label="${items[i+1]}"
+    locked=${locks[i+1]:-0}
+    cell_w="$(_dnav_cell_w "$label" $locked)"
+    remain=$(( maxw - printed - (more_r ? 2 : 0) ))
+    (( remain < 0 )) && remain=0
+    if (( cell_w > remain )); then
+      if (( used == 0 && remain > 0 )); then
+        local pad=3
+        (( locked )) && pad=5
+        local room=$(( remain - pad ))
+        (( room < 1 )) && room=1
+        if (( ${#label} > room )); then
+          if (( room >= 2 )); then
+            label="${label[1,room-1]}…"
+          else
+            label="${label[1,room]}"
+          fi
+        fi
+        cell_w=$(( ${#label} + pad ))
+        (( cell_w > remain )) && cell_w=$remain
+      else
+        more_r=1
+        break
+      fi
+    fi
+    if (( locked )); then
+      if (( active && i == sel )); then
+        printf "\e[41;37m 🔒 %s \e[0m " "$label"
+      else
+        printf "\e[31m 🔒 %s \e[0m " "$label"
+      fi
+    elif (( active && i == sel )); then
+      printf "${hl} %s ${rst} " "$label"
+    else
+      printf " %s  " "$label"
+    fi
+    (( used += cell_w ))
+    (( printed += cell_w ))
+  done
+
+  if (( more_r && printed + 2 <= maxw )); then
+    printf " \e[2m>\e[22m"
+  fi
+  printf "\e[K"
+  reply=($win)
+}
+
+# ── Optional modules ──────────────────────────────────────────────────────
+# djump is eager (dKEY commands). dfile/dsearch load on first use.
+_dnav_load_module() {
+  local name="$1" f
+  f="$DNAV_DIR/$name"
+  case $name in
+    dfile)
+      (( $+functions[_dfile_enter] )) && return 0
+      [[ -f $f ]] && source "$f"
+      ;;
+    dsearch)
+      (( $+functions[_dsearch_start] )) && return 0
+      [[ -f $f ]] && source "$f"
+      ;;
+    djump)
+      (( $+functions[_djump_goto] )) && return 0
+      [[ -f $f ]] && source "$f"
+      ;;
+  esac
+}
+
+[[ -f "$DNAV_DIR/djump" ]] && source "$DNAV_DIR/djump"
+
+_dfile_available() {
+  _dnav_load_module dfile
+  (( $+functions[_dfile_enter] ))
+}
+_dsearch_available() {
+  _dnav_load_module dsearch
+  (( $+functions[_dsearch_start] ))
+}
+(( $+functions[_djump_available] )) || _djump_available() { return 1 }
 # Entry points modules provide:
 #   _dfile_enter / _dfile_is_open
 #   _dsearch_start / _dsearch_start_for_dfile
@@ -947,6 +1153,73 @@ _dnav_read_key() {
   done
 }
 
+# One key token: esc/up/down/left/right/home/end/delete/enter/tab/backspace/
+# ctrl-c/ctrl-a/ctrl-e/ctrl-n/ctrl-p/ctrl-u, or a single printable char.
+_dnav_read_token() {
+  local k k2 k3 k4
+  REPLY=""
+  while true; do
+    (( ${DNAV_ABORT:-0} )) && return 1
+    if (( $+functions[_dnav_read_key] )); then
+      _dnav_read_key || return 1
+      k="$REPLY"
+    else
+      read -k 1 k || return 1
+    fi
+    (( ${DNAV_ABORT:-0} )) && return 1
+    [[ -n $k ]] || continue
+    case $k in
+      $'\x03') REPLY=ctrl-c; return 0 ;;
+      $'\n'|$'\r') REPLY=enter; return 0 ;;
+      $'\t') REPLY=tab; return 0 ;;
+      $'\177'|$'\b') REPLY=backspace; return 0 ;;
+      $'\x01') REPLY=ctrl-a; return 0 ;;
+      $'\x05') REPLY=ctrl-e; return 0 ;;
+      $'\x0e') REPLY=ctrl-n; return 0 ;;
+      $'\x10') REPLY=ctrl-p; return 0 ;;
+      $'\x15') REPLY=ctrl-u; return 0 ;;
+      $'\e')
+        if read -t 0.05 -k 1 k2 2>/dev/null; then
+          if [[ $k2 == '[' ]]; then
+            read -k 1 k3 2>/dev/null || k3=""
+            case $k3 in
+              A) REPLY=up; return 0 ;;
+              B) REPLY=down; return 0 ;;
+              C) REPLY=right; return 0 ;;
+              D) REPLY=left; return 0 ;;
+              H) REPLY=home; return 0 ;;
+              F) REPLY=end; return 0 ;;
+              3)
+                read -t 0.05 -k 1 k4 2>/dev/null || true
+                REPLY=delete
+                return 0
+                ;;
+              1|4|7|8)
+                read -t 0.05 -k 1 k4 2>/dev/null || true
+                if [[ $k3 == 1 || $k3 == 7 ]]; then
+                  REPLY=home
+                else
+                  REPLY=end
+                fi
+                return 0
+                ;;
+              *) REPLY=esc; return 0 ;;
+            esac
+          fi
+          REPLY=esc
+          return 0
+        fi
+        if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
+          continue
+        fi
+        REPLY=esc
+        return 0
+        ;;
+      *) REPLY="$k"; return 0 ;;
+    esac
+  done
+}
+
 # Redraw in place. Autowrap is off so shrink clips on the right; do not CUU
 # (that is what walked the bar up the screen).
 _dnav_handle_winch() {
@@ -1089,6 +1362,22 @@ _dnav_success_bar() {
 
   display="$(_dnav_fit_end "$bar_path" $usable)"
   printf "\r${hl}%-${usable}s${rst}\e[K\n" "$display"
+}
+
+# After a successful cd (or file pick). $1=path $2=dnav|djump $3=optional origin col
+_dnav_finish() {
+  local dest="$1" ctx="${2:-dnav}" origin="${3:-}"
+  if (( $+functions[_dnav_success_bar] )); then
+    _dnav_success_bar "$dest" "$origin" "$ctx"
+  else
+    print -r -- "$dest"
+  fi
+  if (( $+functions[_dnav_cleanup] )); then
+    _dnav_cleanup
+  else
+    printf "\e[?25h"
+  fi
+  (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls "$ctx"
 }
 
 # List shell-facing DNav commands (not in-TUI plugins).
@@ -1261,6 +1550,7 @@ dnav() {
   _dnav_autowrap_off
 
   # Warm the directory search index in the background (interruptible on exit)
+  _dnav_load_module dsearch
   if (( $+functions[_dsearch_index_start_bg] )); then
     _dsearch_index_start_bg
   fi
@@ -1274,8 +1564,8 @@ dnav() {
     local avail=$(( cols - brand_w ))
     (( avail < 10 )) && avail=10
     local old_win=$bar_win
-    if (( $+functions[_dfile_window] )); then
-      _dfile_window names $selected $bar_win $avail
+    if (( $+functions[_dnav_window] )); then
+      _dnav_window names $selected $bar_win $avail
       bar_win=$reply[1]
     else
       (( selected < bar_win )) && bar_win=$selected
@@ -1339,8 +1629,8 @@ dnav() {
     (( avail < 10 )) && avail=10
     printf "\e[?25l\r"
     printf "${HIGHLIGHT} %s ${RESET} " "$brand"
-    if (( $+functions[_dfile_paint_strip] )); then
-      _dfile_paint_strip names $selected $bar_win 1 $avail
+    if (( $+functions[_dnav_paint_strip] )); then
+      _dnav_paint_strip names $selected $bar_win 1 $avail
       bar_win=$reply[1]
     else
       _dnav_ensure_bar_visible
@@ -1707,8 +1997,8 @@ dnav() {
   # Paint a named chip strip; reply=(new_win).
   _dnav_about_paint_strip() {
     local aname="$1" sel="$2" win="$3" maxw="$4"
-    if (( $+functions[_dfile_paint_strip] )); then
-      _dfile_paint_strip "$aname" $sel $win 1 $maxw
+    if (( $+functions[_dnav_paint_strip] )); then
+      _dnav_paint_strip "$aname" $sel $win 1 $maxw
       return
     fi
     local -a items
@@ -2179,73 +2469,56 @@ dnav() {
   _dnav_mark_size
 
   while true; do
-    # DNAV_ABORT: full UI teardown already done by _dnav_abort (trap or \x03)
     (( DNAV_ABORT )) && return 130
-    if (( $+functions[_dnav_read_key] )); then
-      _dnav_read_key || true
+    if (( $+functions[_dnav_read_token] )); then
+      _dnav_read_token || true
       key="$REPLY"
     else
       read -k 1 key || true
     fi
     (( DNAV_ABORT )) && return 130
-    # Ctrl+C may arrive as a byte in some terminals even with isig
-    if [[ $key == $'\x03' ]]; then
-      _dnav_abort
-      return 130
-    fi
-
     case $key in
-      $'\e')  # Escape or arrow sequence
-        if read -t 0.05 -k 1 key2 2>/dev/null; then
-          if [[ $key2 == '[' ]]; then
-            read -k 1 key3
-            case $key3 in
-              D)  # Left
-                if [[ $mode == about ]]; then
-                  _dnav_about_move_h -1
-                elif [[ $mode == main ]]; then
-                  _dnav_move_left
-                fi
-                ;;
-              C)  # Right
-                if [[ $mode == about ]]; then
-                  _dnav_about_move_h 1
-                elif [[ $mode == main ]]; then
-                  _dnav_move_right
-                fi
-                ;;
-              A)  # Up
-                [[ $mode == about ]] && _dnav_about_move_v -1
-                ;;
-              B)  # Down
-                [[ $mode == about ]] && _dnav_about_move_v 1
-                ;;
-              3)  # Delete key ESC [ 3 ~
-                read -t 0.05 -k 1 key4 2>/dev/null || true
-                if [[ $mode == about && $about_tab == settings ]]; then
-                  (( about_interactive_rows <= 0 )) && _dnav_settings_fill_body
-                  _dnav_settings_delete_row
-                  _dnav_draw_about
-                fi
-                ;;
-            esac
-          fi
-        else
-          # Timeout after Esc — resize, not a real Esc
-          if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
-            continue
-          fi
-          # Plain Esc
-          if [[ $mode == about ]]; then
-            _dnav_leave_about
-          else
-            _dnav_clear_menu
-            _dnav_cleanup
-            return 0
-          fi
+      ctrl-c|$'\x03')
+        _dnav_abort
+        return 130
+        ;;
+      left)
+        if [[ $mode == about ]]; then
+          _dnav_about_move_h -1
+        elif [[ $mode == main ]]; then
+          _dnav_move_left
         fi
         ;;
-      $'\n'|$'\r')  # Enter
+      right)
+        if [[ $mode == about ]]; then
+          _dnav_about_move_h 1
+        elif [[ $mode == main ]]; then
+          _dnav_move_right
+        fi
+        ;;
+      up)
+        [[ $mode == about ]] && _dnav_about_move_v -1
+        ;;
+      down)
+        [[ $mode == about ]] && _dnav_about_move_v 1
+        ;;
+      delete|backspace|x|X)
+        if [[ $mode == about && $about_tab == settings ]]; then
+          (( about_interactive_rows <= 0 )) && _dnav_settings_fill_body
+          _dnav_settings_delete_row
+          _dnav_draw_about
+        fi
+        ;;
+      esc)
+        if [[ $mode == about ]]; then
+          _dnav_leave_about
+        else
+          _dnav_clear_menu
+          _dnav_cleanup
+          return 0
+        fi
+        ;;
+      enter)
         if [[ $mode == about ]]; then
           if [[ $about_tab == settings ]]; then
             (( about_interactive_rows <= 0 )) && _dnav_settings_fill_body
@@ -2254,13 +2527,10 @@ dnav() {
           fi
           continue
         fi
-
-        # About chip (hardcoded empty path) → About overlay
         if [[ -z ${paths[selected+1]} || ${names[selected+1]} == About ]]; then
           _dnav_show_about
           continue
         fi
-
         target="${paths[selected+1]}"
         if [[ -d $target ]]; then
           cd -- "$target" || {
@@ -2280,7 +2550,7 @@ dnav() {
           return 1
         fi
         ;;
-      $'\t')
+      tab)
         if [[ $mode == about ]]; then
           if [[ $about_tab == help ]]; then
             about_tab=settings
@@ -2311,7 +2581,6 @@ dnav() {
         [[ $mode == about ]] && _dnav_about_move_v 1
         ;;
       e|E)
-        # Optional: open raw file in $EDITOR for bulk edits
         if [[ $mode == about && $about_tab == settings ]]; then
           case ${settings_tabs[settings_sel+1]} in
             General) _dnav_about_edit_file "${DNAV_CONFIG_DIR}/config" ;;
@@ -2320,19 +2589,11 @@ dnav() {
           esac
         fi
         ;;
-      x|X|$'\x7f')
-        # x or Backspace: delete selected folder/jump in Settings
-        if [[ $mode == about && $about_tab == settings ]]; then
-          (( about_interactive_rows <= 0 )) && _dnav_settings_fill_body
-          _dnav_settings_delete_row
-          _dnav_draw_about
-        fi
-        ;;
       /|s|S)
         [[ $mode == about ]] && continue
         if [[ $mode == main ]] && _dsearch_available; then
           if _dsearch_start; then
-            return 0   # navigated or finished with cleanup
+            return 0
           fi
           (( DNAV_ABORT )) && return 130
           mode=main
@@ -2342,14 +2603,11 @@ dnav() {
       f|F)
         [[ $mode == about ]] && continue
         if [[ $mode == main ]] && _dfile_available; then
-          # Always open explorer at the shell's current location
           _dnav_clear_menu
           if _dfile_enter "$PWD"; then
-            # exited to a folder or opened a file (cleanup already done)
             return 0
           fi
           (( DNAV_ABORT )) && return 130
-          # Esc from dfile — still in raw TUI; redraw main
           mode=main
           _dnav_draw
         fi

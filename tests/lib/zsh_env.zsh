@@ -86,6 +86,11 @@ EOF
   # shellcheck disable=SC1091
   source "$DNAV_ZSH_DIR/dnav"
   DNAV_CFG_SUCCESS_ANIM=0
+  # Production leaves dfile/dsearch lazy; tests need their helpers.
+  if (( $+functions[_dnav_load_module] )); then
+    _dnav_load_module dfile
+    _dnav_load_module dsearch
+  fi
 }
 
 dnav_test_write_index() {

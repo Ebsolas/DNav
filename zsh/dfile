@@ -122,15 +122,8 @@ _dfile_cycle_file_sort() {
   esac
 }
 
-# Cell width for a strip label (extra for 🔒 when locked).
-_dfile_cell_w() {
-  local label="$1" locked="${2:-0}"
-  if (( locked )); then
-    print -rn -- $(( ${#label} + 5 ))   # "🔒 " + " name "
-  else
-    print -rn -- $(( ${#label} + 3 ))
-  fi
-}
+# Cell width / window / strip live in the dnav engine.
+_dfile_cell_w() { _dnav_cell_w "$@"; }
 
 # 1 if path is a dir we cannot enter/list (need r+x).
 _dfile_dir_locked() {
@@ -229,186 +222,8 @@ _dfile_list() {
   return 0
 }
 
-# Windowing: reply=(win_start), _dfile_vis=(labels)
-# Optional $5 = lock array name (parallel 0/1 flags).
-# Optional $6 = sticky: keep index 0 on-screen while sel still fits at win=0.
-_dfile_window() {
-  local aname="$1" sel="$2" win="$3" maxw="$4" lockname="${5:-}" sticky="${6:-0}"
-  local -a all locks
-  all=("${(@P)aname}")
-  locks=()
-  [[ -n $lockname ]] && locks=("${(@P)lockname}")
-  local n=$#all
-  (( n == 0 )) && { reply=(0); _dfile_vis=(); return 0 }
-
-  (( sel < 0 )) && sel=0
-  (( sel >= n )) && sel=$(( n - 1 ))
-  (( win < 0 )) && win=0
-  (( win > sel )) && win=$sel
-
-  local -a vis
-  local i w used label vcount sel_slot changed=1 guard=0 locked
-
-  while (( changed && guard < 40 )); do
-    (( guard++ ))
-    changed=0
-    vis=()
-    used=0
-    for (( i=win; i < n; i++ )); do
-      label="${all[i+1]}"
-      locked=${locks[i+1]:-0}
-      w="$(_dfile_cell_w "$label" $locked)"
-      if (( $#vis > 0 && used + w > maxw )); then
-        break
-      fi
-      if (( $#vis == 0 && w > maxw )); then
-        vis+=("$label")
-        break
-      fi
-      vis+=("$label")
-      (( used += w ))
-    done
-    vcount=$#vis
-    (( vcount == 0 )) && break
-    sel_slot=$(( sel - win ))
-    if (( sel_slot >= vcount )); then
-      if (( vcount >= 2 )); then
-        win=$(( sel - (vcount - 2) ))
-      else
-        win=$sel
-      fi
-      (( win < 0 )) && win=0
-      changed=1
-      continue
-    fi
-    if (( sel_slot == vcount - 1 && sel < n - 1 && vcount >= 2 )); then
-      # Sticky prefix: do not scroll Jump to: off just to peek the next folder.
-      if (( sticky && win == 0 )); then
-        :
-      else
-        local nwin=$(( sel - (vcount - 2) ))
-        (( nwin < 0 )) && nwin=0
-        if (( nwin != win )); then
-          win=$nwin
-          changed=1
-        fi
-      fi
-    fi
-  done
-
-  _dfile_vis=("${vis[@]}")
-  reply=($win)
-}
-
-# Paint a horizontal strip at the current cursor line.
-# Does not emit leading newline. Clears to EOL.
-# Shows < / > when more items are scrolled off to the left / right.
-# Optional $6 = lock array name. Sets reply=(new_win)
-_dfile_paint_strip() {
-  local aname="$1"
-  local sel="$2"
-  local win="$3"
-  local active="$4"
-  local maxw="$5"
-  local lockname="${6:-}"
-  local sticky="${7:-0}"
-  local hl rst
-  local -a items locks
-  items=("${(@P)aname}")
-  locks=()
-  [[ -n $lockname ]] && locks=("${(@P)lockname}")
-  hl="$(_dfile_hl)"
-  rst="$(_dfile_rst)"
-
-  local n=$#items
-  local more_l=0 more_r=0 ind_l=0 ind_r=0 content_w=$maxw
-  local i label used=0 cell_w locked
-
-  # Pass 1: window at full width to see if overflow markers are needed
-  _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
-  win=$reply[1]
-  (( win > 0 )) && more_l=1
-  (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
-
-  # Reserve 2 cols each ("<" + space, space + ">") so chips never wrap
-  (( more_l )) && ind_l=2
-  (( more_r )) && ind_r=2
-  if (( ind_l + ind_r > 0 )); then
-    content_w=$(( maxw - ind_l - ind_r ))
-    (( content_w < 1 )) && content_w=1
-    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
-    win=$reply[1]
-    more_l=0
-    more_r=0
-    (( win > 0 )) && more_l=1
-    (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
-    ind_l=0
-    ind_r=0
-    (( more_l )) && ind_l=2
-    (( more_r )) && ind_r=2
-    content_w=$(( maxw - ind_l - ind_r ))
-    (( content_w < 1 )) && content_w=1
-    _dfile_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
-    win=$reply[1]
-    more_l=0
-    more_r=0
-    (( win > 0 )) && more_l=1
-    (( n > 0 && win + $#_dfile_vis < n )) && more_r=1
-  fi
-
-  local printed=0 remain
-  (( more_l )) && { printf "\e[2m<\e[22m "; printed=2 }
-
-  used=0
-  for (( i=win; i < n; i++ )); do
-    label="${items[i+1]}"
-    locked=${locks[i+1]:-0}
-    cell_w="$(_dfile_cell_w "$label" $locked)"
-    remain=$(( maxw - printed - (more_r ? 2 : 0) ))
-    (( remain < 0 )) && remain=0
-    if (( cell_w > remain )); then
-      if (( used == 0 && remain > 0 )); then
-        local pad=3
-        (( locked )) && pad=5
-        local room=$(( remain - pad ))
-        (( room < 1 )) && room=1
-        if (( ${#label} > room )); then
-          if (( room >= 2 )); then
-            label="${label[1,room-1]}…"
-          else
-            label="${label[1,room]}"
-          fi
-        fi
-        cell_w=$(( ${#label} + pad ))
-        (( cell_w > remain )) && cell_w=$remain
-      else
-        more_r=1
-        break
-      fi
-    fi
-    if (( locked )); then
-      # Red + lock for inaccessible dirs
-      if (( active && i == sel )); then
-        printf "\e[41;37m 🔒 %s \e[0m " "$label"
-      else
-        printf "\e[31m 🔒 %s \e[0m " "$label"
-      fi
-    elif (( active && i == sel )); then
-      printf "${hl} %s ${rst} " "$label"
-    else
-      printf " %s  " "$label"
-    fi
-    (( used += cell_w ))
-    (( printed += cell_w ))
-  done
-
-  if (( more_r && printed + 2 <= maxw )); then
-    printf " \e[2m>\e[22m"
-  fi
-  printf "\e[K"
-  reply=($win)
-}
-
+_dfile_window() { _dnav_window "$@"; }
+_dfile_paint_strip() { _dnav_paint_strip "$@"; }
 _dfile_enter() {
   local start="${1:-}"
   local hl rst maxw
@@ -802,17 +617,12 @@ _dfile_enter() {
       fi
       return 0
     fi
-    if (( $+functions[_dnav_success_bar] )); then
-      _dnav_success_bar "${dest:A}" "" dnav
+    if (( $+functions[_dnav_finish] )); then
+      _dnav_finish "${dest:A}" dnav
     else
-      printf "%s\n" "${dest:A}"
-    fi
-    if (( $+functions[_dnav_cleanup] )); then
-      _dnav_cleanup
-    else
+      print -r -- "${dest:A}"
       printf "\e[?25h"
     fi
-    (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls dnav
     return 0
   }
 
@@ -840,14 +650,10 @@ _dfile_enter() {
     [[ -e $fpath ]] || return 1
     _dfile_erase
     _DFILE_OPEN=0
-    if (( $+functions[_dnav_success_bar] )); then
-      _dnav_success_bar "${fpath:A}" "" dnav
+    if (( $+functions[_dnav_finish] )); then
+      _dnav_finish "${fpath:A}" dnav
     else
-      printf "%s\n" "${fpath:A}"
-    fi
-    if (( $+functions[_dnav_cleanup] )); then
-      _dnav_cleanup
-    else
+      print -r -- "${fpath:A}"
       printf "\e[?25h"
     fi
     if [[ -n ${EDITOR:-} ]]; then
@@ -924,14 +730,13 @@ _dfile_enter() {
   _dfile_draw
 
   while true; do
-    # Abort already tore down UI (via _dnav_abort); just leave the explorer
     (( ${DNAV_ABORT:-0} )) && {
       [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
       _DFILE_OPEN=0
       return 130
     }
-    if (( $+functions[_dnav_read_key] )); then
-      _dnav_read_key || true
+    if (( $+functions[_dnav_read_token] )); then
+      _dnav_read_token || true
       key="$REPLY"
     else
       read -k 1 key || true
@@ -941,7 +746,7 @@ _dfile_enter() {
       _DFILE_OPEN=0
       return 130
     }
-    if [[ $key == $'\x03' ]]; then
+    if [[ $key == ctrl-c || $key == $'\x03' ]]; then
       [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
       if (( $+functions[_dnav_abort] )); then
         _dnav_abort
@@ -955,19 +760,12 @@ _dfile_enter() {
 
     if [[ $mode == jump ]]; then
       case $key in
-        $'\e')
-          if read -t 0.05 -k 1 key2 2>/dev/null; then
-            [[ $key2 == '[' ]] && read -k 1 key3
-          else
-            if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
-              continue
-            fi
-            mode=browse
-            jump_buf=""
-            _dfile_draw
-          fi
+        esc)
+          mode=browse
+          jump_buf=""
+          _dfile_draw
           ;;
-        $'\n'|$'\r')
+        enter)
           if _djump_available 2>/dev/null; then
             local dest
             dest="$(_djump_resolve "$jump_buf" 2>/dev/null)" || dest=""
@@ -986,7 +784,7 @@ _dfile_enter() {
             fi
           fi
           ;;
-        $'\177'|$'\b')
+        backspace)
           (( ${#jump_buf} > 0 )) && jump_buf="${jump_buf[1,-2]}"
           _dfile_draw
           ;;
@@ -999,34 +797,19 @@ _dfile_enter() {
     fi
 
     case $key in
-      $'\e')
-        if read -t 0.05 -k 1 key2 2>/dev/null; then
-          if [[ $key2 == '[' ]]; then
-            read -k 1 key3
-            case $key3 in
-              A) [[ $cwd != / ]] && _dfile_go "${cwd:h}" ;;
-              B) _dfile_enter_sel_dir ;;
-              C) _dfile_move_h 1 ;;
-              D) _dfile_move_h -1 ;;
-            esac
-          fi
-        else
-          if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
-            continue
-          fi
-          # Esc cancels: restore the directory we opened in, do not keep drills.
-          [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
-          _dfile_erase
-          _DFILE_OPEN=0
-          return 1
-        fi
+      esc)
+        [[ -n $origin && -d $origin ]] && cd -- "$origin" 2>/dev/null || true
+        _dfile_erase
+        _DFILE_OPEN=0
+        return 1
         ;;
-      h) _dfile_move_h -1 ;;
-      l) _dfile_move_h 1 ;;
+      up) [[ $cwd != / ]] && _dfile_go "${cwd:h}" ;;
+      down) _dfile_enter_sel_dir ;;
+      left|h) _dfile_move_h -1 ;;
+      right|l) _dfile_move_h 1 ;;
       k) [[ $cwd != / ]] && _dfile_go "${cwd:h}" ;;
-      j) _dfile_enter_sel_dir ;;  # drill down inside explorer
-      f|F|$'\t')
-        # Toggle focus: directories ↔ files (parent strip is not a focus target)
+      j) _dfile_enter_sel_dir ;;
+      f|F|tab)
         _dfile_toggle_focus
         ;;
       .)
@@ -1052,9 +835,7 @@ _dfile_enter() {
         fi
         ;;
       s|/)
-        # s or / — fuzzy search (same as main dnav)
         if _dsearch_available 2>/dev/null; then
-          # Leave a clean screen region for search overlay
           _dfile_erase
           body=0
           local spath
@@ -1065,20 +846,17 @@ _dfile_enter() {
               _dfile_refresh
             fi
           fi
-          # Ctrl+C during search: full abort already restored the shell tty
           (( ${DNAV_ABORT:-0} )) && { _DFILE_OPEN=0; return 130; }
           body=0
           _dfile_draw
         fi
         ;;
-      $'\n'|$'\r')
+      enter)
         if [[ $focus == files ]]; then
-          # Open file: location bar, then editor
           if _dfile_open_file; then
             return 0
           fi
         else
-          # Leave explorer at selected folder + location bar
           if _dfile_exit_sel_dir; then
             return 0
           fi

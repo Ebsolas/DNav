@@ -1102,21 +1102,27 @@ _dsearch_start() {
   _dsearch_draw "$_dsearch_q"
 
   while true; do
-    # Abort already tore down UI + tty (via _dnav_abort); just leave search
     (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; return 130; }
     if [[ -n $_DSEARCH_PUSHBACK ]]; then
-      key="$_DSEARCH_PUSHBACK"
+      local pb="$_DSEARCH_PUSHBACK"
       _DSEARCH_PUSHBACK=""
+      case $pb in
+        $'\e') key=esc ;;
+        $'\n'|$'\r') key=enter ;;
+        $'\x0e') key=ctrl-n ;;
+        $'\x10') key=ctrl-p ;;
+        $'\x01') key=ctrl-a ;;
+        $'\x05') key=ctrl-e ;;
+        *) key="$pb" ;;
+      esac
+    elif (( $+functions[_dnav_read_token] )); then
+      _dnav_read_token || true
+      key="$REPLY"
     else
-      if (( $+functions[_dnav_read_key] )); then
-        _dnav_read_key || true
-        key="$REPLY"
-      else
-        read -k 1 key || true
-      fi
+      read -k 1 key || true
     fi
     (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; return 130; }
-    if [[ $key == $'\x03' ]]; then
+    if [[ $key == ctrl-c || $key == $'\x03' ]]; then
       _DSEARCH_OPEN=0
       if (( $+functions[_dnav_abort] )); then
         _dnav_abort
@@ -1130,81 +1136,55 @@ _dsearch_start() {
     fi
 
     case $key in
-      $'\e')  # Esc or arrows
-        if read -t 0.05 -k 1 key2 2>/dev/null; then
-          if [[ $key2 == '[' ]]; then
-            read -k 1 key3
-            case $key3 in
-              A) _dsearch_sel_up ;;
-              B) _dsearch_sel_down ;;
-              C)  # Right: move caret, or Help when already at end
-                if [[ ${_dsearch_view:-search} == search ]]; then
-                  if [[ ${_dsearch_focus:-list} == help ]]; then
-                    :
-                  elif (( _dsearch_cur < ${#_dsearch_q} )); then
-                    (( _dsearch_cur++ ))
-                    _dsearch_draw "$_dsearch_q"
-                  else
-                    _dsearch_focus_help
-                  fi
-                fi
-                ;;
-              D)  # Left: leave Help, else move caret
-                if [[ ${_dsearch_view:-search} == search && ${_dsearch_focus:-list} == help ]]; then
-                  _dsearch_focus_list
-                elif [[ ${_dsearch_view:-search} == search ]]; then
-                  if (( _dsearch_cur > 0 )); then
-                    (( _dsearch_cur-- ))
-                    _dsearch_draw "$_dsearch_q"
-                  fi
-                fi
-                ;;
-              H)  # Home
-                _dsearch_cur=0
-                _dsearch_draw "$_dsearch_q"
-                ;;
-              F)  # End
-                _dsearch_cur=${#_dsearch_q}
-                _dsearch_draw "$_dsearch_q"
-                ;;
-              3)  # Delete = ESC [ 3 ~
-                read -k 1 key2 2>/dev/null || true
-                if [[ $key2 == '~' ]] && [[ ${_dsearch_view:-search} != help ]]; then
-                  _dsearch_delete && _dsearch_refresh_query
-                fi
-                ;;
-              1|4|7|8)  # Home/End CSI ~
-                read -k 1 key2 2>/dev/null || true
-                if [[ $key2 == '~' ]]; then
-                  if [[ $key3 == 1 || $key3 == 7 ]]; then
-                    _dsearch_cur=0
-                  else
-                    _dsearch_cur=${#_dsearch_q}
-                  fi
-                  _dsearch_draw "$_dsearch_q"
-                fi
-                ;;
-            esac
-          fi
-        else
-          if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
-            continue
-          fi
-          # Plain Esc
-          if [[ ${_dsearch_view:-search} == help ]]; then
-            # Return to search (keep query + results)
-            _dsearch_close_help
+      up) _dsearch_sel_up ;;
+      down) _dsearch_sel_down ;;
+      right)
+        if [[ ${_dsearch_view:-search} == search ]]; then
+          if [[ ${_dsearch_focus:-list} == help ]]; then
+            :
+          elif (( _dsearch_cur < ${#_dsearch_q} )); then
+            (( _dsearch_cur++ ))
+            _dsearch_draw "$_dsearch_q"
           else
-            _dsearch_erase_ui
-            _dsearch_session_cleanup
-            printf "\e[?25l"
-            return 1
+            _dsearch_focus_help
           fi
         fi
         ;;
-      $'\n'|$'\r')
+      left)
+        if [[ ${_dsearch_view:-search} == search && ${_dsearch_focus:-list} == help ]]; then
+          _dsearch_focus_list
+        elif [[ ${_dsearch_view:-search} == search ]]; then
+          if (( _dsearch_cur > 0 )); then
+            (( _dsearch_cur-- ))
+            _dsearch_draw "$_dsearch_q"
+          fi
+        fi
+        ;;
+      home|ctrl-a)
+        _dsearch_cur=0
+        _dsearch_draw "$_dsearch_q"
+        ;;
+      end|ctrl-e)
+        _dsearch_cur=${#_dsearch_q}
+        _dsearch_draw "$_dsearch_q"
+        ;;
+      delete)
+        if [[ ${_dsearch_view:-search} != help ]]; then
+          _dsearch_delete && _dsearch_refresh_query
+        fi
+        ;;
+      esc)
         if [[ ${_dsearch_view:-search} == help ]]; then
-          # Enter in help overlay does nothing (Esc closes)
+          _dsearch_close_help
+        else
+          _dsearch_erase_ui
+          _dsearch_session_cleanup
+          printf "\e[?25l"
+          return 1
+        fi
+        ;;
+      enter)
+        if [[ ${_dsearch_view:-search} == help ]]; then
           continue
         fi
         if [[ ${_dsearch_focus:-list} == help ]]; then
@@ -1219,7 +1199,6 @@ _dsearch_start() {
         _dsearch_session_cleanup
         printf "\e[?25l"
         if [[ -d $target ]]; then
-          # In-dfile: report path and cd; do not tear down dnav or ls
           if (( _DSEARCH_FOR_DFILE )); then
             cd -- "$target" 2>/dev/null || true
             DNAV_SEARCH_RESULT="${target:a}"
@@ -1230,13 +1209,13 @@ _dsearch_start() {
             (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
             return 0
           }
-          if (( $+functions[_dnav_success_bar] )); then
-            _dnav_success_bar "${target:A}" "" dnav
+          if (( $+functions[_dnav_finish] )); then
+            _dnav_finish "${target:A}" dnav
           else
-            printf "%s\n" "${target:A}"
+            print -r -- "${target:A}"
+            (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
+            (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls dnav
           fi
-          (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
-          (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls dnav
           return 0
         else
           if (( _DSEARCH_FOR_DFILE )); then
@@ -1247,7 +1226,7 @@ _dsearch_start() {
           return 0
         fi
         ;;
-      $'\177'|$'\b')
+      backspace)
         if [[ ${_dsearch_view:-search} == help ]]; then
           continue
         fi
@@ -1255,7 +1234,7 @@ _dsearch_start() {
           _dsearch_refresh_query
         fi
         ;;
-      $'\x15')
+      ctrl-u)
         if [[ ${_dsearch_view:-search} == help ]]; then
           continue
         fi
@@ -1267,22 +1246,9 @@ _dsearch_start() {
         _dsearch_focus=list
         _dsearch_draw "$_dsearch_q"
         ;;
-      $'\x01')  # Ctrl+A — start of query
-        _dsearch_cur=0
-        _dsearch_draw "$_dsearch_q"
-        ;;
-      $'\x05')  # Ctrl+E — end of query
-        _dsearch_cur=${#_dsearch_q}
-        _dsearch_draw "$_dsearch_q"
-        ;;
-      $'\x10')  # Ctrl+P — previous match
-        _dsearch_sel_up
-        ;;
-      $'\x0e')  # Ctrl+N — next match
-        _dsearch_sel_down
-        ;;
+      ctrl-p) _dsearch_sel_up ;;
+      ctrl-n) _dsearch_sel_down ;;
       [[:print:]])
-        # Typing returns to search/list and appends to query
         if [[ ${_dsearch_view:-search} == help ]]; then
           _dsearch_view=search
         fi
