@@ -15,7 +15,7 @@ test_dfile_available() {
 
 test_dfile_functions_exist() {
   local f
-  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact; do
+  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact _dfile_draw _dfile_erase _dfile_refresh _dfile_session_reset _dfile_cancel_restore; do
     assert_fn "$f"
   done
 }
@@ -89,19 +89,23 @@ test_dfile_status_compact_threshold() {
 
 test_dfile_cycle_sort() {
   DNAV_CFG_DFILE_SORT_DIRS=alpha
-  _dfile_cycle_dir_sort
-  assert_eq "$DNAV_CFG_DFILE_SORT_DIRS" "hidden_first" "dir alpha → hidden_first"
-  _dfile_cycle_dir_sort
-  assert_eq "$DNAV_CFG_DFILE_SORT_DIRS" "alpha" "dir hidden_first → alpha"
   DNAV_CFG_DFILE_SORT_FILES=alpha
+  _DFILE_SORT_DIRS=alpha
+  _DFILE_SORT_FILES=alpha
+  _dfile_cycle_dir_sort
+  assert_eq "$_DFILE_SORT_DIRS" "hidden_first" "dir alpha → hidden_first"
+  _dfile_cycle_dir_sort
+  assert_eq "$_DFILE_SORT_DIRS" "alpha" "dir hidden_first → alpha"
+  assert_eq "$DNAV_CFG_DFILE_SORT_DIRS" "alpha" "dir cycle does not write config"
   _dfile_cycle_file_sort
-  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "ext" "file alpha → ext"
+  assert_eq "$_DFILE_SORT_FILES" "ext" "file alpha → ext"
   _dfile_cycle_file_sort
-  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "dot_first" "file ext → dot_first"
+  assert_eq "$_DFILE_SORT_FILES" "dot_first" "file ext → dot_first"
   _dfile_cycle_file_sort
-  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "dot_ext" "file dot_first → dot_ext"
+  assert_eq "$_DFILE_SORT_FILES" "dot_ext" "file dot_first → dot_ext"
   _dfile_cycle_file_sort
-  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "alpha" "file dot_ext → alpha"
+  assert_eq "$_DFILE_SORT_FILES" "alpha" "file dot_ext → alpha"
+  assert_eq "$DNAV_CFG_DFILE_SORT_FILES" "alpha" "file cycle does not write config"
 }
 
 test_dfile_dir_locked_home() {

@@ -31,6 +31,16 @@ test_winch_helpers_exist() {
   assert_fn _dnav_autowrap_on
   assert_fn _dnav_resize_chip_label
   assert_fn _dnav_tui_below
+  assert_fn _dnav_cleanup
+  assert_fn _dnav_abort
+  assert_fn _dnav_draw
+  assert_fn _dnav_draw_about
+  assert_fn _dnav_session_reset
+  assert_fn _dnav_aborted
+  assert_fn _dfile_draw
+  assert_fn _dfile_erase
+  assert_fn _dfile_refresh
+  assert_fn _dfile_session_reset
   _dnav_sync_term_size
   _dnav_test_pass "sync_term_size callable"
 }
@@ -42,10 +52,37 @@ test_resize_waits_for_steady_stty() {
 test_resize_chip_label_main() {
   _DSEARCH_OPEN=0
   _DFILE_OPEN=0
-  mode=main
+  _DNAV_MODE=main
   DNAV_CFG_BRAND=DNav
   assert_eq "$(_dnav_resize_chip_label)" " DNav " "main chip"
   assert_eq "$(_dnav_tui_below)" "0" "main has no extra rows"
+}
+
+test_resize_chip_label_about() {
+  _DSEARCH_OPEN=0
+  _DFILE_OPEN=0
+  _DNAV_MODE=about
+  _DNAV_HELP_EXTRA=5
+  assert_eq "$(_dnav_resize_chip_label)" " DNav About:" "about chip"
+  assert_eq "$(_dnav_tui_below)" "5" "about extra rows"
+  _DNAV_MODE=main
+  _DNAV_HELP_EXTRA=0
+}
+
+test_abort_flag_helper() {
+  DNAV_ABORT=0
+  if _dnav_aborted; then
+    _dnav_test_fail "aborted is false when DNAV_ABORT=0"
+  else
+    _dnav_test_pass "aborted is false when DNAV_ABORT=0"
+  fi
+  DNAV_ABORT=1
+  if _dnav_aborted; then
+    _dnav_test_pass "aborted is true when DNAV_ABORT=1"
+  else
+    _dnav_test_fail "aborted is true when DNAV_ABORT=1"
+  fi
+  DNAV_ABORT=0
 }
 
 test_resize_chip_label_search() {
