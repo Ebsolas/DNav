@@ -129,6 +129,36 @@ test_apply_filter_and_tokens_any_order() {
   fi
 }
 
+test_apply_filter_and_partial_tokens() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "dnav con" 10
+  assert_gt "$#_dsearch_matches" 0 "partial con matches config"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/dnav* || $joined == *dnav-demo/config* ]]; then
+    _dnav_test_pass "dnav con hits a config+dnav path"
+  else
+    _dnav_test_fail "dnav con missed partial config: $joined"
+  fi
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "dn cfg" 10
+  assert_gt "$#_dsearch_matches" 0 "fuzzy partials dn+cfg"
+  joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *config* && $joined == *dnav* ]]; then
+    _dnav_test_pass "dn cfg still AND-matches"
+  else
+    _dnav_test_fail "dn cfg missed: $joined"
+  fi
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "dnav" 50
+  _dsearch_apply_filter "dnav " 50
+  assert_gt "$#_dsearch_matches" 0 "trailing space does not wipe hits"
+  _dsearch_apply_filter "dnav c" 50
+  assert_gt "$#_dsearch_matches" 0 "second word can grow from a space"
+}
+
 test_apply_filter_empty_query() {
   _dsearch_matches=(/tmp/leftover)
   _dsearch_apply_filter "" 10
@@ -290,6 +320,7 @@ run_test test_apply_filter_prefix1
 run_test test_apply_filter_fuzzy_doc
 run_test test_apply_filter_proj
 run_test test_apply_filter_and_tokens_any_order
+run_test test_apply_filter_and_partial_tokens
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 run_test test_incremental_narrowing
