@@ -461,59 +461,125 @@ _dsearch_place_cursor() {
 
 # ── awk filter (hot path) ─────────────────────────────────────────────────
 # Args: query, mode (prefix1|fuzzy), maxn, src_file, survivors_out
-# Prints top maxn paths (one per line) to stdout.
-# Writes ALL matching paths to survivors_out.
+# Prints top maxn paths (one per line) to stdout, after a confidence trim.
+# Writes ALL matching paths to survivors_out (untrimmed, for incremental).
 _dsearch_awk_filter() {
   local query="$1" mode="$2" maxn="$3" src="$4" survivors="$5"
+  local fullidx
+  fullidx="$(_dsearch_index_path)"
 
-  awk -v query="$query" -v mode="$mode" -v maxn="$maxn" -v surv="$survivors" '
+  awk -v query="$query" -v mode="$mode" -v maxn="$maxn" -v surv="$survivors" \
+      -v fullidx="$fullidx" -v srcname="$src" '
+  function better(sc, path, osc, opath) {
+    if (sc > osc) return 1
+    if (sc < osc) return 0
+    return (length(path) < length(opath))
+  }
   function consider(sc, path,   i) {
-    # top-N insert (desc)
-    if (maxn > 0) {
-      if (tn == maxn && sc <= tsc[tn]) {
-        # still a survivor overall; just skip top list
-      } else {
-        if (tn < maxn) tn++
-        i = tn
-        while (i > 1 && sc > tsc[i-1]) {
-          tsc[i] = tsc[i-1]
-          tpath[i] = tpath[i-1]
-          i--
-        }
-        tsc[i] = sc
-        tpath[i] = path
-      }
+    if (pool <= 0) return
+    if (tn == pool && !better(sc, path, tsc[tn], tpath[tn])) return
+    if (tn < pool) tn++
+    i = tn
+    while (i > 1 && better(sc, path, tsc[i-1], tpath[i-1])) {
+      tsc[i] = tsc[i-1]
+      tpath[i] = tpath[i-1]
+      i--
     }
+    tsc[i] = sc
+    tpath[i] = path
   }
 
-  function fuzzy_score(path, q,   lp, qlen, plen, score, run, last, pi, qi, ch, pc, prev, found) {
-    lp = tolower(path)
-    q = tolower(q)
-    qlen = length(q)
-    plen = length(lp)
-    if (qlen == 0) return -1
-    score = 0; run = 0; last = -2; pi = 1
-    for (qi = 1; qi <= qlen; qi++) {
-      ch = substr(q, qi, 1)
-      found = 0
-      for (; pi <= plen; pi++) {
-        pc = substr(lp, pi, 1)
-        if (pc == ch) {
-          found = 1
-          if (pi == last + 1) { run++; score += 8 + run }
-          else { run = 0; score += 2 }
-          prev = (pi == 1) ? "" : substr(lp, pi - 1, 1)
-          if (pi == 1 || prev == "/") score += 12
-          if (prev == "-" || prev == "_" || prev == ".") score += 4
-          last = pi
-          pi++
-          break
-        }
-      }
-      if (!found) return -1
+  function norm(s) {
+    if (substr(s, 1, 1) == ".") s = substr(s, 2)
+    return s
+  }
+  function stem_s(s) {
+    if (length(s) > 3 && substr(s, length(s), 1) == "s" && substr(s, length(s) - 1, 1) != "s")
+      return substr(s, 1, length(s) - 1)
+    return s
+  }
+  function load_syn(line,   n, i, a) {
+    n = split(line, a, / /)
+    gid++
+    for (i = 1; i <= n; i++) {
+      if (a[i] != "") syn_gid[a[i]] = gid
     }
-    score += 40 - (plen < 40 ? plen : 40)
-    return score
+  }
+  function same_syn(a, b) {
+    return (a != b && a in syn_gid && b in syn_gid && syn_gid[a] == syn_gid[b])
+  }
+  function syn_of(a, b) {
+    return same_syn(a, b) || same_syn(a, stem_s(b)) || same_syn(stem_s(a), b) || same_syn(stem_s(a), stem_s(b))
+  }
+  function is_transpose(a, b,   n, i) {
+    if (length(a) != length(b)) return 0
+    n = length(a)
+    for (i = 1; i < n; i++) {
+      if (substr(a, i, 1) != substr(b, i, 1))
+        return (substr(a, i, 1) == substr(b, i + 1, 1) && substr(a, i + 1, 1) == substr(b, i, 1) && substr(a, i + 2) == substr(b, i + 2))
+    }
+    return 0
+  }
+  function first_two_swap(a, b) {
+    return (length(a) == length(b) && length(a) >= 2 && substr(a, 1, 1) == substr(b, 2, 1) && substr(a, 2, 1) == substr(b, 1, 1) && substr(a, 3) == substr(b, 3))
+  }
+  function edit_dist(a, b, maxd,   n, m, i, j, tmp, prev, cur, cost, del, ins, repl, ai, rowmin, v) {
+    n = length(a)
+    m = length(b)
+    if (n > m) { tmp = a; a = b; b = tmp; n = length(a); m = length(b) }
+    if (m - n > maxd) return -1
+    for (j = 0; j <= m; j++) v[j] = j
+    for (i = 1; i <= n; i++) {
+      prev = v[0]
+      v[0] = i
+      rowmin = i
+      ai = substr(a, i, 1)
+      for (j = 1; j <= m; j++) {
+        cur = v[j]
+        cost = (ai == substr(b, j, 1)) ? 0 : 1
+        del = v[j] + 1
+        ins = v[j - 1] + 1
+        repl = prev + cost
+        v[j] = del
+        if (ins < v[j]) v[j] = ins
+        if (repl < v[j]) v[j] = repl
+        prev = cur
+        if (v[j] < rowmin) rowmin = v[j]
+      }
+      if (rowmin > maxd) return -1
+    }
+    if (v[m] > maxd) return -1
+    return v[m]
+  }
+
+  # Score tok against one path component. 100 = last-component exact.
+  function token_hit(tok, seg, islast,   t, s, idx, extra, d, maxd) {
+    t = norm(tolower(tok))
+    s = norm(tolower(seg))
+    if (t == "" || s == "") return -1
+    if (t == s) return islast ? 100 : 86
+    if (t != s && stem_s(t) == stem_s(s)) return islast ? 92 : 80
+    if (length(t) == 1) {
+      if (substr(s, 1, 1) == t) return islast ? 48 : 36
+      return -1
+    }
+    idx = index(s, t)
+    if (idx == 1) {
+      extra = length(s) - length(t)
+      if (extra < 0) extra = 0
+      if (extra > 8) extra = 8
+      return (islast ? 88 : 74) - 2 * extra
+    }
+    if (idx > 1) return islast ? 68 : 58
+    if (syn_of(t, s)) return islast ? 60 : 50
+    if (length(t) >= 4) {
+      if (is_transpose(t, s) || first_two_swap(t, s)) return islast ? 78 : 66
+      maxd = (length(t) < 6) ? 1 : 2
+      d = edit_dist(t, s, maxd)
+      if (d == 1) return islast ? 78 : 66
+      if (d == 2) return islast ? 62 : 52
+    }
+    return -1
   }
 
   # Component-prefix: any path segment starts with the (single) query char
@@ -527,11 +593,9 @@ _dsearch_awk_filter() {
       if (seg[i] == "") continue
       if (substr(seg[i], 1, 1) == ch) {
         sc = 50
-        # Prefer shorter segment / shorter full path
         sc += 20 - (length(seg[i]) < 20 ? length(seg[i]) : 20)
         plen = length(lp)
         sc += 30 - (plen < 30 ? plen : 30)
-        # Prefer last component match
         if (i == n) sc += 15
         if (sc > best) best = sc
       }
@@ -539,46 +603,101 @@ _dsearch_awk_filter() {
     return best
   }
 
-  # Whitespace splits AND tokens (any order). Each token must appear as a
-  # contiguous substring (case-insensitive), so "con" hits config and
-  # "cmus" does not hit chromium. Trailing spaces are ignored.
-  function query_score(path, q,   n, i, tok, sc, total, nt, one, lp) {
+  # Whitespace splits AND tokens (any order). Each token is scored against
+  # path components (not letter-skipped across the whole path). Trailing
+  # spaces are ignored. Return value is 0-100 confidence, or -1.
+  function query_score(path, q,   n, i, j, tok, nt, nseg, segs, hit, best, total) {
     n = split(q, tok, /[ \t]+/)
     nt = 0
-    one = ""
     for (i = 1; i <= n; i++) {
-      if (tok[i] == "") continue
-      nt++
-      if (nt == 1) one = tok[i]
+      if (tok[i] != "") nt++
     }
     if (nt == 0) return -1
-    lp = tolower(path)
-    if (nt == 1) {
-      if (index(lp, tolower(one)) == 0) return -1
-      return fuzzy_score(path, one)
-    }
+    nseg = split(path, segs, "/")
     total = 0
     for (i = 1; i <= n; i++) {
       if (tok[i] == "") continue
-      if (index(lp, tolower(tok[i])) == 0) return -1
-      sc = fuzzy_score(path, tok[i])
-      if (sc > 0) total += sc
+      best = -1
+      for (j = 1; j <= nseg; j++) {
+        if (segs[j] == "") continue
+        hit = token_hit(tok[i], segs[j], (j == nseg))
+        if (hit > best) best = hit
+      }
+      if (best < 0) return -1
+      total += best
     }
-    return total
+    return int(total / nt)
   }
 
-  BEGIN { tn = 0 }
-  {
-    path = $0
-    if (path == "") next
+  function ingest(path,   sc) {
+    if (path == "" || path in seen) return
     if (mode == "prefix1") sc = prefix1_score(path, query)
     else sc = query_score(path, query)
-    if (sc < 0) next
+    if (sc < 0) return
+    seen[path] = 1
     print path >> surv
     consider(sc, path)
   }
+
+  function is_under(child, parent) {
+    return (length(child) > length(parent) && index(child, parent "/") == 1)
+  }
+
+  BEGIN {
+    gid = 0
+    load_syn("config conf configs cfg settings prefs preferences")
+    load_syn("clock time timer clocks times calendar schedule")
+    load_syn("document documents docs")
+    load_syn("download downloads")
+    load_syn("project projects proj")
+    load_syn("picture pictures pics photo photos images")
+    load_syn("music audio songs")
+    load_syn("video videos movies films")
+    load_syn("template templates")
+    load_syn("temp temporary tmp")
+    load_syn("trash recycle")
+    load_syn("backup backups bak")
+    load_syn("cache caches")
+    load_syn("app apps application applications")
+    load_syn("plugin plugins")
+    load_syn("theme themes")
+    load_syn("log logs")
+    load_syn("screenshot screenshots")
+    n = split(query, qt, /[ \t]+/)
+    for (i = 1; i <= n; i++) {
+      t = norm(tolower(qt[i]))
+      if (t != "" && (t in syn_gid || stem_s(t) in syn_gid)) need_syn = 1
+    }
+    tn = 0
+    pool = (maxn > 0) ? maxn : 0
+    if (pool > 0 && pool < 40) pool = 40
+  }
+  { ingest($0) }
   END {
-    for (i = 1; i <= tn; i++) print tpath[i]
+    if (maxn > 0 && mode != "prefix1" && need_syn && fullidx != "" && fullidx != srcname) {
+      while ((getline path < fullidx) > 0) ingest(path)
+      close(fullidx)
+    }
+    if (maxn <= 0 || tn == 0) exit
+    best = tsc[1]
+    if (best >= 90) floor = 72
+    else if (best >= 70) floor = best - 10
+    else floor = 0
+    an = 0
+    for (i = 1; i <= tn; i++) {
+      if (tsc[i] < floor) continue
+      drop = 0
+      if (best >= 70 && mode != "prefix1") {
+        for (j = 1; j <= an; j++) {
+          if (is_under(tpath[i], apath[j])) { drop = 1; break }
+        }
+      }
+      if (drop) continue
+      an++
+      apath[an] = tpath[i]
+      if (an >= maxn) break
+    }
+    for (i = 1; i <= an; i++) print apath[i]
   }
   ' "$src"
 }
@@ -617,7 +736,7 @@ _dsearch_apply_filter() {
     mode="fuzzy"
     (( qlen == 1 )) && mode="prefix1"
     top=("${(@f)$(_dsearch_awk_filter "$query" "$mode" "$maxn" "$src" "$survivors")}")
-    _dsearch_matches=("${top[@]}")
+    _dsearch_take_top "${top[@]}"
     _dsearch_cand_stack[$qlen]="$survivors"
     _dsearch_prev_query="$query"
     _dsearch_pin_jumps "$query" "$maxn"
@@ -651,7 +770,7 @@ _dsearch_apply_filter() {
       fi
       _dsearch_cand_stack[$i]="$survivors"
     done
-    _dsearch_matches=("${top[@]}")
+    _dsearch_take_top "${top[@]}"
     _dsearch_prev_query="$query"
     _dsearch_pin_jumps "$query" "$maxn"
     return 0
@@ -662,10 +781,20 @@ _dsearch_apply_filter() {
   fi
 
   top=("${(@f)$(_dsearch_awk_filter "$query" "$mode" "$maxn" "$src" "$survivors")}")
-  _dsearch_matches=("${top[@]}")
+  _dsearch_take_top "${top[@]}"
   _dsearch_cand_stack[$qlen]="$survivors"
   _dsearch_prev_query="$query"
   _dsearch_pin_jumps "$query" "$maxn"
+}
+
+# Drop the empty element zsh leaves when awk prints nothing.
+_dsearch_take_top() {
+  emulate -L zsh
+  local p
+  _dsearch_matches=()
+  for p in "$@"; do
+    [[ -n $p ]] && _dsearch_matches+=("$p")
+  done
 }
 
 # 0 if $1 contains every whitespace-separated token from $2 as a
@@ -789,7 +918,7 @@ typeset -g _dsearch_view=search
 
 # Help body lines (shown under the bar when Help is opened)
 _dsearch_help_lines() {
-  print -r -- "Type to search. Spaces require every word as a substring (any order)."
+  print -r -- "Type to search. Spaces require every word (any order); typos and related names rank lower."
   print -r -- "↑, ↓, Ctrl+N, Ctrl+P        move selection"
   print -r -- "Enter                       open the selected folder"
   print -r -- "←, →                        move the caret; → at the end focuses Help"

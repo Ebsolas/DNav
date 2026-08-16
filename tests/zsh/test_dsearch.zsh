@@ -142,12 +142,11 @@ test_apply_filter_and_partial_tokens() {
   fi
   _dsearch_prev_query=""
   _dsearch_cand_stack=()
-  _dsearch_apply_filter "dn cfg" 10
-  joined="${(j:\n:)_dsearch_matches}"
-  if [[ $joined == *config* && $joined == *dnav* ]]; then
-    _dnav_test_fail "dn cfg letter-skipped into config/dnav: $joined"
+  _dsearch_apply_filter "dnav qzzz" 10
+  if (( $#_dsearch_matches == 0 )); then
+    _dnav_test_pass "nonsense AND token has no hits"
   else
-    _dnav_test_pass "dn cfg is not a substring AND"
+    _dnav_test_fail "dnav qzzz should miss: ${(j:\n:)_dsearch_matches}"
   fi
   _dsearch_prev_query=""
   _dsearch_cand_stack=()
@@ -191,6 +190,66 @@ test_apply_filter_and_complete_strings() {
     _dnav_test_pass "single-word cmus still hits ~/.config/cmus"
   else
     _dnav_test_fail "single-word cmus missed: $joined"
+  fi
+}
+
+test_apply_filter_typos_plurals_related() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "confgi" 10
+  assert_gt "$#_dsearch_matches" 0 "typo confgi has hits"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config* || $joined == */config ]]; then
+    _dnav_test_pass "confgi ranks a config path"
+  else
+    _dnav_test_fail "confgi missed config: $joined"
+  fi
+  if [[ $joined == *chromium* ]]; then
+    _dnav_test_fail "confgi leaked chromium: $joined"
+  else
+    _dnav_test_pass "confgi does not match chromium"
+  fi
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "configs" 10
+  joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config* || $joined == */config ]]; then
+    _dnav_test_pass "plural configs hits config"
+  else
+    _dnav_test_fail "configs missed config: $joined"
+  fi
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "time" 10
+  joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *clock* ]]; then
+    _dnav_test_pass "time finds related clock"
+  else
+    _dnav_test_fail "time missed clock: $joined"
+  fi
+}
+
+test_apply_filter_confidence_trim() {
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_apply_filter "cmus" 10
+  assert_gt "$#_dsearch_matches" 0 "cmus has hits"
+  local first="${_dsearch_matches[1]}"
+  if [[ $first == *.config/cmus && $first != *.config/cmus/* ]]; then
+    _dnav_test_pass "exact cmus folder is first"
+  else
+    _dnav_test_fail "expected ~/.config/cmus first, got $first"
+  fi
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *playlists* ]]; then
+    _dnav_test_fail "high-confidence cmus still listed child playlists: $joined"
+  else
+    _dnav_test_pass "child of exact cmus is collapsed"
+  fi
+  if [[ $joined == *chromium* ]]; then
+    _dnav_test_fail "cmus listed chromium: $joined"
+  else
+    _dnav_test_pass "low-confidence chromium stays out"
   fi
 }
 
@@ -357,6 +416,8 @@ run_test test_apply_filter_proj
 run_test test_apply_filter_and_tokens_any_order
 run_test test_apply_filter_and_partial_tokens
 run_test test_apply_filter_and_complete_strings
+run_test test_apply_filter_typos_plurals_related
+run_test test_apply_filter_confidence_trim
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 run_test test_incremental_narrowing
