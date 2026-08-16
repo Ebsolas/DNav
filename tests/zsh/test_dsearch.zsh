@@ -203,6 +203,20 @@ test_index_cancel_refuses_pid_1() {
   assert_eq "$_DSEARCH_INDEX_PID" "0" "pid 1 not kept"
 }
 
+test_find_dirs_exists_dead_hooks_gone() {
+  assert_fn _dsearch_find_dirs
+  if (( $+functions[_dsearch_in_dfile] )); then
+    _dnav_test_fail "_dsearch_in_dfile should be gone"
+  else
+    _dnav_test_pass "no _dsearch_in_dfile stub"
+  fi
+  if (( $+functions[_dsearch_find_prune] )); then
+    _dnav_test_fail "_dsearch_find_prune should be gone (use _dsearch_find_dirs)"
+  else
+    _dnav_test_pass "no unused prune printer"
+  fi
+}
+
 run_test test_constrained_env_busybox_on_path
 run_test test_constrained_env_light_flag
 run_test test_collect_roots_space_in_home
@@ -220,4 +234,5 @@ run_test test_incremental_narrowing
 run_test test_awk_filter_direct
 run_test test_display_path_tilde
 run_test test_pin_jumps_prefers_jump
+run_test test_find_dirs_exists_dead_hooks_gone
 dnav_test_finish

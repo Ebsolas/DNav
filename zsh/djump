@@ -60,9 +60,9 @@ _djump_store_path() {
   elif [[ $p == '~/'* ]]; then
     store="${p/#\~/$HOME}"
   elif [[ $p == /* ]]; then
-    store="${p:A}"
+    store="${p:a}"
   else
-    store="$(cd -- "$PWD" && cd -- "$p" 2>/dev/null && pwd -P)" || store="${PWD:A}/$p"
+    store="$(cd -- "$PWD" && cd -- "$p" 2>/dev/null && pwd)" || store="${PWD:a}/$p"
   fi
   if [[ $store == "$HOME" ]]; then
     store="~"
@@ -327,7 +327,7 @@ _djump_goto() {
     print -u2 -- "djump: could not cd to $dest"
     return 1
   }
-  dest="${dest:A}"
+  dest="${dest:a}"
   if (( $+functions[_dnav_success_bar] )); then
     _dnav_success_bar "$dest" "" djump
   elif [[ -o interactive ]]; then

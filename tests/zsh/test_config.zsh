@@ -278,6 +278,17 @@ EOF
   assert_eq "$DNAV_CFG_DFILE_JUMP_NAME_MAX" "20" "rejects 0, keeps default"
 }
 
+test_seed_does_not_clobber_existing() {
+  local txt
+  print -r -- "brand = KeepMe" > "$DNAV_TEST_CONFIG/config"
+  print -r -- "Home  ~" > "$DNAV_TEST_CONFIG/folders"
+  _dnav_config_seed "$DNAV_TEST_CONFIG"
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_eq "$txt" "brand = KeepMe" "seed leaves existing config"
+  txt="$(<"$DNAV_TEST_CONFIG/folders")"
+  assert_eq "$txt" "Home  ~" "seed leaves existing folders"
+}
+
 run_test test_truthy
 run_test test_expand_path_tilde
 run_test test_color_num
@@ -297,4 +308,5 @@ run_test test_config_brand_with_hash
 run_test test_folders_hash_in_path
 run_test test_config_load_under_extended_glob
 run_test test_dfile_jump_name_max_config
+run_test test_seed_does_not_clobber_existing
 dnav_test_finish

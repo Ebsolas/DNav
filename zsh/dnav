@@ -147,6 +147,14 @@ _dnav_expand_path() {
   print -r -- "$p"
 }
 
+# Logical absolute path (no symlink resolve). Display + pin identity.
+# Use :A / pwd -P only after cd when the physical location matters.
+_dnav_logical_path() {
+  local p="$1"
+  [[ -z $p || $p == - ]] && { print -r -- ""; return 0 }
+  print -r -- "${p:a}"
+}
+
 # Write default user config files (first run).
 _dnav_config_seed() {
   local dir="$1"
@@ -357,31 +365,8 @@ _dnav_folders_save() {
 
 # Persist jumps file from current map (shared with djump add|edit|remove).
 _dnav_jumps_save() {
-  if (( $+functions[_djump_save] )); then
-    _djump_save
-    return $?
-  fi
-  local f="${DNAV_CONFIG_DIR:-$(_dnav_config_dir)}/jumps"
-  local k dest store
-  {
-    print -r -- "# djump table — key becomes dKEY (home → dhome)"
-    print -r -- "# Format:  key   path"
-    print -r -- "#"
-    for k in "${_DJUMP_KEYS[@]}"; do
-      dest="${_DJUMP_MAP[$k]}"
-      store="$dest"
-      if [[ $store == "$HOME" ]]; then
-        store="~"
-      elif [[ $store == "$HOME/"* ]]; then
-        store="~${store#$HOME}"
-      fi
-      print -r -- "$k  $store"
-    done
-  } > "$f"
-  if (( $+functions[_djump_load] )); then
-    _DJUMP_LOADED=0
-    _djump_load 2>/dev/null || true
-  fi
+  (( $+functions[_djump_save] )) || return 1
+  _djump_save
 }
 
 # Current config keys + built-in defaults. One "key value" per line.
@@ -557,12 +542,8 @@ _dnav_config_load() {
   DNAV_FOLDER_NAMES=()
   DNAV_FOLDER_PATHS=()
 
-  if [[ ! -d $DNAV_CONFIG_DIR ]]; then
-    _dnav_config_seed "$DNAV_CONFIG_DIR"
-  else
-    # Ensure missing pieces exist without clobbering user edits
-    _dnav_config_seed "$DNAV_CONFIG_DIR"
-  fi
+  # Creates only files that are missing; never overwrites user edits.
+  _dnav_config_seed "$DNAV_CONFIG_DIR"
 
   _dnav_config_load_kv "$DNAV_CONFIG_DIR/config"
   _dnav_apply_colors
@@ -675,7 +656,7 @@ _dnav_update() {
       ;;
   esac
 
-  local repo dest bash_dest added
+  local repo dest bash_dest added copied=0
   repo="$(_dnav_update_repo)" || {
     print -u2 -- "dnav: cannot find the DNav repo (expected zsh/dnav)."
     print -u2 -- "  Clone it, or:  DNAV_UPDATE_FROM=/path/to/DNav dnav --update"
@@ -703,13 +684,18 @@ _dnav_update() {
       }
       print -r -- "dnav: bash  →  $bash_dest"
     fi
-    source "$dest/dnav"
+    copied=1
   else
     print -r -- "dnav: already running from $repo/zsh"
   fi
 
   added="$(_dnav_config_merge_defaults)"
-  _dnav_config_load
+  # source dnav already runs _dnav_config_load; only load again when we did not.
+  if (( copied )); then
+    source "$dest/dnav"
+  else
+    _dnav_config_load
+  fi
   if [[ $added == <-> && added -gt 0 ]]; then
     print -r -- "dnav: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
   else
@@ -825,19 +811,8 @@ _dnav_paint_strip() {
   (( win > 0 )) && more_l=1
   (( n > 0 && win + $#_dnav_vis < n )) && more_r=1
 
-  (( more_l )) && ind_l=2
-  (( more_r )) && ind_r=2
-  if (( ind_l + ind_r > 0 )); then
-    content_w=$(( maxw - ind_l - ind_r ))
-    (( content_w < 1 )) && content_w=1
-    _dnav_window "$aname" "$sel" "$win" "$content_w" "$lockname" "$sticky"
-    win=$reply[1]
-    more_l=0
-    more_r=0
-    (( win > 0 )) && more_l=1
-    (( n > 0 && win + $#_dnav_vis < n )) && more_r=1
-    ind_l=0
-    ind_r=0
+  # Second pass only when < > markers steal columns. Do not window a third time.
+  if (( more_l || more_r )); then
     (( more_l )) && ind_l=2
     (( more_r )) && ind_r=2
     content_w=$(( maxw - ind_l - ind_r ))
@@ -967,13 +942,11 @@ _dnav_maybe_ls() {
 }
 
 _dnav_term_cols() {
-  local r c
-  if read -r r c <<< "$(stty size 2>/dev/null)"; then
-    if [[ $c == <-> ]] && (( c >= 8 )); then
-      print -rn -- "$c"
-      return 0
-    fi
+  if [[ ${COLUMNS:-0} == <-> ]] && (( COLUMNS >= 8 )); then
+    print -rn -- "$COLUMNS"
+    return 0
   fi
+  _dnav_sync_term_size
   if [[ ${COLUMNS:-0} == <-> ]] && (( COLUMNS >= 8 )); then
     print -rn -- "$COLUMNS"
     return 0
@@ -1090,9 +1063,9 @@ _dnav_session_reset() {
   fi
   _DNAV_NAMES+=(About)
   _DNAV_PATHS+=("")
-  current="${PWD:A}"
+  current="$(_dnav_logical_path "$PWD")"
   for (( i=1; i <= $#_DNAV_PATHS; i++ )); do
-    if [[ -n ${_DNAV_PATHS[i]} && "${_DNAV_PATHS[i]:A}" == "$current" ]]; then
+    if [[ -n ${_DNAV_PATHS[i]} && "$(_dnav_logical_path "${_DNAV_PATHS[i]}")" == "$current" ]]; then
       _DNAV_SEL=$((i - 1))
       break
     fi
@@ -1167,7 +1140,10 @@ _dnav_maybe_resize() {
   local c l
   (( ${DNAV_ABORT:-0} )) && return 1
   (( _DNAV_INLINE_EDIT )) && return 1
-  _dnav_sync_term_size
+  # Idle polls read the cache. stty only on WINCH, first sample, or resize mode.
+  if (( _DNAV_RESIZE_MODE || _DNAV_WINCH || _DNAV_LAST_COLS == 0 )); then
+    _dnav_sync_term_size
+  fi
   c=${COLUMNS:-0}
   l=${LINES:-0}
   if (( _DNAV_LAST_COLS == 0 )); then
@@ -2353,9 +2329,9 @@ dnav() {
   _dnav_load_module dsearch
   (( $+functions[_dsearch_index_start_bg] )) && _dsearch_index_start_bg
 
+  _dnav_sync_term_size
   _dnav_compute_positions
   _dnav_draw
-  _dnav_sync_term_size
   _dnav_mark_size
 
   while true; do
@@ -2429,7 +2405,7 @@ dnav() {
             _dnav_cleanup
             return 1
           }
-          _dnav_success_from_sel "${target:A}"
+          _dnav_success_from_sel "$(_dnav_logical_path "$target")"
           _dnav_cleanup
           _dnav_maybe_ls dnav
           return 0

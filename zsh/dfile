@@ -268,7 +268,7 @@ _dfile_session_reset() {
   if [[ -n $start && -d $start ]]; then
     cd -- "$start" 2>/dev/null || true
   fi
-  _DFILE_ORIGIN="${PWD:A}"
+  _DFILE_ORIGIN="${PWD:a}"
 }
 
 _dfile_cancel_restore() {
@@ -278,7 +278,7 @@ _dfile_cancel_restore() {
 
 _dfile_refresh() {
   local out rc
-  _DFILE_CWD="${PWD:A}"
+  _DFILE_CWD="${PWD:a}"
   _DFILE_PARENT="${_DFILE_CWD:h}"
   [[ -z $_DFILE_PARENT ]] && _DFILE_PARENT="/"
   _DFILE_PERM_DENIED=""
@@ -628,9 +628,9 @@ _dfile_exit_to() {
     return 0
   fi
   if (( $+functions[_dnav_finish] )); then
-    _dnav_finish "${dest:A}" dnav
+    _dnav_finish "${dest:a}" dnav
   else
-    print -r -- "${dest:A}"
+    print -r -- "${dest:a}"
     printf "\e[?25h"
   fi
   return 0
@@ -661,9 +661,9 @@ _dfile_open_file() {
   _dfile_erase
   _DFILE_OPEN=0
   if (( $+functions[_dnav_finish] )); then
-    _dnav_finish "${fpath:A}" dnav
+    _dnav_finish "${fpath:a}" dnav
   else
-    print -r -- "${fpath:A}"
+    print -r -- "${fpath:a}"
     printf "\e[?25h"
   fi
   if [[ -n ${EDITOR:-} ]]; then

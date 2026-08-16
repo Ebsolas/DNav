@@ -31,6 +31,7 @@ test_winch_helpers_exist() {
   assert_fn _dnav_autowrap_on
   assert_fn _dnav_resize_chip_label
   assert_fn _dnav_tui_below
+  assert_fn _dnav_logical_path
   assert_fn _dnav_cleanup
   assert_fn _dnav_abort
   assert_fn _dnav_draw
@@ -100,6 +101,25 @@ test_usable_from_spares_two() {
   assert_eq "$(_dnav_usable_from 8)" "8" "floor 8"
 }
 
+test_term_cols_reads_columns_cache() {
+  local save="${COLUMNS:-}"
+  COLUMNS=64
+  assert_eq "$(_dnav_term_cols)" "64" "term_cols uses COLUMNS"
+  assert_eq "$(_dnav_usable_cols)" "62" "usable_cols from cache (spare 2)"
+  COLUMNS=100
+  assert_eq "$(_dnav_term_cols)" "100" "cache update is visible"
+  if [[ -n $save ]]; then
+    COLUMNS=$save
+  else
+    unset COLUMNS
+  fi
+}
+
+test_logical_path_no_symlink_resolve() {
+  assert_eq "$(_dnav_logical_path "$HOME/Documents")" "${HOME:a}/Documents" "logical abs"
+  assert_eq "$(_dnav_logical_path "")" "" "empty stays empty"
+}
+
 test_public_commands_defined() {
   assert_fn dnav
   assert_fn dhelp
@@ -166,8 +186,12 @@ run_test test_modules_available
 run_test test_winch_helpers_exist
 run_test test_resize_waits_for_steady_stty
 run_test test_resize_chip_label_main
+run_test test_resize_chip_label_about
+run_test test_abort_flag_helper
 run_test test_resize_chip_label_search
 run_test test_usable_from_spares_two
+run_test test_term_cols_reads_columns_cache
+run_test test_logical_path_no_symlink_resolve
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated
