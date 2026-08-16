@@ -16,7 +16,8 @@
 #   _djump_goto KEY        → cd to jump (for shell cmds)
 #   _djump_cmd_clash KEY   → 0 if dKEY is taken (REPLY = why)
 #   djump [-r|-l|-c|add|edit|remove|KEY]
-#   dhelp                      same as djump -l (jump list only)
+#   dhelp                      jump list only (not usage)
+#   djump -h / --help          usage
 #
 # When sourced, each jump key is also installed as `dKEY` (home → dhome)
 # unless that name is reserved or already taken on the system.
@@ -478,10 +479,23 @@ _djump_print_list() {
   done
 }
 
-# Jump list only (plain text, pipe-friendly). Warnings go to stderr.
+# Jump list only (plain text, pipe-friendly). Not usage. Warnings go to stderr.
 dhelp() {
   _djump_print_list || return 1
   _djump_warn_stolen
+}
+
+_djump_print_help() {
+  print -r -- "usage: djump [-r|-l|-c|add|edit|remove|KEY]"
+  print -r -- "  (no args), -l, --list   list jumps as dKEY and path"
+  print -r -- "  dhelp                   same list (not this usage text)"
+  print -r -- "  KEY                     cd to that jump (also: dKEY, e.g. dhome)"
+  print -r -- "  add LABEL [PATH]        add a jump (default path: \$PWD)"
+  print -r -- "  edit LABEL [PATH]       change a jump path (default: \$PWD)"
+  print -r -- "  remove LABEL            remove a jump and its dLABEL command"
+  print -r -- "  -r, --reload            reload the jumps file and dKEY commands"
+  print -r -- "  -c, --check             report shadowed or stolen dKEY names"
+  print -r -- "  -h, --help              this help"
 }
 
 # Warn about dKEY names that exist but are no longer our function (alias, etc.).
@@ -558,7 +572,7 @@ djump() {
       print -u2 -- "djump: failed to load $(_djump_data_path)"
       return 1
       ;;
-    -l|--list|list|help|'')
+    -l|--list|list|'')
       _djump_print_list || return 1
       _djump_warn_stolen
       return 0
@@ -568,14 +582,7 @@ djump() {
       return $?
       ;;
     -h|--help)
-      print -r -- "usage: djump [-r|-l|-c|add|edit|remove|help|KEY]"
-      print -r -- "  -r, --reload         reload jumps file and dKEY commands"
-      print -r -- "  -l, --list           list dKEY → path (also: dhelp)"
-      print -r -- "  -c, --check          report shadowed / stolen dKEY names"
-      print -r -- "  add LABEL [PATH]     add jump (default path: \$PWD)"
-      print -r -- "  edit LABEL [PATH]    set path (default: \$PWD)"
-      print -r -- "  remove LABEL         remove jump + dLABEL command"
-      print -r -- "  KEY                  cd to jump (also: dKEY e.g. dhome)"
+      _djump_print_help
       return 0
       ;;
     add)

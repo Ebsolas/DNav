@@ -184,6 +184,11 @@ test_dhelp_lists_jumps_only() {
   local got
   got="$(dhelp)"
   assert_contains "$got" "dhome" "dhelp lists dhome"
+  if [[ $got == *"usage: djump"* || $got == *"add LABEL"* ]]; then
+    _dnav_test_fail "dhelp should not print djump usage"
+  else
+    _dnav_test_pass "dhelp is not djump usage"
+  fi
   if [[ $got == *"open the folder navigator"* || $got == *"dnav --update"* ]]; then
     _dnav_test_fail "dhelp should not be the general command list"
   else
@@ -193,6 +198,21 @@ test_dhelp_lists_jumps_only() {
     _dnav_test_fail "dhelp should be plain text"
   else
     _dnav_test_pass "dhelp is pipe-friendly"
+  fi
+}
+
+test_djump_help_is_usage() {
+  local got
+  got="$(djump --help)"
+  assert_contains "$got" "usage: djump" "djump --help is usage"
+  assert_contains "$got" "add LABEL" "covers add"
+  assert_contains "$got" "edit LABEL" "covers edit"
+  assert_contains "$got" "remove LABEL" "covers remove"
+  assert_contains "$got" "dhelp" "mentions dhelp for the list"
+  if [[ $got == *$'\e'* ]]; then
+    _dnav_test_fail "djump --help should be plain text"
+  else
+    _dnav_test_pass "djump --help is pipe-friendly"
   fi
 }
 
@@ -290,6 +310,7 @@ run_test test_resolve_dir_climbs_missing
 run_test test_status_slot_set_and_expire
 run_test test_dnav_help_lists_entry_points
 run_test test_dhelp_lists_jumps_only
+run_test test_djump_help_is_usage
 run_test test_disp_w_and_fit
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
