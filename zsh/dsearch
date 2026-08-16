@@ -8,8 +8,7 @@
 #
 # Strategy: load-once path list, incremental filter-out, awk scorer (not pure zsh).
 # Index: ${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx  (dirs only, rebuilt after 24h)
-# Scope: user-facing trees (homes, media mounts, apps/share); prunes noisy dirs.
-# Override roots with DNAV_SEARCH_ROOTS or config search_roots.
+# Scope: $HOME by default. Extra trees via DNAV_SEARCH_ROOTS or config search_roots.
 
 _dsearch_available() { return 0 }
 
@@ -124,45 +123,8 @@ _dsearch_collect_roots() {
     return 0
   fi
 
-  # Light mode (iSH): home only — full tree walks are too heavy
-  if _dsearch_constrained_env; then
-    _dsearch_add_root "$HOME"
-    print -l -- "${roots[@]}"
-    return 0
-  fi
-
+  # Default: $HOME only. Add more with DNAV_SEARCH_ROOTS or search_roots=.
   _dsearch_add_root "$HOME"
-  for r in /home/*(N/); do
-    _dsearch_add_root "$r"
-  done
-
-  for r in /media/*(N/) /mnt/*(N/) /run/media/*/*(N/); do
-    _dsearch_add_root "$r"
-  done
-
-  for r in \
-    /opt \
-    /usr/local \
-    /usr/share \
-    /srv \
-    /var/www \
-    /var/lib/flatpak/app \
-    /Applications \
-    /System/Applications
-  do
-    _dsearch_add_root "$r"
-  done
-
-  if command -v findmnt >/dev/null 2>&1; then
-    for m in "${(@f)$(findmnt -n -o TARGET -t notmpfs,noproc,nosysfs,nodevtmpfs,nocgroup,nocgroup2,nofuse.portal 2>/dev/null)}"; do
-      _dsearch_skip_root "$m" && continue
-      case $m in
-        /) continue ;;
-        *) _dsearch_add_root "$m" ;;
-      esac
-    done
-  fi
-
   print -l -- "${roots[@]}"
 }
 
@@ -741,15 +703,30 @@ _dsearch_display_path() {
   if [[ $p == $home || $p == $home/* ]]; then
     p="~${p#$home}"
   fi
-  if (( maxw > 0 && ${#p} > maxw )); then
-    p="…${p:$(( ${#p} - maxw + 1 ))}"
+  if (( maxw > 0 )); then
+    if (( $+functions[_dnav_fit_end] )); then
+      p="$(_dnav_fit_end "$p" $maxw)"
+    elif (( ${#p} > maxw )); then
+      p="…${p:$(( ${#p} - maxw + 1 ))}"
+    fi
   fi
   print -r -- "$p"
 }
 
-# Truncate/pad a string to exactly w columns (byte length; fine for paths).
+# Truncate/pad a string to exactly w display columns.
 _dsearch_fit() {
-  local s="$1" w="$2"
+  local s="$1" w="$2" pad
+  if (( $+functions[_dnav_fit_end] )); then
+    s="$(_dnav_fit_end "$s" $w)"
+    if (( $+functions[_dnav_disp_w] )); then
+      pad=$(( w - $(_dnav_disp_w "$s") ))
+    else
+      pad=$(( w - ${#s} ))
+    fi
+    (( pad < 0 )) && pad=0
+    printf "%s%*s" "$s" $pad ""
+    return
+  fi
   if (( ${#s} > w )); then
     if (( w <= 1 )); then
       s="${s[1,w]}"

@@ -62,8 +62,12 @@ _dfile_jump_name() {
   max="${2:-${DNAV_CFG_DFILE_JUMP_NAME_MAX:-20}}"
   [[ $max == <-> ]] || max=20
   (( max < 1 )) && max=1
-  if (( ${#name} > max )); then
-    name="${name[1,max]}"
+  emulate -L zsh
+  setopt localoptions multibyte
+  if (( ${(m)#name} > max )); then
+    while (( ${(m)#name} > max && ${#name} > 0 )); do
+      name="${name[1,-2]}"
+    done
   fi
   print -rn -- "$name"
 }
@@ -155,15 +159,15 @@ _dfile_list() {
 
   if [[ $kind == dirs ]]; then
     if (( show_hidden )); then
-      raw=("$dir"/*(/) "$dir"/.*(/))
+      raw=("$dir"/*(-/) "$dir"/.*(-/))
     else
-      raw=("$dir"/*(/))
+      raw=("$dir"/*(-/))
     fi
   else
     if (( show_hidden )); then
-      raw=("$dir"/*(.) "$dir"/.*(.))
+      raw=("$dir"/*(-.) "$dir"/.*(-.))
     else
-      raw=("$dir"/*(.))
+      raw=("$dir"/*(-.))
     fi
   fi
 

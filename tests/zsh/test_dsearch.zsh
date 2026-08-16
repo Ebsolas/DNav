@@ -196,6 +196,34 @@ test_collect_roots_space_in_home() {
   fi
 }
 
+test_collect_roots_default_is_home() {
+  local oldhome="$HOME"
+  local -a roots
+  unset DNAV_SEARCH_ROOTS DNAV_SEARCH_LIGHT
+  HOME="$DNAV_TEST_HOME"
+  roots=("${(@f)$(_dsearch_collect_roots)}")
+  HOME="$oldhome"
+  if (( $#roots == 1 )) && [[ ${roots[1]:a} == "${DNAV_TEST_HOME:a}" ]]; then
+    _dnav_test_pass "default root is HOME only"
+  else
+    _dnav_test_fail "default roots($#roots)=${roots[*]}"
+  fi
+}
+
+test_collect_roots_env_override() {
+  local extra="$DNAV_TEST_TMP/extra-root"
+  local -a roots
+  mkdir -p -- "$extra"
+  DNAV_SEARCH_ROOTS="$HOME $extra"
+  roots=("${(@f)$(_dsearch_collect_roots)}")
+  unset DNAV_SEARCH_ROOTS
+  if (( $#roots == 2 )); then
+    _dnav_test_pass "SEARCH_ROOTS adds a second root"
+  else
+    _dnav_test_fail "override roots($#roots)=${roots[*]}"
+  fi
+}
+
 test_index_cancel_refuses_pid_1() {
   _DSEARCH_INDEX_PID=1
   _DSEARCH_INDEX_HAS_SID=1
@@ -220,6 +248,8 @@ test_find_dirs_exists_dead_hooks_gone() {
 run_test test_constrained_env_busybox_on_path
 run_test test_constrained_env_light_flag
 run_test test_collect_roots_space_in_home
+run_test test_collect_roots_default_is_home
+run_test test_collect_roots_env_override
 run_test test_index_cancel_refuses_pid_1
 run_test test_index_path
 run_test test_index_not_stale_when_fresh

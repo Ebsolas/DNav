@@ -117,6 +117,20 @@ test_dfile_dir_locked_home() {
   fi
 }
 
+test_dfile_list_symlink_to_file() {
+  local dir="$DNAV_TEST_TMP/dfilelinks" out
+  mkdir -p -- "$dir/sub"
+  print -r -- hi > "$dir/real.txt"
+  ln -s -- real.txt "$dir/link.txt"
+  ln -s -- sub "$dir/linkdir"
+  out="$(_dfile_list "$dir" files 0 2>/dev/null)" || true
+  assert_contains "$out" "link.txt" "lists symlink-to-file"
+  assert_contains "$out" "real.txt" "lists regular file"
+  out="$(_dfile_list "$dir" dirs 0 2>/dev/null)" || true
+  assert_contains "$out" "sub" "lists real dir"
+  assert_contains "$out" "linkdir" "lists symlink-to-dir"
+}
+
 test_dfile_list_home() {
   # API: _dfile_list DIR kind(dirs|files) show_hidden(0|1)
   local out
@@ -141,4 +155,5 @@ run_test test_dfile_status_compact_threshold
 run_test test_dfile_cycle_sort
 run_test test_dfile_dir_locked_home
 run_test test_dfile_list_home
+run_test test_dfile_list_symlink_to_file
 dnav_test_finish

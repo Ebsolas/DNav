@@ -7,17 +7,6 @@
 # key     path
 home      ~
 bk        ..
-etc       /etc
 con       ~/.config
 doc       ~/Documents
 down      ~/Downloads
-game      ~/Games
-music     ~/Music
-pub       ~/Public
-pic       ~/Pictures
-proj      ~/Projects
-vid       ~/Videos
-app       /usr/share/applications
-eb        ~/Eb_Transfer
-apps      ~/Apps
-share     ~/.local/share

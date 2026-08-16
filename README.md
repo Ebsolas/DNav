@@ -116,6 +116,8 @@ After editing: `dconfig -r` (or About → Settings).
 
 `ls_after = 1` in `config` runs `ls -a` after a successful jump/select.
 
+Search indexes `$HOME` unless you set `search_roots` (or `DNAV_SEARCH_ROOTS`) to a space-separated list. First-run `folders` / `jumps` are generic (`Home` `Docs` `Down` `Config`); existing user files are never overwritten.
+
 ## Requirements
 
 - **zsh** (primary), **bash 4+**, or **PowerShell 5.1+ / pwsh 7+**

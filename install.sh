@@ -189,7 +189,7 @@ success_anim_ms = 25
 # 1 = full line redraw every move; 0 = partial chip repaint
 full_redraw = 0
 
-# dsearch roots (space-separated). Empty = built-in defaults
+# dsearch roots (space-separated). Empty = $HOME only.
 # search_roots = $HOME /opt /mnt
 EOF
 }
@@ -231,11 +231,7 @@ write_default_folders() {
 Home        ~
 Docs        ~/Documents
 Down        ~/Downloads
-EbSync      ~/Eb_Transfer
-Projects    ~/Projects
 Config      ~/.config
-Apps        ~/Apps
-Share       ~/.local/share
 EOF
 }
 
@@ -268,8 +264,6 @@ bk        ..
 con       ~/.config
 doc       ~/Documents
 down      ~/Downloads
-proj      ~/Projects
-share     ~/.local/share
 EOF
     fi
     info "wrote $CONFIG_DIR/jumps"

@@ -202,7 +202,7 @@ success_anim_ms = 25
 # 1 = full line redraw every move (more compatible); 0 = partial chip repaint
 full_redraw = 0
 
-# dsearch roots (space-separated). Empty = built-in defaults ($HOME + …)
+# dsearch roots (space-separated). Empty = $HOME only.
 # search_roots = $HOME /opt /mnt
 EOF
   fi
@@ -217,11 +217,7 @@ EOF
 Home        ~
 Docs        ~/Documents
 Down        ~/Downloads
-EbSync      ~/Eb_Transfer
-Projects    ~/Projects
 Config      ~/.config
-Apps        ~/Apps
-Share       ~/.local/share
 EOF
   fi
 
@@ -238,12 +234,9 @@ EOF
 # key     path
 home      ~
 bk        ..
-etc       /etc
 con       ~/.config
 doc       ~/Documents
 down      ~/Downloads
-proj      ~/Projects
-share     ~/.local/share
 EOF
     fi
   fi
@@ -708,12 +701,24 @@ _dnav_config_load
 typeset -ga _dnav_vis
 typeset -ga _dfile_vis
 
+# Screen columns of $1 (CJK/emoji occupy 2). ${#s} is characters, not cells.
+_dnav_disp_w() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local s="$1"
+  print -rn -- ${(m)#s}
+}
+
 _dnav_cell_w() {
+  emulate -L zsh
+  setopt localoptions multibyte
   local label="$1" locked="${2:-0}"
+  local n=${(m)#label}
   if (( locked )); then
-    print -rn -- $(( ${#label} + 5 ))
+    local lock='🔒'
+    print -rn -- $(( n + ${(m)#lock} + 4 ))
   else
-    print -rn -- $(( ${#label} + 3 ))
+    print -rn -- $(( n + 3 ))
   fi
 }
 
@@ -838,17 +843,13 @@ _dnav_paint_strip() {
     if (( cell_w > remain )); then
       if (( used == 0 && remain > 0 )); then
         local pad=3
-        (( locked )) && pad=5
+        (( locked )) && pad="$(_dnav_cell_w "" 1)"
         local room=$(( remain - pad ))
         (( room < 1 )) && room=1
-        if (( ${#label} > room )); then
-          if (( room >= 2 )); then
-            label="${label[1,room-1]}…"
-          else
-            label="${label[1,room]}"
-          fi
+        if (( $(_dnav_disp_w "$label") > room )); then
+          label="$(_dnav_fit_start "$label" $room)"
         fi
-        cell_w=$(( ${#label} + pad ))
+        cell_w="$(_dnav_cell_w "$label" $locked)"
         (( cell_w > remain )) && cell_w=$remain
       else
         more_r=1
@@ -1049,16 +1050,12 @@ _dnav_session_reset() {
     _DNAV_NAMES=("${DNAV_FOLDER_NAMES[@]}")
     _DNAV_PATHS=("${DNAV_FOLDER_PATHS[@]}")
   else
-    _DNAV_NAMES=(Home Docs Down EbSync Projects Config Apps Share)
+    _DNAV_NAMES=(Home Docs Down Config)
     _DNAV_PATHS=(
       "$HOME"
       "${XDG_DOCUMENTS_DIR:-$HOME/Documents}"
       "${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
-      "${XDG_EBTRANSFER_DIR:-$HOME/Eb_Transfer}"
-      "${XDG_PROJECTS_DIR:-$HOME/Projects}"
       "${XDG_CONFIG_HOME:-$HOME/.config}"
-      "${XDG_APPS_DIR:-$HOME/Apps}"
-      "${XDG_DATA_HOME:-$HOME/.local/share}"
     )
   fi
   _DNAV_NAMES+=(About)
@@ -1296,11 +1293,14 @@ _dnav_handle_winch() {
   _DNAV_RESIZING=0
 }
 
-# Fit string to width, keep the end (most specific path tail).
-_dnav_fit_end() {
-  local s="$1" w="$2"
+# Fit string to display width, keep the start (chips, About rows).
+_dnav_fit_start() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local s="$1" w="$2" acc="" ch
+  integer i
   (( w < 1 )) && { print -rn -- ""; return }
-  if (( ${#s} <= w )); then
+  if (( ${(m)#s} <= w )); then
     print -r -- "$s"
     return
   fi
@@ -1308,7 +1308,35 @@ _dnav_fit_end() {
     print -r -- "…"
     return
   fi
-  print -r -- "…${s: -$((w - 1))}"
+  for (( i=1; i <= ${#s}; i++ )); do
+    ch="${s[i]}"
+    if (( ${(m)#acc} + ${(m)#ch} + 1 > w )); then
+      break
+    fi
+    acc+="$ch"
+  done
+  print -r -- "${acc}…"
+}
+
+# Fit string to display width, keep the end (most specific path tail).
+_dnav_fit_end() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local s="$1" w="$2" rest
+  (( w < 1 )) && { print -rn -- ""; return }
+  if (( ${(m)#s} <= w )); then
+    print -r -- "$s"
+    return
+  fi
+  if (( w == 1 )); then
+    print -r -- "…"
+    return
+  fi
+  rest="$s"
+  while (( ${(m)#rest} > w - 1 && ${#rest} > 0 )); do
+    rest="${rest[2,-1]}"
+  done
+  print -r -- "…${rest}"
 }
 
 # Set a key=value in ~/.config/dnav/config (preserves other lines / comments).
@@ -1473,7 +1501,11 @@ _dnav_abort() {
 }
 
 # Brand width: " Brand " + trailing space
-_dnav_brand_w() { print -rn -- $(( ${#_DNAV_BRAND} + 3 )); }
+_dnav_brand_w() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  print -rn -- $(( ${(m)#_DNAV_BRAND} + 3 ))
+}
 
 # Keep _DNAV_SEL chip in the horizontal window; sets _DNAV_BAR_WIN.
 _dnav_ensure_bar_visible() {
@@ -1500,7 +1532,7 @@ _dnav_compute_positions() {
   # rough more_r probe
   used=0
   for (( i=_DNAV_BAR_WIN; i < n; i++ )); do
-    cell_w=$(( ${#_DNAV_NAMES[i+1]} + 3 ))
+    cell_w="$(_dnav_cell_w "${_DNAV_NAMES[i+1]}")"
     if (( used > 0 && used + cell_w > avail )); then
       more_r=1
       break
@@ -1515,7 +1547,7 @@ _dnav_compute_positions() {
   used=0
   for (( i=_DNAV_BAR_WIN; i < n; i++ )); do
     label="${_DNAV_NAMES[i+1]}"
-    cell_w=$(( ${#label} + 3 ))
+    cell_w="$(_dnav_cell_w "$label")"
     if (( used > 0 && used + cell_w > content_w )); then
       break
     fi
@@ -1784,26 +1816,36 @@ _dnav_inline_edit() {
   }
 }
 
-# Word/hard wrap text to width; prints one physical row per line (no terminal wrap).
+# Word/hard wrap text to display width; prints one physical row per line.
 _dnav_wrap_lines() {
+  emulate -L zsh
+  setopt localoptions multibyte
   local width="$1"
   shift
-  local text chunk cut rest w
+  local text rest acc ch cut
+  integer i
   (( width < 8 )) && width=8
   for text in "$@"; do
     rest="$text"
-    while (( ${#rest} > width )); do
-      chunk="${rest[1,width]}"
-      if [[ $chunk == *' '* && ${#chunk} -eq width ]]; then
-        cut="${chunk% *}"
-        if (( ${#cut} > 0 && ${#cut} < width )); then
+    while (( ${(m)#rest} > width )); do
+      acc=""
+      for (( i=1; i <= ${#rest}; i++ )); do
+        ch="${rest[i]}"
+        if (( ${(m)#acc} + ${(m)#ch} > width )); then
+          break
+        fi
+        acc+="$ch"
+      done
+      if [[ $acc == *' '* ]]; then
+        cut="${acc% *}"
+        if (( ${#cut} > 0 && ${(m)#cut} < width )); then
           print -r -- "$cut"
           rest="${rest[$(( ${#cut} + 2 )),-1]}"
           continue
         fi
       fi
-      print -r -- "$chunk"
-      rest="${rest[$(( width + 1 )),-1]}"
+      print -r -- "$acc"
+      rest="${rest[$(( ${#acc} + 1 )),-1]}"
     done
     print -r -- "$rest"
   done
@@ -1811,13 +1853,14 @@ _dnav_wrap_lines() {
 
 # Paint exactly one terminal row of width maxw (truncate/pad; never soft-wrap).
 _dnav_paint_row() {
+  emulate -L zsh
+  setopt localoptions multibyte
   local style="$1" text="$2" maxw="$3"
   local pad
-  # Take first maxw-1 chars after leading space convention
-  if (( ${#text} > maxw )); then
-    text="${text[1,maxw-1]}…"
+  if (( ${(m)#text} > maxw )); then
+    text="$(_dnav_fit_start "$text" $maxw)"
   fi
-  pad=$(( maxw - ${#text} ))
+  pad=$(( maxw - ${(m)#text} ))
   (( pad < 0 )) && pad=0
   case $style in
     hl)  printf "${DNAV_HIGHLIGHT}%s%*s${DNAV_RESET}" "$text" $pad "" ;;

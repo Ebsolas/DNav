@@ -32,6 +32,9 @@ test_winch_helpers_exist() {
   assert_fn _dnav_resize_chip_label
   assert_fn _dnav_tui_below
   assert_fn _dnav_logical_path
+  assert_fn _dnav_disp_w
+  assert_fn _dnav_fit_start
+  assert_fn _dnav_fit_end
   assert_fn _dnav_cleanup
   assert_fn _dnav_abort
   assert_fn _dnav_draw
@@ -120,6 +123,24 @@ test_logical_path_no_symlink_resolve() {
   assert_eq "$(_dnav_logical_path "")" "" "empty stays empty"
 }
 
+test_disp_w_and_fit() {
+  assert_eq "$(_dnav_disp_w "ab")" "2" "ascii width"
+  assert_eq "$(_dnav_cell_w "ab")" "5" "unlocked cell is label+3"
+  assert_eq "$(_dnav_fit_end "abcdefghij" 5)" "…ghij" "fit_end keeps tail"
+  assert_eq "$(_dnav_fit_start "abcdefghij" 5)" "abcd…" "fit_start keeps head"
+  local w
+  w="$(_dnav_disp_w "中")"
+  if (( w == 2 )); then
+    _dnav_test_pass "CJK ideograph is 2 columns"
+    assert_eq "$(_dnav_cell_w "中")" "5" "CJK unlocked cell 2+3"
+    assert_eq "$(_dnav_fit_end "中中中" 3)" "…中" "fit_end by display cols"
+  elif (( w == 1 )); then
+    _dnav_test_pass "CJK width is 1 on this locale"
+  else
+    _dnav_test_fail "unexpected CJK width $w"
+  fi
+}
+
 test_public_commands_defined() {
   assert_fn dnav
   assert_fn dhelp
@@ -192,6 +213,7 @@ run_test test_resize_chip_label_search
 run_test test_usable_from_spares_two
 run_test test_term_cols_reads_columns_cache
 run_test test_logical_path_no_symlink_resolve
+run_test test_disp_w_and_fit
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated

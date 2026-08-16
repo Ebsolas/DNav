@@ -278,6 +278,28 @@ EOF
   assert_eq "$DNAV_CFG_DFILE_JUMP_NAME_MAX" "20" "rejects 0, keeps default"
 }
 
+test_seed_folders_are_generic() {
+  local dir="$DNAV_TEST_TMP/freshseed" txt
+  mkdir -p -- "$dir"
+  _dnav_config_seed "$dir"
+  txt="$(<"$dir/folders")"
+  assert_contains "$txt" "Home" "seeds Home"
+  assert_contains "$txt" "Docs" "seeds Docs"
+  assert_contains "$txt" "Down" "seeds Down"
+  assert_contains "$txt" "Config" "seeds Config"
+  if [[ $txt == *EbSync* || $txt == *Eb_Transfer* ]]; then
+    _dnav_test_fail "seed folders should not include EbSync"
+  else
+    _dnav_test_pass "no personal EbSync row"
+  fi
+  txt="$(<"$dir/jumps")"
+  if [[ $txt == *Eb_Transfer* || $txt == *$'\neb '* ]]; then
+    _dnav_test_fail "seed jumps should not include eb"
+  else
+    _dnav_test_pass "no personal eb jump"
+  fi
+}
+
 test_seed_does_not_clobber_existing() {
   local txt
   print -r -- "brand = KeepMe" > "$DNAV_TEST_CONFIG/config"
@@ -308,5 +330,6 @@ run_test test_config_brand_with_hash
 run_test test_folders_hash_in_path
 run_test test_config_load_under_extended_glob
 run_test test_dfile_jump_name_max_config
+run_test test_seed_folders_are_generic
 run_test test_seed_does_not_clobber_existing
 dnav_test_finish
