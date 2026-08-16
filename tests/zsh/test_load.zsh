@@ -162,6 +162,13 @@ test_resolve_dir_climbs_missing() {
   assert_eq "${REPLY:a}" "${PWD:a}" "empty uses PWD"
 }
 
+test_status_label_is_top_layer() {
+  _dnav_status_set error "Permission Denied: /root"
+  assert_eq "$(_dnav_status_label)" "-- Permission Denied: /root " "prefix -- for readability"
+  _dnav_status_clear
+  assert_eq "$(_dnav_status_label)" "" "empty when cleared"
+}
+
 test_status_slot_set_and_expire() {
   DNAV_CFG_STATUS_TIMEOUT_MS=40
   _dnav_status_set error "Invalid Path"
@@ -329,6 +336,7 @@ run_test test_term_cols_reads_columns_cache
 run_test test_logical_path_no_symlink_resolve
 run_test test_resolve_dir_climbs_missing
 run_test test_status_slot_set_and_expire
+run_test test_status_label_is_top_layer
 run_test test_dnav_help_lists_entry_points
 run_test test_dhelp_lists_jumps_only
 run_test test_djump_help_is_usage

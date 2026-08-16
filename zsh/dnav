@@ -1150,25 +1150,30 @@ _dnav_status_style() {
   esac
 }
 
-# Paint the status text on the right of the current row. $1 = line width,
-# $2 = columns already taken by left decorations (never shrink those).
+# Visible label for the status slot (leading -- separates it from dashes/text).
+_dnav_status_label() {
+  [[ -n ${_DNAV_STATUS_TEXT:-} ]] || { print -r -- ""; return }
+  print -r -- "-- ${_DNAV_STATUS_TEXT} "
+}
+
+# Paint the status text as a top layer on the current row. $1 = line width.
+# Overwrites whatever is on the right, including decorations, so the
+# temporary message stays readable. $2 is ignored (old reserved-left hint).
 _dnav_status_paint_right() {
   emulate -L zsh
   setopt localoptions multibyte
-  local w="$1" left_w="${2:-0}"
-  local msg mw room col
+  local w="$1"
+  local msg mw col
   [[ -n ${_DNAV_STATUS_TEXT:-} ]] || return 0
   [[ $w == <-> ]] || return 0
-  msg=" ${_DNAV_STATUS_TEXT} "
+  msg="$(_dnav_status_label)"
   mw="$(_dnav_disp_w "$msg")"
-  room=$(( w - left_w ))
-  (( room < 1 )) && return 0
-  if (( mw > room )); then
-    msg="$(_dnav_fit_end "$msg" $room)"
+  if (( mw > w )); then
+    msg="$(_dnav_fit_end "$msg" $w)"
     mw="$(_dnav_disp_w "$msg")"
   fi
   col=$(( w - mw + 1 ))
-  (( col < left_w + 1 )) && col=$(( left_w + 1 ))
+  (( col < 1 )) && col=1
   printf "\e[%dG%s%s%s" $col "$(_dnav_status_style)" "$msg" $'\e[0m'
 }
 
