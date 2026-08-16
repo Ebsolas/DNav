@@ -1046,8 +1046,8 @@ _dsearch_start() {
   typeset -g _DSEARCH_PUSHBACK=""
   typeset -g _dsearch_q=""
 
-  _dsearch_q=""
-  _dsearch_cur=0
+  _dsearch_q="${1:-}"
+  _dsearch_cur=${#_dsearch_q}
   _dsearch_qwin=0
   _dsearch_matches=()
   _dsearch_sel=0
@@ -1071,6 +1071,9 @@ _dsearch_start() {
   _dsearch_ensure_index
   printf "\r\e[2K\e[?25l"
   _dsearch_extra_lines=0
+  if [[ -n $_dsearch_q ]]; then
+    _dsearch_apply_filter "$_dsearch_q" $maxn
+  fi
   _DSEARCH_OPEN=1
   _dsearch_draw "$_dsearch_q"
 

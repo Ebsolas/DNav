@@ -32,6 +32,9 @@ test_winch_helpers_exist() {
   assert_fn _dnav_resize_chip_label
   assert_fn _dnav_tui_below
   assert_fn _dnav_logical_path
+  assert_fn _dnav_status_set
+  assert_fn _dnav_status_clear
+  assert_fn _dnav_resolve_dir
   assert_fn _dnav_disp_w
   assert_fn _dnav_fit_start
   assert_fn _dnav_fit_end
@@ -121,6 +124,53 @@ test_term_cols_reads_columns_cache() {
 test_logical_path_no_symlink_resolve() {
   assert_eq "$(_dnav_logical_path "$HOME/Documents")" "${HOME:a}/Documents" "logical abs"
   assert_eq "$(_dnav_logical_path "")" "" "empty stays empty"
+}
+
+test_resolve_dir_climbs_missing() {
+  local base="$DNAV_TEST_TMP/resolve" rc
+  mkdir -p -- "$base/here"
+  _dnav_resolve_dir "$base/here"
+  rc=$?
+  assert_eq "$rc" "0" "existing dir is ok"
+  assert_eq "${REPLY:a}" "${base:a}/here" "keeps existing dir"
+  _dnav_resolve_dir "$base/here/no/such"
+  rc=$?
+  assert_eq "$rc" "1" "missing path is invalid"
+  assert_eq "${REPLY:a}" "${base:a}/here" "lands on ancestor"
+  _dnav_resolve_dir ""
+  rc=$?
+  assert_eq "$rc" "0" "empty path is PWD"
+  assert_eq "${REPLY:a}" "${PWD:a}" "empty uses PWD"
+}
+
+test_status_slot_set_and_expire() {
+  DNAV_CFG_STATUS_TIMEOUT_MS=40
+  _dnav_status_set error "Invalid Path"
+  assert_eq "$_DNAV_STATUS_KIND" "error"
+  assert_eq "$_DNAV_STATUS_TEXT" "Invalid Path"
+  if _dnav_status_tick; then
+    assert_eq "$_DNAV_STATUS_TEXT" "" "expired message clears"
+  else
+    _dnav_test_fail "status should expire after one 40ms tick"
+  fi
+  _dnav_status_set info "kept"
+  DNAV_CFG_STATUS_TIMEOUT_MS=0
+  _dnav_status_set info "sticky"
+  assert_eq "$_DNAV_STATUS_LEFT" "-1" "timeout 0 disables auto-clear"
+  if _dnav_status_tick; then
+    _dnav_test_fail "sticky status should not expire"
+  else
+    _dnav_test_pass "sticky status stays"
+  fi
+  _dnav_status_clear
+  DNAV_CFG_STATUS_TIMEOUT_MS=3000
+}
+
+test_dnav_help_lists_entry_points() {
+  local got
+  got="$(dnav -h)"
+  assert_contains "$got" "f, file" "help lists file entry"
+  assert_contains "$got" "s, search" "help lists search entry"
 }
 
 test_disp_w_and_fit() {
@@ -213,6 +263,9 @@ run_test test_resize_chip_label_search
 run_test test_usable_from_spares_two
 run_test test_term_cols_reads_columns_cache
 run_test test_logical_path_no_symlink_resolve
+run_test test_resolve_dir_climbs_missing
+run_test test_status_slot_set_and_expire
+run_test test_dnav_help_lists_entry_points
 run_test test_disp_w_and_fit
 run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package

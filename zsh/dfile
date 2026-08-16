@@ -137,6 +137,17 @@ _dfile_dir_locked() {
   return 0
 }
 
+# 1 if the entry is inaccessible (dir: no r+x; file: no read).
+_dfile_entry_locked() {
+  local p="$1"
+  if [[ -d $p ]]; then
+    _dfile_dir_locked "$p"
+    return $?
+  fi
+  [[ -r $p ]] && return 1
+  return 0
+}
+
 # List basenames. kind=dirs|files. Returns 1 if unreadable; sets _DFILE_LIST_DENY.
 # For dirs, also sets _DFILE_LIST_LOCKS (parallel 0/1 array).
 typeset -ga _DFILE_LIST_LOCKS
@@ -175,7 +186,7 @@ _dfile_list() {
     b="${e:t}"
     [[ $b == . || $b == .. ]] && continue
     names+=("$b")
-    if [[ $kind == dirs ]] && _dfile_dir_locked "$e"; then
+    if _dfile_entry_locked "$e"; then
       locks+=(1)
     else
       locks+=(0)
@@ -236,7 +247,7 @@ typeset -g  _DFILE_FOCUS=children
 typeset -g  _DFILE_MODE=browse
 typeset -g  _DFILE_JUMP_BUF=""
 typeset -ga _DFILE_SIBLINGS _DFILE_CHILDREN _DFILE_FILES _DFILE_CHILD_ROW
-typeset -ga _DFILE_SIBLINGS_LOCK _DFILE_CHILDREN_LOCK _DFILE_CHILD_ROW_LOCK
+typeset -ga _DFILE_SIBLINGS_LOCK _DFILE_CHILDREN_LOCK _DFILE_CHILD_ROW_LOCK _DFILE_FILES_LOCK
 typeset -gi _DFILE_SEL_S=0 _DFILE_SEL_C=0 _DFILE_SEL_F=0
 typeset -gi _DFILE_WIN_S=0 _DFILE_WIN_C=0 _DFILE_WIN_F=0
 typeset -gi _DFILE_BODY=0
@@ -260,6 +271,7 @@ _dfile_session_reset() {
   _DFILE_SIBLINGS_LOCK=()
   _DFILE_CHILDREN_LOCK=()
   _DFILE_CHILD_ROW_LOCK=()
+  _DFILE_FILES_LOCK=()
   _DFILE_SEL_S=0
   _DFILE_SEL_C=0
   _DFILE_SEL_F=0
@@ -285,13 +297,13 @@ _dfile_refresh() {
   _DFILE_CWD="${PWD:a}"
   _DFILE_PARENT="${_DFILE_CWD:h}"
   [[ -z $_DFILE_PARENT ]] && _DFILE_PARENT="/"
-  _DFILE_PERM_DENIED=""
 
   _DFILE_SIBLINGS=()
   _DFILE_CHILDREN=()
   _DFILE_FILES=()
   _DFILE_SIBLINGS_LOCK=()
   _DFILE_CHILDREN_LOCK=()
+  _DFILE_FILES_LOCK=()
 
   # At filesystem root there is no _DFILE_PARENT strip of _DFILE_SIBLINGS — only show "/"
   if [[ $_DFILE_CWD == / ]]; then
@@ -304,7 +316,8 @@ _dfile_refresh() {
     out="$(_dfile_list "$_DFILE_PARENT" dirs $_DFILE_SHOW_HIDDEN 2>/dev/null)"
     rc=$?
     if (( rc != 0 )); then
-      [[ -n $_DFILE_LIST_DENY ]] && _DFILE_PERM_DENIED="$_DFILE_LIST_DENY"
+      [[ -n $_DFILE_LIST_DENY ]] && (( $+functions[_dnav_status_set] )) && \
+        _dnav_status_set error "Permission Denied: $_DFILE_LIST_DENY"
       _DFILE_SIBLINGS=()
       _DFILE_SIBLINGS_LOCK=()
     else
@@ -325,7 +338,8 @@ _dfile_refresh() {
   out="$(_dfile_list "$_DFILE_CWD" dirs $_DFILE_SHOW_HIDDEN 2>/dev/null)"
   rc=$?
   if (( rc != 0 )); then
-    [[ -n $_DFILE_LIST_DENY ]] && _DFILE_PERM_DENIED="$_DFILE_LIST_DENY"
+    [[ -n $_DFILE_LIST_DENY ]] && (( $+functions[_dnav_status_set] )) && \
+      _dnav_status_set error "Permission Denied: $_DFILE_LIST_DENY"
     _DFILE_CHILDREN=()
     _DFILE_CHILDREN_LOCK=()
   else
@@ -336,10 +350,13 @@ _dfile_refresh() {
   out="$(_dfile_list "$_DFILE_CWD" files $_DFILE_SHOW_HIDDEN 2>/dev/null)"
   rc=$?
   if (( rc != 0 )); then
-    [[ -n $_DFILE_LIST_DENY ]] && _DFILE_PERM_DENIED="$_DFILE_LIST_DENY"
+    [[ -n $_DFILE_LIST_DENY ]] && (( $+functions[_dnav_status_set] )) && \
+      _dnav_status_set error "Permission Denied: $_DFILE_LIST_DENY"
     _DFILE_FILES=()
+    _DFILE_FILES_LOCK=()
   else
     [[ -n $out ]] && _DFILE_FILES=("${(@f)out}") || _DFILE_FILES=()
+    _DFILE_FILES_LOCK=("${_DFILE_LIST_LOCKS[@]}")
   fi
 
   (( _DFILE_SEL_C < 0 )) && _DFILE_SEL_C=0
@@ -370,7 +387,7 @@ _dfile_fix_focus() {
 }
 
 _dfile_paint_status() {
-  local w="$1" hid_mark left right fill vis
+  local w="$1" hid_mark left fill vis
   local dir_lbl file_lbl raw
   if (( _DFILE_SHOW_HIDDEN )); then hid_mark="●"; else hid_mark="○"; fi
   raw="$(_dfile_term_cols)"
@@ -383,22 +400,19 @@ _dfile_paint_status() {
     file_lbl="$(_dfile_sort_file_label)"
     left="- Show Hidden ${hid_mark} -- Dir: ${dir_lbl} -- File: ${file_lbl} "
   fi
-  vis=${#left}
-  printf "\r%s" "$left"
-  if [[ -n $_DFILE_PERM_DENIED ]]; then
-    right=" Permission Denied: ${_DFILE_PERM_DENIED} "
-    if (( vis + ${#right} > w )); then
-      local room=$(( w - vis - 5 ))
-      (( room < 8 )) && room=8
-      right=" …${right:$(( ${#right} - room ))} "
-    fi
+  if (( $+functions[_dnav_disp_w] )); then
+    vis="$(_dnav_disp_w "$left")"
   else
-    right=""
+    vis=${#left}
   fi
-  fill=$(( w - vis - ${#right} ))
+  printf "\r%s" "$left"
+  fill=$(( w - vis ))
   (( fill < 0 )) && fill=0
   printf '%*s' $fill '' | tr ' ' '-'
-  printf "%s\e[K" "$right"
+  printf "\e[K"
+  if (( $+functions[_dnav_status_paint_right] )); then
+    _dnav_status_paint_right $w $vis
+  fi
 }
 
 # Paint one browse strip at the current cursor line (no leading NL).
@@ -440,7 +454,7 @@ _dfile_paint_line() {
     files)
       [[ $_DFILE_FOCUS == files ]] && active=1
       printf "\r"
-      _dfile_paint_strip _DFILE_FILES $_DFILE_SEL_F $_DFILE_WIN_F $active $maxw
+      _dfile_paint_strip _DFILE_FILES $_DFILE_SEL_F $_DFILE_WIN_F $active $maxw _DFILE_FILES_LOCK
       _DFILE_WIN_F=$reply[1]
       ;;
   esac
@@ -560,7 +574,7 @@ _dfile_go() {
     return 1
   fi
   if ! cd -- "$dest" 2>/dev/null; then
-    _DFILE_PERM_DENIED="$dest"
+    (( $+functions[_dnav_status_set] )) && _dnav_status_set error "Permission Denied: $dest"
     _dfile_draw
     return 1
   fi
@@ -610,7 +624,7 @@ _dfile_enter_sel_dir() {
   # Don't drill into locked dirs — surface permission line
   local dest="$reply[1]"
   if _dfile_dir_locked "$dest"; then
-    _DFILE_PERM_DENIED="$dest"
+    (( $+functions[_dnav_status_set] )) && _dnav_status_set error "Permission Denied: $dest"
     _dfile_draw
     return 1
   fi
@@ -650,7 +664,7 @@ _dfile_exit_sel_dir() {
   _dfile_sel_dir_path || return 1
   local dest="$reply[1]"
   if _dfile_dir_locked "$dest"; then
-    _DFILE_PERM_DENIED="$dest"
+    (( $+functions[_dnav_status_set] )) && _dnav_status_set error "Permission Denied: $dest"
     _dfile_draw
     return 1
   fi
@@ -682,7 +696,7 @@ _dfile_open_file() {
 
 _dfile_scroll_to_sel() {
   local aname="$1" sel="$2" win="$3" dir="$4"
-  local n maxw="${5:-$(_dfile_cols)}" sticky="${6:-0}" vc
+  local n maxw="${5:-$(_dfile_cols)}" sticky="${6:-0}" lockname="${7:-}" vc
   local -a all
   all=("${(@P)aname}")
   n=$#all
@@ -690,13 +704,13 @@ _dfile_scroll_to_sel() {
   # Match paint_strip: room for optional < > overflow markers
   (( maxw > 12 )) && (( maxw -= 4 ))
   if (( sticky )); then
-    _dfile_window "$aname" $sel 0 $maxw "" 1
+    _dfile_window "$aname" $sel 0 $maxw "$lockname" 1
     if (( sel < $#_dfile_vis )); then
       reply=(0)
       return
     fi
   fi
-  _dfile_window "$aname" $sel $win $maxw "" $sticky
+  _dfile_window "$aname" $sel $win $maxw "$lockname" $sticky
   win=$reply[1]
   vc=$#_dfile_vis
   if (( dir > 0 && sel < n - 1 && vc >= 2 )); then
@@ -708,7 +722,7 @@ _dfile_scroll_to_sel() {
       (( win < 0 )) && win=0
     fi
   fi
-  _dfile_window "$aname" $sel $win $maxw "" $sticky
+  _dfile_window "$aname" $sel $win $maxw "$lockname" $sticky
   reply=($reply[1])
 }
 
@@ -729,7 +743,7 @@ _dfile_move_h() {
       (( _DFILE_SEL_F += dir ))
       (( _DFILE_SEL_F < 0 )) && _DFILE_SEL_F=0
       (( _DFILE_SEL_F >= n )) && _DFILE_SEL_F=$(( n - 1 ))
-      _dfile_scroll_to_sel _DFILE_FILES $_DFILE_SEL_F $_DFILE_WIN_F $dir
+      _dfile_scroll_to_sel _DFILE_FILES $_DFILE_SEL_F $_DFILE_WIN_F $dir "" 0 _DFILE_FILES_LOCK
       _DFILE_WIN_F=$reply[1]
       ;;
     *) return ;;
@@ -798,7 +812,7 @@ _dfile_enter() {
               if [[ -d $dest ]]; then
                 _dfile_go "$dest"
               else
-                _DFILE_PERM_DENIED="$dest"
+                (( $+functions[_dnav_status_set] )) && _dnav_status_set error "Invalid Path"
                 _dfile_draw
               fi
             fi

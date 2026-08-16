@@ -15,7 +15,7 @@ test_dfile_available() {
 
 test_dfile_functions_exist() {
   local f
-  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact _dfile_draw _dfile_erase _dfile_refresh _dfile_session_reset _dfile_cancel_restore; do
+  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_entry_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact _dfile_draw _dfile_erase _dfile_refresh _dfile_session_reset _dfile_cancel_restore; do
     assert_fn "$f"
   done
 }
@@ -131,6 +131,25 @@ test_dfile_list_symlink_to_file() {
   assert_contains "$out" "linkdir" "lists symlink-to-dir"
 }
 
+test_dfile_entry_locked_unreadable_file() {
+  local dir="$DNAV_TEST_TMP/dfilelock" f
+  mkdir -p -- "$dir"
+  f="$dir/secret"
+  print -r -- no > "$f"
+  chmod 000 -- "$f"
+  if _dfile_entry_locked "$f"; then
+    _dnav_test_pass "unreadable file is locked"
+  else
+    _dnav_test_fail "unreadable file should be locked"
+  fi
+  chmod 644 -- "$f"
+  if _dfile_entry_locked "$f"; then
+    _dnav_test_fail "readable file should not be locked"
+  else
+    _dnav_test_pass "readable file is not locked"
+  fi
+}
+
 test_dfile_list_home() {
   # API: _dfile_list DIR kind(dirs|files) show_hidden(0|1)
   local out
@@ -156,4 +175,5 @@ run_test test_dfile_cycle_sort
 run_test test_dfile_dir_locked_home
 run_test test_dfile_list_home
 run_test test_dfile_list_symlink_to_file
+run_test test_dfile_entry_locked_unreadable_file
 dnav_test_finish

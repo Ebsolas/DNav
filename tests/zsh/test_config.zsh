@@ -330,6 +330,22 @@ run_test test_config_brand_with_hash
 run_test test_folders_hash_in_path
 run_test test_config_load_under_extended_glob
 run_test test_dfile_jump_name_max_config
+test_inaccessible_config_keys() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+color_fg = black
+color_bg = cyan
+brand = ZshTestNav
+inaccessible_color = yellow
+inaccessible_icon = 0
+status_timeout_ms = 1500
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_INACC_COLOR" "33" "yellow → 33"
+  assert_eq "$DNAV_CFG_INACC_ICON" "0" "icon off"
+  assert_eq "$DNAV_CFG_STATUS_TIMEOUT_MS" "1500" "timeout parsed"
+}
+
 run_test test_seed_folders_are_generic
+run_test test_inaccessible_config_keys
 run_test test_seed_does_not_clobber_existing
 dnav_test_finish

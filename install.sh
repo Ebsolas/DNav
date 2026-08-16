@@ -191,6 +191,11 @@ full_redraw = 0
 
 # dsearch roots (space-separated). Empty = $HOME only.
 # search_roots = $HOME /opt /mnt
+
+# Status message auto-clear (ms). 0 = keep until the next message
+status_timeout_ms = 3000
+# inaccessible_color = red
+# inaccessible_icon = 1
 EOF
 }
 

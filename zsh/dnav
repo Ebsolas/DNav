@@ -39,6 +39,9 @@ typeset -g DNAV_CFG_SEARCH_ROOTS=""
 typeset -g DNAV_CFG_DFILE_SORT_DIRS=alpha
 typeset -g DNAV_CFG_DFILE_SORT_FILES=alpha
 typeset -g DNAV_CFG_DFILE_JUMP_NAME_MAX=20
+typeset -gi DNAV_CFG_STATUS_TIMEOUT_MS=3000
+typeset -g DNAV_CFG_INACC_COLOR=31
+typeset -g DNAV_CFG_INACC_ICON=1
 typeset -ga DNAV_FOLDER_NAMES DNAV_FOLDER_PATHS
 typeset -g DNAV_HIGHLIGHT DNAV_RESET
 DNAV_HIGHLIGHT=$'\e[30;46m'
@@ -204,6 +207,12 @@ full_redraw = 0
 
 # dsearch roots (space-separated). Empty = $HOME only.
 # search_roots = $HOME /opt /mnt
+
+# Status message auto-clear (ms). 0 = keep until the next message
+status_timeout_ms = 3000
+# Locked / unreadable entries in dfile (color name or ANSI fg)
+# inaccessible_color = red
+# inaccessible_icon = 1
 EOF
   fi
 
@@ -297,6 +306,14 @@ _dnav_config_load_kv() {
         if [[ $val == <-> ]] && (( val >= 1 )); then
           DNAV_CFG_DFILE_JUMP_NAME_MAX=$val
         fi ;;
+      status_timeout_ms)
+        if [[ $val == <-> ]]; then
+          DNAV_CFG_STATUS_TIMEOUT_MS=$val
+        fi ;;
+      inaccessible_color)
+        DNAV_CFG_INACC_COLOR="$(_dnav_color_num fg "$val")" ;;
+      inaccessible_icon)
+        _dnav_truthy "$val" && DNAV_CFG_INACC_ICON=1 || DNAV_CFG_INACC_ICON=0 ;;
     esac
   done < "$f"
 }
@@ -381,6 +398,9 @@ _dnav_config_defaults() {
   print -r -- "success_anim_steps 8"
   print -r -- "success_anim_ms 25"
   print -r -- "full_redraw 0"
+  print -r -- "status_timeout_ms 3000"
+  print -r -- "inaccessible_color red"
+  print -r -- "inaccessible_icon 1"
 }
 
 # One-line note written above a key in the user config.
@@ -403,6 +423,9 @@ _dnav_config_key_note() {
     success_anim_steps) print -r -- "success bar expand: number of animation steps" ;;
     success_anim_ms) print -r -- "success bar expand: milliseconds between steps" ;;
     full_redraw) print -r -- "1 = full line redraw every move; 0 = partial chip repaint" ;;
+    status_timeout_ms) print -r -- "Status message auto-clear in milliseconds (0 = keep)" ;;
+    inaccessible_color) print -r -- "dfile locked/unreadable color (name or ANSI fg)" ;;
+    inaccessible_icon) print -r -- "dfile lock glyph on inaccessible entries (1/0)" ;;
     *) print -rn -- "" ;;
   esac
 }
@@ -416,6 +439,9 @@ _dnav_config_canon_key() {
     bg|highlight_bg|color_bg) print -r -- color_bg ;;
     redraw|full_redraw) print -r -- full_redraw ;;
     dfile_jump_max|dfile_jump_name_max) print -r -- dfile_jump_name_max ;;
+    status_timeout|status_timeout_ms) print -r -- status_timeout_ms ;;
+    inaccessible_color) print -r -- inaccessible_color ;;
+    inaccessible_icon) print -r -- inaccessible_icon ;;
     *) print -r -- "${(L)1}" ;;
   esac
 }
@@ -532,6 +558,9 @@ _dnav_config_load() {
   DNAV_CFG_DFILE_SORT_DIRS=alpha
   DNAV_CFG_DFILE_SORT_FILES=alpha
   DNAV_CFG_DFILE_JUMP_NAME_MAX=20
+  DNAV_CFG_STATUS_TIMEOUT_MS=3000
+  DNAV_CFG_INACC_COLOR=31
+  DNAV_CFG_INACC_ICON=1
   DNAV_FOLDER_NAMES=()
   DNAV_FOLDER_PATHS=()
 
@@ -709,12 +738,29 @@ _dnav_disp_w() {
   print -rn -- ${(m)#s}
 }
 
+_dnav_inacc_icon() { _dnav_truthy "${DNAV_CFG_INACC_ICON:-1}"; }
+
+_dnav_inacc_seq() {
+  local sel="${1:-0}"
+  local fg="${DNAV_CFG_INACC_COLOR:-31}"
+  [[ $fg == <-> ]] || fg=31
+  if (( sel )); then
+    if (( fg >= 30 && fg <= 37 )); then
+      print -rn -- $'\e['"$(( fg + 10 ))"';37m'
+    else
+      print -rn -- $'\e[7;'"${fg}"'m'
+    fi
+  else
+    print -rn -- $'\e['"${fg}"'m'
+  fi
+}
+
 _dnav_cell_w() {
   emulate -L zsh
   setopt localoptions multibyte
   local label="$1" locked="${2:-0}"
   local n=${(m)#label}
-  if (( locked )); then
+  if (( locked )) && _dnav_inacc_icon; then
     local lock='🔒'
     print -rn -- $(( n + ${(m)#lock} + 4 ))
   else
@@ -843,7 +889,9 @@ _dnav_paint_strip() {
     if (( cell_w > remain )); then
       if (( used == 0 && remain > 0 )); then
         local pad=3
-        (( locked )) && pad="$(_dnav_cell_w "" 1)"
+        if (( locked )) && _dnav_inacc_icon; then
+          pad="$(_dnav_cell_w "" 1)"
+        fi
         local room=$(( remain - pad ))
         (( room < 1 )) && room=1
         if (( $(_dnav_disp_w "$label") > room )); then
@@ -857,10 +905,12 @@ _dnav_paint_strip() {
       fi
     fi
     if (( locked )); then
-      if (( active && i == sel )); then
-        printf "\e[41;37m 🔒 %s \e[0m " "$label"
+      local iseq
+      iseq="$(_dnav_inacc_seq $(( active && i == sel )))"
+      if _dnav_inacc_icon; then
+        printf "${iseq} 🔒 %s \e[0m " "$label"
       else
-        printf "\e[31m 🔒 %s \e[0m " "$label"
+        printf "${iseq} %s \e[0m " "$label"
       fi
     elif (( active && i == sel )); then
       printf "${hl} %s ${rst} " "$label"
@@ -1019,8 +1069,118 @@ typeset -gi _DNAV_SETTINGS_ROW=0
 typeset -ga _DNAV_ABOUT_BODY _DNAV_ABOUT_KIND _DNAV_ABOUT_KEY _DNAV_ABOUT_IDX
 typeset -gi _DNAV_ABOUT_NROWS=0
 typeset -gi _DNAV_HELP_SCROLL=0
+typeset -g  _DNAV_STATUS_KIND=""
+typeset -g  _DNAV_STATUS_TEXT=""
+typeset -gi _DNAV_STATUS_LEFT=0
 
 _dnav_aborted() { (( ${DNAV_ABORT:-0} )) }
+
+_dnav_status_clear() {
+  _DNAV_STATUS_KIND=""
+  _DNAV_STATUS_TEXT=""
+  _DNAV_STATUS_LEFT=0
+}
+
+# $1 = error|info|ok  $2 = text
+_dnav_status_set() {
+  local kind="${1:-info}" text="${2:-}"
+  local ms
+  case $kind in
+    error|info|ok) ;;
+    *) kind=info ;;
+  esac
+  _DNAV_STATUS_KIND=$kind
+  _DNAV_STATUS_TEXT=$text
+  ms=${DNAV_CFG_STATUS_TIMEOUT_MS:-3000}
+  [[ $ms == <-> ]] || ms=3000
+  if (( ms <= 0 )); then
+    _DNAV_STATUS_LEFT=-1
+  else
+    _DNAV_STATUS_LEFT=$ms
+  fi
+}
+
+# Called from the 40ms read poll. Returns 0 if the message just expired.
+_dnav_status_tick() {
+  (( _DNAV_STATUS_LEFT > 0 )) || return 1
+  (( _DNAV_STATUS_LEFT -= 40 ))
+  if (( _DNAV_STATUS_LEFT <= 0 )); then
+    _dnav_status_clear
+    return 0
+  fi
+  return 1
+}
+
+_dnav_status_style() {
+  case ${_DNAV_STATUS_KIND:-info} in
+    error) print -rn -- $'\e[31m' ;;
+    ok)    print -rn -- $'\e[32m' ;;
+    *)     print -rn -- $'\e[2m' ;;
+  esac
+}
+
+# Paint the status text on the right of the current row. $1 = line width,
+# $2 = columns already taken by left decorations (never shrink those).
+_dnav_status_paint_right() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local w="$1" left_w="${2:-0}"
+  local msg mw room col
+  [[ -n ${_DNAV_STATUS_TEXT:-} ]] || return 0
+  [[ $w == <-> ]] || return 0
+  msg=" ${_DNAV_STATUS_TEXT} "
+  mw="$(_dnav_disp_w "$msg")"
+  room=$(( w - left_w ))
+  (( room < 1 )) && return 0
+  if (( mw > room )); then
+    msg="$(_dnav_fit_end "$msg" $room)"
+    mw="$(_dnav_disp_w "$msg")"
+  fi
+  col=$(( w - mw + 1 ))
+  (( col < left_w + 1 )) && col=$(( left_w + 1 ))
+  printf "\e[%dG%s%s%s" $col "$(_dnav_status_style)" "$msg" $'\e[0m'
+}
+
+_dnav_status_repaint() {
+  if (( $+functions[_dfile_is_open] )) && _dfile_is_open; then
+    if (( $+functions[_dfile_repaint_row] )); then
+      _dfile_repaint_row status
+    fi
+  fi
+}
+
+# Best existing directory for an entry path. REPLY=dir.
+# Returns 0 if $1 is already a directory; 1 if we climbed or fell back to $PWD.
+_dnav_resolve_dir() {
+  local raw="${1:-}" p
+  if [[ -z $raw ]]; then
+    REPLY="$PWD"
+    return 0
+  fi
+  p="$(_dnav_expand_path "$raw")"
+  [[ -n $p ]] || { REPLY="$PWD"; return 1 }
+  if [[ -d $p ]]; then
+    REPLY="$p"
+    return 0
+  fi
+  if [[ -e $p ]]; then
+    p="${p:h}"
+    [[ -z $p ]] && p="/"
+    if [[ -d $p ]]; then
+      REPLY="$p"
+      return 1
+    fi
+  fi
+  while [[ -n $p && $p != / && ! -d $p ]]; do
+    p="${p:h}"
+  done
+  if [[ -d $p ]]; then
+    REPLY="$p"
+  else
+    REPLY="$PWD"
+  fi
+  return 1
+}
 
 _dnav_session_reset() {
   local current i
@@ -1046,6 +1206,7 @@ _dnav_session_reset() {
   _DNAV_ABOUT_KEY=()
   _DNAV_ABOUT_IDX=()
   DNAV_ABORT=0
+  _dnav_status_clear
   if (( ${#DNAV_FOLDER_NAMES} > 0 )); then
     _DNAV_NAMES=("${DNAV_FOLDER_NAMES[@]}")
     _DNAV_PATHS=("${DNAV_FOLDER_PATHS[@]}")
@@ -1196,6 +1357,9 @@ _dnav_read_key() {
       [[ -n $REPLY ]] && return 0
     else
       (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+      if _dnav_status_tick; then
+        _dnav_status_repaint
+      fi
     fi
   done
 }
@@ -1737,6 +1901,13 @@ _dnav_settings_fill_body() {
       _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(color_bg) _DNAV_ABOUT_IDX+=(-1)
       _DNAV_ABOUT_BODY+=("brand             ${DNAV_CFG_BRAND}          Enter edit text")
       _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(brand) _DNAV_ABOUT_IDX+=(-1)
+      _DNAV_ABOUT_BODY+=("status_timeout_ms ${DNAV_CFG_STATUS_TIMEOUT_MS}        Enter edit (0 = keep)")
+      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(status_timeout_ms) _DNAV_ABOUT_IDX+=(-1)
+      _DNAV_ABOUT_BODY+=("inaccessible_color ${DNAV_CFG_INACC_COLOR}         Enter edit number/name")
+      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(inaccessible_color) _DNAV_ABOUT_IDX+=(-1)
+      (( DNAV_CFG_INACC_ICON )) && onoff=on || onoff=off
+      _DNAV_ABOUT_BODY+=("inaccessible_icon $onoff          Enter toggle lock glyph")
+      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(inaccessible_icon) _DNAV_ABOUT_IDX+=(-1)
       _DNAV_ABOUT_NROWS=$#_DNAV_ABOUT_BODY
       ;;
     Folders)
@@ -1937,6 +2108,10 @@ _dnav_settings_apply_edit() {
           DNAV_CFG_FULL_REDRAW=$(( 1 - DNAV_CFG_FULL_REDRAW ))
           _dnav_config_set full_redraw "$DNAV_CFG_FULL_REDRAW"
           ;;
+        inaccessible_icon)
+          DNAV_CFG_INACC_ICON=$(( 1 - DNAV_CFG_INACC_ICON ))
+          _dnav_config_set inaccessible_icon "$DNAV_CFG_INACC_ICON"
+          ;;
       esac
       ;;
     cycle3)
@@ -1997,6 +2172,8 @@ _dnav_settings_apply_edit() {
         color_bg) _dnav_inline_edit "color_bg (Esc cancel): " "$DNAV_CFG_COLOR_BG" || return 1 ;;
         brand)    _dnav_inline_edit "brand (Esc cancel): " "$DNAV_CFG_BRAND" || return 1 ;;
         dfile_jump_name_max) _dnav_inline_edit "dfile_jump_name_max (Esc cancel): " "$DNAV_CFG_DFILE_JUMP_NAME_MAX" || return 1 ;;
+        status_timeout_ms) _dnav_inline_edit "status_timeout_ms (Esc cancel): " "$DNAV_CFG_STATUS_TIMEOUT_MS" || return 1 ;;
+        inaccessible_color) _dnav_inline_edit "inaccessible_color (Esc cancel): " "$DNAV_CFG_INACC_COLOR" || return 1 ;;
         *) return 1 ;;
       esac
       val="${REPLY//[$'\r\n']/}"
@@ -2023,6 +2200,15 @@ _dnav_settings_apply_edit() {
           [[ $val == <-> ]] && (( val >= 1 )) || return 1
           _dnav_config_set dfile_jump_name_max "$val"
           DNAV_CFG_DFILE_JUMP_NAME_MAX=$val
+          ;;
+        status_timeout_ms)
+          [[ $val == <-> ]] || return 1
+          _dnav_config_set status_timeout_ms "$val"
+          DNAV_CFG_STATUS_TIMEOUT_MS=$val
+          ;;
+        inaccessible_color)
+          _dnav_config_set inaccessible_color "$val"
+          DNAV_CFG_INACC_COLOR="$(_dnav_color_num fg "$val")"
           ;;
       esac
       ;;
@@ -2311,6 +2497,8 @@ dhelp() {
 
   print -r -- "${hl} DNav ${rst}"
   print -r -- "  dnav                 open the folder navigator"
+  print -r -- "  dnav f [PATH]        open the file explorer (default: \$PWD)"
+  print -r -- "  dnav s [QUERY]       open fuzzy search"
   print -r -- "  dnav --update        refresh scripts + merge new config keys"
   print -r -- "  dhelp                this command list"
   print -r -- "  dconfig              reload/edit config (~/.config/dnav)"
@@ -2337,7 +2525,7 @@ dhelp() {
 }
 
 dnav() {
-  local key target
+  local key target entry=main entry_arg=""
   case ${1:-} in
     -u|--update)
       shift
@@ -2345,11 +2533,29 @@ dnav() {
       return $?
       ;;
     -h|--help)
-      print -r -- "usage: dnav [--update]"
-      print -r -- "  (no args)      open the folder navigator"
-      print -r -- "  -u, --update   copy scripts from the DNav repo + merge new config keys"
-      print -r -- "  -h, --help     this help"
+      print -r -- "usage: dnav [--update | f [PATH] | s [QUERY]]"
+      print -r -- "  (no args)         open the folder navigator"
+      print -r -- "  f, file [PATH]    open the file explorer (default: \$PWD)"
+      print -r -- "  s, search [QUERY] open fuzzy search"
+      print -r -- "  -u, --update      copy scripts from the DNav repo + merge new config keys"
+      print -r -- "  -h, --help        this help"
       return 0
+      ;;
+    f|file)
+      shift
+      entry=file
+      entry_arg="${1:-}"
+      ;;
+    s|search)
+      shift
+      entry=search
+      entry_arg="$*"
+      ;;
+    '')
+      ;;
+    *)
+      print -u2 -- "dnav: unknown option: $1 (try dnav -h)"
+      return 1
       ;;
   esac
 
@@ -2373,9 +2579,41 @@ dnav() {
   (( $+functions[_dsearch_index_start_bg] )) && _dsearch_index_start_bg
 
   _dnav_sync_term_size
+  _dnav_mark_size
+
+  if [[ $entry == file ]]; then
+    if ! _dfile_available; then
+      _dnav_cleanup
+      print -u2 -- "dnav: file explorer is not available"
+      return 1
+    fi
+    if ! _dnav_resolve_dir "$entry_arg"; then
+      _dnav_status_set error "Invalid Path"
+    fi
+    if _dfile_enter "$REPLY"; then
+      return 0
+    fi
+    _dnav_aborted && return 130
+    _dnav_cleanup
+    return 0
+  fi
+
+  if [[ $entry == search ]]; then
+    if ! _dsearch_available; then
+      _dnav_cleanup
+      print -u2 -- "dnav: search is not available"
+      return 1
+    fi
+    if _dsearch_start "$entry_arg"; then
+      return 0
+    fi
+    _dnav_aborted && return 130
+    _dnav_cleanup
+    return 0
+  fi
+
   _dnav_compute_positions
   _dnav_draw
-  _dnav_mark_size
 
   while true; do
     _dnav_aborted && return 130
