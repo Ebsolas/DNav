@@ -398,8 +398,9 @@ typeset -g  _dsearch_prev_query=""
 typeset -gA _dsearch_cand_stack
 
 _dsearch_session_cleanup() {
+  _dsearch_worker_stop
   if [[ -n $_dsearch_tmpdir && -d $_dsearch_tmpdir ]]; then
-    rm -rf -- "$_dsearch_tmpdir" 2>/dev/null
+    /bin/rm -rf -- "$_dsearch_tmpdir" 2>/dev/null
   fi
   _dsearch_tmpdir=""
   _dsearch_prev_query=""
@@ -410,6 +411,12 @@ _dsearch_session_cleanup() {
   _dsearch_focus=list
   _dsearch_view=search
   _DSEARCH_OPEN=0
+  _DSEARCH_DIRTY=0
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_GEN=0
+  _DSEARCH_LAST_TICK=0
+  _DSEARCH_WORK_Q=""
+  _DSEARCH_SHOWN_Q=""
 }
 
 _dsearch_cur_clamp() {
@@ -945,7 +952,9 @@ _dsearch_paint_row() {
       local label count helpchip gap avail qshow
       label=" DNav Search:"
       helpchip=" Help "
-      if (( $#_dsearch_matches > 0 )) && [[ ${_dsearch_focus:-list} == list ]]; then
+      if [[ $_dsearch_q != "$_DSEARCH_SHOWN_Q" ]]; then
+        count=""
+      elif (( $#_dsearch_matches > 0 )) && [[ ${_dsearch_focus:-list} == list ]]; then
         count=" $(( _dsearch_sel + 1 ))/$#_dsearch_matches "
       else
         count=""
@@ -1116,51 +1125,249 @@ _dsearch_close_help() {
   _dsearch_draw "$_dsearch_q"
 }
 
-# Coalesce further keystrokes into $_dsearch_q, then filter once + draw.
-# Main loop keeps query in $_dsearch_q for the session.
-_dsearch_refresh_query() {
-  local maxn=10
-  local k
-  local -i coalescing=1
+# Query bar is always live. Ranking runs in a background job; the list
+# is refreshed about every 30ms from that job (never on the key path).
+typeset -gi _DSEARCH_DIRTY=0
+typeset -gi _DSEARCH_WORKER_PID=0
+typeset -gi _DSEARCH_GEN=0
+typeset -gi _DSEARCH_LAST_TICK=0
+typeset -g  _DSEARCH_WORK_Q=""
+typeset -g  _DSEARCH_SHOWN_Q=""
 
-  # Debounce / drain buffered input so fast typing = one filter
-  while (( coalescing )); do
-    if ! read -t 0.05 -k 1 k 2>/dev/null; then
-      coalescing=0
-      break
-    fi
-    case $k in
-      $'\177'|$'\b')
+zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null || true
+
+_dsearch_now_ms() {
+  emulate -L zsh
+  local -i ms
+  if [[ -n ${EPOCHREALTIME:-} ]]; then
+    ms=$(( EPOCHREALTIME * 1000 ))
+    print -rn -- $ms
+  else
+    print -rn -- 0
+  fi
+}
+
+# Pull already-buffered print/edit keys into the query. Navigation is pushback.
+_dsearch_drain_query() {
+  while _dnav_try_read_token; do
+    case $REPLY in
+      backspace)
         _dsearch_backspace || true
         ;;
-      $'\x15')
+      delete)
+        _dsearch_delete || true
+        ;;
+      ctrl-u)
         _dsearch_q=""
         _dsearch_cur=0
         ;;
-      $'\e'|$'\n'|$'\r')
-        _DSEARCH_PUSHBACK="$k"
-        coalescing=0
-        ;;
-      $'\x0e'|$'\x10'|$'\x01'|$'\x05')  # Ctrl+N/P/A/E — not query text
-        _DSEARCH_PUSHBACK="$k"
-        coalescing=0
+      esc|enter|up|down|left|right|home|end|tab|ctrl-c|ctrl-n|ctrl-p|ctrl-a|ctrl-e)
+        _DSEARCH_PUSHBACK="$REPLY"
+        return
         ;;
       [[:print:]])
-        _dsearch_insert "$k"
-        ;;
-      *)
+        _dsearch_insert "$REPLY"
         ;;
     esac
   done
+}
 
+_dsearch_worker_stop() {
+  local pid=$_DSEARCH_WORKER_PID
+  (( pid > 1 )) || { _DSEARCH_WORKER_PID=0; return 0 }
+  kill "$pid" 2>/dev/null || true
+  command pkill -P "$pid" 2>/dev/null || true
+  _DSEARCH_WORKER_PID=0
+}
+
+# Point the parent stack at this generation's survivor files (incremental seed).
+_dsearch_worker_adopt() {
+  local gen="$1" tmp="$_dsearch_tmpdir" wdir i dest
+  wdir="$tmp/w.$gen"
+  [[ -d $wdir ]] || return 0
+  for i in "$wdir"/c.*(N); do
+    [[ -s $i ]] || continue
+    dest="$tmp/c.${i:e}"
+    /bin/mv -f -- "$i" "$dest"
+    _dsearch_cand_stack[${i:e}]="$dest"
+  done
+  _dsearch_prev_query="$_DSEARCH_WORK_Q"
+}
+
+# Rank $_dsearch_q off-thread. Hits land in $tmpdir/hits.$gen.
+# In-flight work is only cancelled for an empty query or a flush.
+_dsearch_worker_start() {
+  local q="$_dsearch_q" gen tmp wdir i f
+  tmp="$_dsearch_tmpdir"
+  [[ -n $tmp && -d $tmp ]] || return 1
+  _dsearch_worker_stop
+  if [[ -z $q ]]; then
+    _dsearch_matches=()
+    _dsearch_prev_query=""
+    _DSEARCH_WORK_Q=""
+    _DSEARCH_SHOWN_Q=""
+    _DSEARCH_DIRTY=0
+    _dsearch_draw ""
+    return 0
+  fi
+  (( ++_DSEARCH_GEN ))
+  gen=$_DSEARCH_GEN
+  _DSEARCH_WORK_Q="$q"
+  wdir="$tmp/w.$gen"
+  mkdir -p -- "$wdir"
+  if [[ -n $_dsearch_prev_query && $q == "$_dsearch_prev_query"* ]]; then
+    for i in ${(k)_dsearch_cand_stack}; do
+      f="${_dsearch_cand_stack[$i]}"
+      [[ -s $f ]] && /bin/cp -f -- "$f" "$wdir/c.$i"
+    done
+  fi
+  setopt nomonitor nonotify
+  (
+    emulate -L zsh
+    setopt nomonitor nonotify
+    _dsearch_tmpdir="$wdir"
+    _dsearch_cand_stack=()
+    if [[ -n $_dsearch_prev_query && $q == "$_dsearch_prev_query"* ]]; then
+      for i in "$wdir"/c.*(N); do
+        [[ -s $i ]] || continue
+        _dsearch_cand_stack[${i:e}]="$i"
+      done
+    else
+      _dsearch_prev_query=""
+    fi
+    _dsearch_apply_filter "$q" 10
+    if (( $#_dsearch_matches )); then
+      print -l -- "${_dsearch_matches[@]}" > "$tmp/hits.$gen.tmp"
+    else
+      : > "$tmp/hits.$gen.tmp"
+    fi
+    /bin/mv -f -- "$tmp/hits.$gen.tmp" "$tmp/hits.$gen"
+  ) </dev/null >/dev/null 2>&1 &
+  _DSEARCH_WORKER_PID=$!
+  disown $_DSEARCH_WORKER_PID 2>/dev/null || true
+}
+
+# 0 if the current generation produced a hits file (caller draws).
+_dsearch_worker_poll() {
+  local gen=$_DSEARCH_GEN tmp="$_dsearch_tmpdir" f
+  [[ -n $tmp && $gen -gt 0 ]] || return 1
+  f="$tmp/hits.$gen"
+  [[ -f $f ]] || return 1
+  _dsearch_take_top "${(@f)$(<"$f")}"
+  /bin/rm -f -- "$f"
+  _dsearch_worker_adopt "$gen"
+  _DSEARCH_SHOWN_Q="$_DSEARCH_WORK_Q"
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_DIRTY=0
+  _dsearch_sel=0
+  return 0
+}
+
+# About every 30ms: reap a finished job and start one for the live query
+# if nothing is running. Do not cancel an in-flight rank — that is what
+# keeps the list moving while the user types.
+_dsearch_maybe_tick() {
+  local now
+  now="$(_dsearch_now_ms)"
+  if (( now > 0 && _DSEARCH_LAST_TICK > 0 && now - _DSEARCH_LAST_TICK < 30 )); then
+    return 0
+  fi
+  _DSEARCH_LAST_TICK=$now
+  if (( _DSEARCH_WORKER_PID > 1 )) && ! kill -0 $_DSEARCH_WORKER_PID 2>/dev/null; then
+    _DSEARCH_WORKER_PID=0
+  fi
+  if _dsearch_worker_poll; then
+    _dsearch_draw "$_dsearch_q"
+  fi
+  if [[ -z $_dsearch_q ]]; then
+    if (( _DSEARCH_WORKER_PID > 1 )) || [[ -n $_DSEARCH_SHOWN_Q ]]; then
+      _dsearch_worker_start
+    fi
+    return 0
+  fi
+  if (( _DSEARCH_WORKER_PID == 0 )) && [[ $_dsearch_q != "$_DSEARCH_SHOWN_Q" ]]; then
+    _dsearch_worker_start
+  fi
+}
+
+# Paint the query now. Never ranks here.
+_dsearch_note_query() {
+  _dsearch_drain_query
   _dsearch_sel=0
   _dsearch_focus=list
-  # Stay in search view while typing (don't clobber open help mid-key — typing leaves help)
   if [[ ${_dsearch_view:-search} == help ]]; then
     _dsearch_view=search
   fi
-  _dsearch_apply_filter "$_dsearch_q" $maxn
+  _DSEARCH_DIRTY=1
+  _dsearch_paint_row bar "$_dsearch_q"
+  _dsearch_place_cursor
+  _dsearch_maybe_tick
+}
+
+# Need results for the live query now (Enter / arrows).
+_dsearch_flush_filter() {
+  local i
+  if [[ $_dsearch_q == "$_DSEARCH_SHOWN_Q" ]]; then
+    _DSEARCH_DIRTY=0
+    return 0
+  fi
+  if (( _DSEARCH_WORKER_PID > 1 )) && [[ $_dsearch_q == "$_DSEARCH_WORK_Q" ]]; then
+    for (( i=0; i < 40; i++ )); do
+      if _dsearch_worker_poll; then
+        _dsearch_draw "$_dsearch_q"
+        return 0
+      fi
+      if ! kill -0 $_DSEARCH_WORKER_PID 2>/dev/null; then
+        _DSEARCH_WORKER_PID=0
+        if _dsearch_worker_poll; then
+          _dsearch_draw "$_dsearch_q"
+          return 0
+        fi
+        break
+      fi
+      if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+        zselect -t 3
+      else
+        /bin/sleep 0.03 2>/dev/null || true
+      fi
+    done
+  fi
+  _dsearch_worker_stop
+  _dsearch_apply_filter "$_dsearch_q" 10
+  _DSEARCH_SHOWN_Q="$_dsearch_q"
+  _DSEARCH_WORK_Q="$_dsearch_q"
+  _DSEARCH_DIRTY=0
   _dsearch_draw "$_dsearch_q"
+}
+
+# 0 = REPLY is a key; 1 = 30ms tick (or abort). Keys already waiting never wait.
+_dsearch_wait_key() {
+  local k
+  REPLY=""
+  (( ${DNAV_ABORT:-0} )) && return 1
+  if [[ -n ${_DSEARCH_PUSHBACK:-} ]]; then
+    REPLY="$_DSEARCH_PUSHBACK"
+    _DSEARCH_PUSHBACK=""
+    return 0
+  fi
+  if (( $+functions[_dnav_try_read_token] )) && _dnav_try_read_token; then
+    return 0
+  fi
+  if read -t 0.03 -k 1 k 2>/dev/null; then
+    (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+    [[ -n $k ]] || return 1
+    if (( $+functions[_dnav_classify_key] )); then
+      _dnav_classify_key "$k"
+    else
+      REPLY="$k"
+    fi
+    return 0
+  fi
+  (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+  if (( ! ${_DNAV_RESIZE_MODE:-0} )) && (( $+functions[_dnav_status_tick] )) && _dnav_status_tick; then
+    _dnav_status_repaint
+  fi
+  return 1
 }
 
 # Move highlight in the dropdown (arrows / Ctrl+N / Ctrl+P — not j/k, those type)
@@ -1220,6 +1427,8 @@ _dsearch_start() {
   typeset -g _DSEARCH_PUSHBACK=""
   typeset -g _dsearch_q=""
 
+  setopt localoptions nomonitor nonotify
+
   _dsearch_q="${1:-}"
   _dsearch_cur=${#_dsearch_q}
   _dsearch_qwin=0
@@ -1230,6 +1439,13 @@ _dsearch_start() {
   _dsearch_cand_stack=()
   _dsearch_focus=list
   _dsearch_view=search
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_GEN=0
+  _DSEARCH_LAST_TICK=0
+  _DSEARCH_WORK_Q=""
+  _DSEARCH_SHOWN_Q=""
+  _DSEARCH_DIRTY=0
+  _DSEARCH_PUSHBACK=""
 
   _dsearch_tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/dnav-dsearch.XXXXXX") || {
     printf "\r\e[2K"
@@ -1247,33 +1463,24 @@ _dsearch_start() {
   _dsearch_extra_lines=0
   if [[ -n $_dsearch_q ]]; then
     _dsearch_apply_filter "$_dsearch_q" $maxn
+    _DSEARCH_WORK_Q="$_dsearch_q"
+    _DSEARCH_SHOWN_Q="$_dsearch_q"
   fi
   _DSEARCH_OPEN=1
   _dsearch_draw "$_dsearch_q"
 
   while true; do
-    (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; return 130; }
-    if [[ -n $_DSEARCH_PUSHBACK ]]; then
-      local pb="$_DSEARCH_PUSHBACK"
-      _DSEARCH_PUSHBACK=""
-      case $pb in
-        $'\e') key=esc ;;
-        $'\n'|$'\r') key=enter ;;
-        $'\x0e') key=ctrl-n ;;
-        $'\x10') key=ctrl-p ;;
-        $'\x01') key=ctrl-a ;;
-        $'\x05') key=ctrl-e ;;
-        *) key="$pb" ;;
-      esac
-    elif (( $+functions[_dnav_read_token] )); then
-      _dnav_read_token || true
-      key="$REPLY"
-    else
-      read -k 1 key || true
+    (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; _dsearch_worker_stop; return 130; }
+    if ! _dsearch_wait_key; then
+      (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; _dsearch_worker_stop; return 130; }
+      _dsearch_maybe_tick
+      continue
     fi
-    (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; return 130; }
+    key="$REPLY"
+    (( ${DNAV_ABORT:-0} )) && { _DSEARCH_OPEN=0; _dsearch_worker_stop; return 130; }
     if [[ $key == ctrl-c || $key == $'\x03' ]]; then
       _DSEARCH_OPEN=0
+      _dsearch_worker_stop
       if (( $+functions[_dnav_abort] )); then
         _dnav_abort
       else
@@ -1286,8 +1493,14 @@ _dsearch_start() {
     fi
 
     case $key in
-      up) _dsearch_sel_up ;;
-      down) _dsearch_sel_down ;;
+      up)
+        _dsearch_flush_filter
+        _dsearch_sel_up
+        ;;
+      down)
+        _dsearch_flush_filter
+        _dsearch_sel_down
+        ;;
       right)
         if [[ ${_dsearch_view:-search} == search ]]; then
           if [[ ${_dsearch_focus:-list} == help ]]; then
@@ -1320,7 +1533,7 @@ _dsearch_start() {
         ;;
       delete)
         if [[ ${_dsearch_view:-search} != help ]]; then
-          _dsearch_delete && _dsearch_refresh_query
+          _dsearch_delete && _dsearch_note_query
         fi
         ;;
       esc)
@@ -1341,6 +1554,7 @@ _dsearch_start() {
           _dsearch_open_help
           continue
         fi
+        _dsearch_flush_filter
         if (( $#_dsearch_matches == 0 )); then
           continue
         fi
@@ -1381,7 +1595,7 @@ _dsearch_start() {
           continue
         fi
         if _dsearch_backspace; then
-          _dsearch_refresh_query
+          _dsearch_note_query
         fi
         ;;
       ctrl-u)
@@ -1393,19 +1607,31 @@ _dsearch_start() {
         _dsearch_sel=0
         _dsearch_matches=()
         _dsearch_prev_query=""
+        _dsearch_cand_stack=()
         _dsearch_focus=list
+        _dsearch_worker_stop
+        _DSEARCH_WORK_Q=""
+        _DSEARCH_SHOWN_Q=""
+        _DSEARCH_DIRTY=0
         _dsearch_draw "$_dsearch_q"
         ;;
-      ctrl-p) _dsearch_sel_up ;;
-      ctrl-n) _dsearch_sel_down ;;
+      ctrl-p)
+        _dsearch_flush_filter
+        _dsearch_sel_up
+        ;;
+      ctrl-n)
+        _dsearch_flush_filter
+        _dsearch_sel_down
+        ;;
       [[:print:]])
         if [[ ${_dsearch_view:-search} == help ]]; then
           _dsearch_view=search
         fi
         _dsearch_focus=list
         _dsearch_insert "$key"
-        _dsearch_refresh_query
+        _dsearch_note_query
         ;;
     esac
+    _dsearch_maybe_tick
   done
 }

@@ -420,7 +420,47 @@ run_test test_apply_filter_typos_plurals_related
 run_test test_apply_filter_confidence_trim
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
+test_now_ms_is_integer() {
+  local n
+  n="$(_dsearch_now_ms)"
+  if [[ $n == <-> ]]; then
+    _dnav_test_pass "now_ms is an integer ($n)"
+  else
+    _dnav_test_fail "now_ms not integer: ${(V)n}"
+  fi
+}
+
+test_worker_ranks_off_thread() {
+  _dsearch_q="doc"
+  _dsearch_prev_query=""
+  _dsearch_cand_stack=()
+  _dsearch_matches=()
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_GEN=0
+  _DSEARCH_SHOWN_Q=""
+  _DSEARCH_WORK_Q=""
+  _DSEARCH_LAST_TICK=0
+  _dsearch_worker_start
+  assert_gt "$_DSEARCH_WORKER_PID" 1 "worker pid is a real child"
+  local i
+  for (( i=0; i < 80; i++ )); do
+    _dsearch_worker_poll && break
+    if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+      zselect -t 5
+    else
+      /bin/sleep 0.05
+    fi
+  done
+  _dsearch_worker_stop
+  assert_gt "$#_dsearch_matches" 0 "background worker ranks doc"
+  local joined="${(j:\n:)_dsearch_matches}"
+  assert_contains "$joined" "Documents" "async hits include Documents"
+  assert_eq "$_DSEARCH_SHOWN_Q" "doc" "poll records the query that was ranked"
+}
+
 run_test test_incremental_narrowing
+run_test test_now_ms_is_integer
+run_test test_worker_ranks_off_thread
 run_test test_awk_filter_direct
 run_test test_display_path_tilde
 run_test test_pin_jumps_prefers_jump

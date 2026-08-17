@@ -1406,10 +1406,74 @@ _dnav_read_key() {
   done
 }
 
+# Classify one already-read byte into a key token. Sets REPLY.
+_dnav_classify_key() {
+  local k="$1" k2 k3 k4
+  REPLY=""
+  case $k in
+    $'\x03') REPLY=ctrl-c; return 0 ;;
+    $'\n'|$'\r') REPLY=enter; return 0 ;;
+    $'\t') REPLY=tab; return 0 ;;
+    $'\177'|$'\b') REPLY=backspace; return 0 ;;
+    $'\x01') REPLY=ctrl-a; return 0 ;;
+    $'\x05') REPLY=ctrl-e; return 0 ;;
+    $'\x0e') REPLY=ctrl-n; return 0 ;;
+    $'\x10') REPLY=ctrl-p; return 0 ;;
+    $'\x15') REPLY=ctrl-u; return 0 ;;
+    $'\e')
+      if read -t 0.05 -k 1 k2 2>/dev/null; then
+        if [[ $k2 == '[' ]]; then
+          read -k 1 k3 2>/dev/null || k3=""
+          case $k3 in
+            A) REPLY=up; return 0 ;;
+            B) REPLY=down; return 0 ;;
+            C) REPLY=right; return 0 ;;
+            D) REPLY=left; return 0 ;;
+            H) REPLY=home; return 0 ;;
+            F) REPLY=end; return 0 ;;
+            3)
+              read -t 0.05 -k 1 k4 2>/dev/null || true
+              REPLY=delete
+              return 0
+              ;;
+            1|4|7|8)
+              read -t 0.05 -k 1 k4 2>/dev/null || true
+              if [[ $k3 == 1 || $k3 == 7 ]]; then
+                REPLY=home
+              else
+                REPLY=end
+              fi
+              return 0
+              ;;
+            *) REPLY=esc; return 0 ;;
+          esac
+        fi
+        REPLY=esc
+        return 0
+      fi
+      REPLY=esc
+      return 0
+      ;;
+    *) REPLY="$k"; return 0 ;;
+  esac
+}
+
+# One token if a byte is already waiting. Never blocks (search drain).
+_dnav_try_read_token() {
+  local k
+  REPLY=""
+  (( ${DNAV_ABORT:-0} )) && return 1
+  if ! read -t 0 -k 1 k 2>/dev/null; then
+    return 1
+  fi
+  [[ -n $k ]] || return 1
+  _dnav_classify_key "$k"
+}
+
 # One key token: esc/up/down/left/right/home/end/delete/enter/tab/backspace/
 # ctrl-c/ctrl-a/ctrl-e/ctrl-n/ctrl-p/ctrl-u, or a single printable char.
 _dnav_read_token() {
-  local k k2 k3 k4
+  local k
   REPLY=""
   while true; do
     (( ${DNAV_ABORT:-0} )) && return 1
@@ -1421,55 +1485,11 @@ _dnav_read_token() {
     fi
     (( ${DNAV_ABORT:-0} )) && return 1
     [[ -n $k ]] || continue
-    case $k in
-      $'\x03') REPLY=ctrl-c; return 0 ;;
-      $'\n'|$'\r') REPLY=enter; return 0 ;;
-      $'\t') REPLY=tab; return 0 ;;
-      $'\177'|$'\b') REPLY=backspace; return 0 ;;
-      $'\x01') REPLY=ctrl-a; return 0 ;;
-      $'\x05') REPLY=ctrl-e; return 0 ;;
-      $'\x0e') REPLY=ctrl-n; return 0 ;;
-      $'\x10') REPLY=ctrl-p; return 0 ;;
-      $'\x15') REPLY=ctrl-u; return 0 ;;
-      $'\e')
-        if read -t 0.05 -k 1 k2 2>/dev/null; then
-          if [[ $k2 == '[' ]]; then
-            read -k 1 k3 2>/dev/null || k3=""
-            case $k3 in
-              A) REPLY=up; return 0 ;;
-              B) REPLY=down; return 0 ;;
-              C) REPLY=right; return 0 ;;
-              D) REPLY=left; return 0 ;;
-              H) REPLY=home; return 0 ;;
-              F) REPLY=end; return 0 ;;
-              3)
-                read -t 0.05 -k 1 k4 2>/dev/null || true
-                REPLY=delete
-                return 0
-                ;;
-              1|4|7|8)
-                read -t 0.05 -k 1 k4 2>/dev/null || true
-                if [[ $k3 == 1 || $k3 == 7 ]]; then
-                  REPLY=home
-                else
-                  REPLY=end
-                fi
-                return 0
-                ;;
-              *) REPLY=esc; return 0 ;;
-            esac
-          fi
-          REPLY=esc
-          return 0
-        fi
-        if (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
-          continue
-        fi
-        REPLY=esc
-        return 0
-        ;;
-      *) REPLY="$k"; return 0 ;;
-    esac
+    _dnav_classify_key "$k"
+    if [[ $REPLY == esc ]] && (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize; then
+      continue
+    fi
+    return 0
   done
 }
 
