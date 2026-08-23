@@ -317,6 +317,38 @@ test_update_repo_finds_source() {
   assert_eq "${got:A}" "${DNAV_REPO_ROOT:A}" "DNAV_UPDATE_FROM wins"
 }
 
+test_record_dest_writes_file() {
+  local f="$DNAV_TEST_TMP/result-dest"
+  DNAV_RESULT_FILE=$f
+  _dnav_record_dest "/tmp/dnav-dest"
+  assert_eq "$(<$f)" "/tmp/dnav-dest" "record_dest writes path"
+  DNAV_RESULT_FILE=""
+}
+
+test_posix_hook_defines_commands() {
+  local out
+  out="$(DNAV_DIR="$DNAV_ZSH_DIR" DNAV_CONFIG_DIR="$DNAV_TEST_CONFIG" bash -c '
+    . "$1/shell/dnav.sh"
+    command -v dnav >/dev/null && command -v djump >/dev/null && echo ok
+  ' bash "$DNAV_REPO_ROOT")" || true
+  assert_eq "$out" "ok" "posix hook defines dnav and djump"
+}
+
+test_sourced_dnav_does_not_run_tui() {
+  local out
+  out="$(zsh -f -c 'source "$1/dnav"; print -r -- still-here' zsh "$DNAV_ZSH_DIR")"
+  assert_contains "$out" "still-here" "sourcing dnav does not start the TUI"
+}
+
+test_posix_hook_dnav_help() {
+  local out
+  out="$(DNAV_DIR="$DNAV_ZSH_DIR" bash -c '
+    . "$1/shell/dnav.sh"
+    dnav --help
+  ' bash "$DNAV_REPO_ROOT" 2>&1)" || true
+  assert_contains "$out" "dnav" "foreign dnav --help runs zsh -f"
+}
+
 test_resourcing_reloads_search_plugin() {
   _dsearch_start() { print -r -- STALE; }
   source "$DNAV_ZSH_DIR/dnav"
@@ -452,6 +484,10 @@ run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated
 run_test test_update_repo_finds_source
+run_test test_record_dest_writes_file
+run_test test_posix_hook_defines_commands
+run_test test_posix_hook_dnav_help
+run_test test_sourced_dnav_does_not_run_tui
 run_test test_resourcing_reloads_search_plugin
 run_test test_maybe_ls_waits_after_bar
 run_test test_maybe_ls_skips_wait_when_ls_off

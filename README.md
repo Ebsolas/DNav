@@ -15,7 +15,7 @@ cd DNav
 exec zsh
 ```
 
-Scripts go in `~/.local/share/dnav`, config in `~/.config/dnav` (existing files are not overwritten), and `~/.zshrc` sources DNav. The TUI does not start on its own.
+Scripts go in `~/.local/share/dnav`, config in `~/.config/dnav` (existing files are not overwritten). The TUI never starts by itself — type `dnav` in zsh, bash, fish, or another hooked shell. PowerShell: `. ~/.local/share/dnav/shell/dnav.ps1`.
 
 ```bash
 dnav --update                 # refresh scripts; merge new config keys

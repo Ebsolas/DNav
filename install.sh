@@ -129,7 +129,37 @@ install_scripts() {
     chmod 0755 -- "$PREFIX/install.sh"
   fi
   write_source_pointer
+  copy_shell_hooks
+  zcompile_zsh
   ok "scripts → $PREFIX"
+}
+
+copy_shell_hooks() {
+  local src="$SCRIPT_DIR/shell" dest="$PREFIX/shell" f
+  [[ -d $src ]] || src="${PACKAGE_DIR%/zsh}/shell"
+  [[ -d $src ]] || return 0
+  mkdir -p -- "$dest"
+  if [[ "$(cd -- "$src" && pwd)" == "$(cd -- "$dest" && pwd)" ]]; then
+    info "hooks  $dest"
+    return 0
+  fi
+  for f in dnav.sh dnav.zsh dnav.fish dnav.ps1; do
+    [[ -f $src/$f ]] || continue
+    install -m 0644 -- "$src/$f" "$dest/$f"
+  done
+  info "hooks  $dest"
+}
+
+zcompile_zsh() {
+  command -v zsh >/dev/null 2>&1 || return 0
+  zsh -f -c '
+    emulate -L zsh
+    local f
+    for f in dnav djump dfile dsearch dsearch-index; do
+      [[ -f $1/$f ]] || continue
+      zcompile -U -- "$1/$f" 2>/dev/null || true
+    done
+  ' zsh "$PREFIX" || true
 }
 
 # If a bash prefix is already installed, refresh it too. Never overwrite config.
@@ -295,10 +325,12 @@ rc_block() {
   # PREFIX is expanded at install time so the path is concrete in .zshrc
   cat <<EOF
 $RC_BEGIN
-# DNav — navigation TUI + dKEY jumps (https://github.com/Ebsolas/DNav)
-# Does not auto-run the TUI; type \`dnav\` when you want it.
-if [[ -r ${PREFIX}/dnav ]]; then
-  source ${PREFIX}/dnav
+# DNav: dKEY jumps now; TUI loads on first \`dnav\` (does not start by itself).
+DNAV_DIR=${PREFIX}
+if [[ -r \${DNAV_DIR}/shell/dnav.zsh ]]; then
+  source \${DNAV_DIR}/shell/dnav.zsh
+elif [[ -r \${DNAV_DIR}/dnav ]]; then
+  source \${DNAV_DIR}/dnav
 fi
 $RC_END
 EOF
@@ -343,7 +375,6 @@ install_rc() {
   # Nudge if an old bare `dnav` auto-start remains outside our block
   if grep -nE '^[[:space:]]*dnav([[:space:]]|$)' "$ZSHRC" 2>/dev/null \
       | grep -vF "$RC_BEGIN" >/dev/null 2>&1; then
-    # Only warn if a line is exactly calling dnav and not inside comments we just wrote
     if awk -v b="$RC_BEGIN" -v e="$RC_END" '
       $0==b{s=1} $0==e{s=0}
       !s && $0 ~ /^[[:space:]]*dnav([[:space:]]|$)/ { found=1 }
@@ -353,25 +384,86 @@ install_rc() {
       warn "Remove it if you only want DNav available on demand."
     fi
   fi
+  hook_other_shells
 }
 
-remove_rc() {
-  [[ -f "$ZSHRC" ]] || return 0
-  if ! rc_has_block; then
-    info "no dnav block in $ZSHRC"
+BASHRC="${HOME}/.bashrc"
+FISH_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+
+hook_file() {
+  local rc="$1" extra="$2"
+  [[ -n $rc ]] || return 0
+  if [[ ! -f $rc ]]; then
     return 0
   fi
+  local tmp
+  if grep -qF "$RC_BEGIN" "$rc" 2>/dev/null; then
+    tmp="$(mktemp)"
+    awk -v begin="$RC_BEGIN" -v end="$RC_END" '
+      $0 == begin { skip=1; next }
+      $0 == end   { skip=0; next }
+      !skip { print }
+    ' "$rc" > "$tmp"
+    cat "$tmp" > "$rc"
+    rm -f -- "$tmp"
+  fi
+  {
+    printf '\n'
+    printf '%s\n' "$RC_BEGIN"
+    printf '%s\n' "$extra"
+    printf '%s\n' "$RC_END"
+  } >> "$rc"
+  ok "hooked $rc"
+}
+
+hook_other_shells() {
+  (( DO_RC )) || return 0
+  local posix
+  posix=$(cat <<EOF
+DNAV_DIR=${PREFIX}
+export DNAV_DIR
+# zsh uses native functions from .zshrc; skip this hook there.
+if [ -z "\${ZSH_VERSION:-}" ] && [ -r "\${DNAV_DIR}/shell/dnav.sh" ]; then
+  . "\${DNAV_DIR}/shell/dnav.sh"
+fi
+EOF
+)
+  hook_file "$BASHRC" "$posix"
+  if [[ -f ${HOME}/.profile ]]; then
+    hook_file "${HOME}/.profile" "$posix"
+  fi
+  if command -v fish >/dev/null 2>&1 || [[ -f $FISH_RC ]]; then
+    mkdir -p -- "$(dirname -- "$FISH_RC")"
+    [[ -f $FISH_RC ]] || : > "$FISH_RC"
+    hook_file "$FISH_RC" "set -gx DNAV_DIR ${PREFIX}"$'\n'"if test -r \$DNAV_DIR/shell/dnav.fish"$'\n'"    source \$DNAV_DIR/shell/dnav.fish"$'\n'"end"
+  fi
+}
+
+unhook_file() {
+  local rc="$1"
+  [[ -f $rc ]] || return 0
+  grep -qF "$RC_BEGIN" "$rc" 2>/dev/null || return 0
   local tmp
   tmp="$(mktemp)"
   awk -v begin="$RC_BEGIN" -v end="$RC_END" '
     $0 == begin { skip=1; next }
     $0 == end   { skip=0; next }
     !skip { print }
-  ' "$ZSHRC" > "$tmp"
-  # trim trailing blank lines introduced by removal (best-effort)
-  cat "$tmp" > "$ZSHRC"
+  ' "$rc" > "$tmp"
+  cat "$tmp" > "$rc"
   rm -f -- "$tmp"
-  ok "removed hook from $ZSHRC"
+}
+
+remove_rc() {
+  if rc_has_block; then
+    unhook_file "$ZSHRC"
+    ok "removed hook from $ZSHRC"
+  else
+    info "no dnav block in $ZSHRC"
+  fi
+  unhook_file "${HOME}/.bashrc"
+  unhook_file "${HOME}/.profile"
+  unhook_file "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
 }
 
 uninstall() {
@@ -380,8 +472,9 @@ uninstall() {
   if [[ -d "$PREFIX" ]]; then
     local f
     for f in "${PACKAGE_FILES[@]}" install.sh .source; do
-      rm -f -- "$PREFIX/$f"
+      rm -f -- "$PREFIX/$f" "$PREFIX/$f.zwc"
     done
+    rm -rf -- "$PREFIX/shell"
     # Remove dir if empty
     rmdir -- "$PREFIX" 2>/dev/null || info "left $PREFIX (not empty or in use)"
     ok "removed scripts from $PREFIX"
@@ -408,6 +501,7 @@ main() {
     printf '\n'
     install_scripts
     update_other_shells
+    install_rc
     merge_user_config
     printf '\n'
     ok "DNav updated"

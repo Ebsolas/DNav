@@ -310,6 +310,7 @@ _djump_goto() {
     return 1
   }
   dest="${dest:a}"
+  (( $+functions[_dnav_record_dest] )) && _dnav_record_dest "$dest"
   # Same bar as dnav. Not _dnav_finish (that restores TUI tty).
   if (( $+functions[_dnav_success_bar] )); then
     _dnav_success_bar "$dest" "" djump

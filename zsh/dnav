@@ -744,6 +744,13 @@ _dnav_update() {
       print -u2 -- "dnav: failed to copy zsh scripts"
       return 1
     }
+    if [[ -d $repo/shell ]]; then
+      command mkdir -p -- "$dest/shell"
+      command cp -f -- "$repo/shell"/dnav.sh "$repo/shell"/dnav.zsh "$repo/shell"/dnav.fish "$repo/shell"/dnav.ps1 "$dest/shell/" 2>/dev/null || true
+    fi
+    zsh -f -c 'emulate -L zsh; local f; for f in dnav djump dfile dsearch dsearch-index; do
+      [[ -f $1/$f ]] && zcompile -U -- $1/$f 2>/dev/null || true
+    done' zsh "$dest" || true
     if [[ -f $repo/install.sh ]]; then
       command cp -f -- "$repo/install.sh" "$dest/install.sh"
       command chmod 0755 -- "$dest/install.sh"
@@ -1735,9 +1742,17 @@ _dnav_success_bar() {
   _dnav_out "$frame"
 }
 
+# Parent-shell cd (bash/fish/…): write dest when DNAV_RESULT_FILE is set.
+_dnav_record_dest() {
+  local f="${DNAV_RESULT_FILE:-}"
+  [[ -n $f ]] || return 0
+  print -r -- "$1" > "$f" 2>/dev/null || true
+}
+
 # $1=path $2=dnav|djump $3=origin col. Bar, restore tty, maybe ls.
 _dnav_finish() {
   local dest="$1" ctx="${2:-dnav}" origin="${3:-}"
+  _dnav_record_dest "$dest"
   if (( $+functions[_dnav_success_bar] )); then
     _dnav_success_bar "$dest" "$origin" "$ctx"
   else
@@ -1980,6 +1995,7 @@ _dnav_help_topic_body() {
       print -r -- "About → Settings              edit from inside dnav"
       print -r -- "dconfig --reload, --edit      reload, or open in \$EDITOR"
       print -r -- "dnav --update                 refresh scripts; merge new config keys"
+      print -r -- "other shells                 source shell/dnav.sh (or .fish / .ps1)"
       print -r -- "dnav --reindex                rebuild the search index"
       print -r -- "ls_after=1                    run ls after a successful jump"
       print -r -- "ls_after_ms=N                 wait N ms after the path bar before ls"
@@ -2799,7 +2815,7 @@ dnav() {
 }
 
 
-# Run when executed, not when sourced.
-if [[ "${ZSH_EVAL_CONTEXT:-}" != *:file ]]; then
+# `zsh dnav` / `./dnav` only. Never when sourced from zshrc.
+if [[ ${ZSH_EVAL_CONTEXT:-} == toplevel ]]; then
   dnav "$@"
 fi
