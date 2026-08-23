@@ -19,8 +19,6 @@ typeset -g  _DFILE_LIST_DENY=""
 
 _dfile_is_open() { (( _DFILE_OPEN )) }
 
-_dfile_hl() { print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}" }
-_dfile_rst() { print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}" }
 _dfile_term_cols() {
   local w r c
   if (( $+functions[_dnav_term_cols] )); then
@@ -76,39 +74,31 @@ _dfile_jump_label() {
   print -rn -- " Jump to: $(_dfile_jump_name "$1" ${2:-}) "
 }
 
-# Short status-bar labels for dfile_sort_dirs / dfile_sort_files.
-_dfile_sort_dir_label() {
-  case ${1:-${_DFILE_SORT_DIRS:-${DNAV_CFG_DFILE_SORT_DIRS:-alpha}}} in
-    hidden_first|hidden|dot_first) print -rn -- Dot ;;
-    *) print -rn -- Alpha ;;
-  esac
+# $1=dirs|files  $2=long|short  $3=optional mode
+_dfile_sort_chip() {
+  local kind="$1" style="$2" val="$3" short=0
+  [[ $style == short ]] && short=1
+  if [[ $kind == dirs ]]; then
+    [[ -n $val ]] || val="${_DFILE_SORT_DIRS:-${DNAV_CFG_DFILE_SORT_DIRS:-alpha}}"
+    case $val in
+      hidden_first|hidden|dot_first) (( short )) && print -rn -- D || print -rn -- Dot ;;
+      *) (( short )) && print -rn -- A || print -rn -- Alpha ;;
+    esac
+  else
+    [[ -n $val ]] || val="${_DFILE_SORT_FILES:-${DNAV_CFG_DFILE_SORT_FILES:-alpha}}"
+    case $val in
+      ext|extension) (( short )) && print -rn -- E || print -rn -- Ext ;;
+      dot_first|hidden_first|dot) (( short )) && print -rn -- D || print -rn -- Dot ;;
+      dot_ext|dot_extension|hidden_ext) (( short )) && print -rn -- DE || print -rn -- Dot/Ext ;;
+      *) (( short )) && print -rn -- A || print -rn -- Alpha ;;
+    esac
+  fi
 }
 
-_dfile_sort_file_label() {
-  case ${1:-${_DFILE_SORT_FILES:-${DNAV_CFG_DFILE_SORT_FILES:-alpha}}} in
-    ext|extension) print -rn -- Ext ;;
-    dot_first|hidden_first|dot) print -rn -- Dot ;;
-    dot_ext|dot_extension|hidden_ext) print -rn -- Dot/Ext ;;
-    *) print -rn -- Alpha ;;
-  esac
-}
-
-# Compact status tokens: D: A|D   F: A|D|E|DE
-_dfile_sort_dir_short() {
-  case ${1:-${_DFILE_SORT_DIRS:-${DNAV_CFG_DFILE_SORT_DIRS:-alpha}}} in
-    hidden_first|hidden|dot_first) print -rn -- D ;;
-    *) print -rn -- A ;;
-  esac
-}
-
-_dfile_sort_file_short() {
-  case ${1:-${_DFILE_SORT_FILES:-${DNAV_CFG_DFILE_SORT_FILES:-alpha}}} in
-    ext|extension) print -rn -- E ;;
-    dot_first|hidden_first|dot) print -rn -- D ;;
-    dot_ext|dot_extension|hidden_ext) print -rn -- DE ;;
-    *) print -rn -- A ;;
-  esac
-}
+_dfile_sort_dir_label()  { _dfile_sort_chip dirs long  "${1:-}"; }
+_dfile_sort_file_label() { _dfile_sort_chip files long "${1:-}"; }
+_dfile_sort_dir_short()  { _dfile_sort_chip dirs short "${1:-}"; }
+_dfile_sort_file_short() { _dfile_sort_chip files short "${1:-}"; }
 
 _dfile_cycle_dir_sort() {
   case ${_DFILE_SORT_DIRS:-${DNAV_CFG_DFILE_SORT_DIRS:-alpha}} in
@@ -125,9 +115,6 @@ _dfile_cycle_file_sort() {
     *)         _DFILE_SORT_FILES=alpha ;;
   esac
 }
-
-# Cell width / window / strip live in the dnav engine.
-_dfile_cell_w() { _dnav_cell_w "$@"; }
 
 # 1 if path is a dir we cannot enter/list (need r+x).
 _dfile_dir_locked() {
@@ -236,8 +223,7 @@ _dfile_list() {
   return 0
 }
 
-_dfile_window() { _dnav_window "$@"; }
-_dfile_paint_strip() { _dnav_paint_strip "$@"; }
+
 
 typeset -gi _DFILE_SHOW_HIDDEN=0
 typeset -g  _DFILE_SORT_DIRS=alpha
@@ -420,8 +406,8 @@ _dfile_paint_line() {
   local which="$1"
   local maxw brand brand_w rest_w active=0 hl rst
   maxw="$(_dfile_cols)"
-  hl="$(_dfile_hl)"
-  rst="$(_dfile_rst)"
+  hl="$(_dnav_hl)"
+  rst="$(_dnav_rst)"
   case $which in
     siblings)
       # Brand chip always cyan; current dir among _DFILE_PARENT _DFILE_SIBLINGS (or "/" at root).
@@ -436,7 +422,7 @@ _dfile_paint_line() {
         _DFILE_WIN_S=0
       else
         # active=1 always: highlight _DFILE_SEL_S (_DFILE_CWD chip, or "/" at root)
-        _dfile_paint_strip _DFILE_SIBLINGS $_DFILE_SEL_S $_DFILE_WIN_S 1 $rest_w _DFILE_SIBLINGS_LOCK
+        _dnav_paint_strip _DFILE_SIBLINGS $_DFILE_SEL_S $_DFILE_WIN_S 1 $rest_w _DFILE_SIBLINGS_LOCK
         _DFILE_WIN_S=$reply[1]
       fi
       ;;
@@ -444,7 +430,7 @@ _dfile_paint_line() {
       # Jump to: is _DFILE_CHILD_ROW[1] — same strip/window as the folders.
       printf "\r"
       [[ $_DFILE_FOCUS == children ]] && active=1
-      _dfile_paint_strip _DFILE_CHILD_ROW $_DFILE_SEL_C $_DFILE_WIN_C $active $maxw _DFILE_CHILD_ROW_LOCK 1
+      _dnav_paint_strip _DFILE_CHILD_ROW $_DFILE_SEL_C $_DFILE_WIN_C $active $maxw _DFILE_CHILD_ROW_LOCK 1
       _DFILE_WIN_C=$reply[1]
       ;;
     status)
@@ -453,7 +439,7 @@ _dfile_paint_line() {
     files)
       [[ $_DFILE_FOCUS == files ]] && active=1
       printf "\r"
-      _dfile_paint_strip _DFILE_FILES $_DFILE_SEL_F $_DFILE_WIN_F $active $maxw _DFILE_FILES_LOCK
+      _dnav_paint_strip _DFILE_FILES $_DFILE_SEL_F $_DFILE_WIN_F $active $maxw _DFILE_FILES_LOCK
       _DFILE_WIN_F=$reply[1]
       ;;
   esac
@@ -498,8 +484,8 @@ _dfile_draw() {
     return
   fi
   maxw="$(_dfile_cols)"
-  hl="$(_dfile_hl)"
-  rst="$(_dfile_rst)"
+  hl="$(_dnav_hl)"
+  rst="$(_dnav_rst)"
   printf "\e[?25l"
 
   if [[ $_DFILE_MODE == jump ]]; then
@@ -709,13 +695,13 @@ _dfile_scroll_to_sel() {
   # Match paint_strip: room for optional < > overflow markers
   (( maxw > 12 )) && (( maxw -= 4 ))
   if (( sticky )); then
-    _dfile_window "$aname" $sel 0 $maxw "$lockname" 1
+    _dnav_window "$aname" $sel 0 $maxw "$lockname" 1
     if (( sel < $#_dfile_vis )); then
       reply=(0)
       return
     fi
   fi
-  _dfile_window "$aname" $sel $win $maxw "$lockname" $sticky
+  _dnav_window "$aname" $sel $win $maxw "$lockname" $sticky
   win=$reply[1]
   vc=$#_dfile_vis
   if (( dir > 0 && sel < n - 1 && vc >= 2 )); then
@@ -727,7 +713,7 @@ _dfile_scroll_to_sel() {
       (( win < 0 )) && win=0
     fi
   fi
-  _dfile_window "$aname" $sel $win $maxw "$lockname" $sticky
+  _dnav_window "$aname" $sel $win $maxw "$lockname" $sticky
   reply=($reply[1])
 }
 

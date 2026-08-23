@@ -15,7 +15,7 @@ test_dfile_available() {
 
 test_dfile_functions_exist() {
   local f
-  for f in _dfile_available _dfile_enter _dfile_list _dfile_paint_strip _dfile_dir_locked _dfile_entry_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact _dfile_draw _dfile_erase _dfile_refresh _dfile_session_reset _dfile_cancel_restore; do
+  for f in _dfile_available _dfile_enter _dfile_list _dnav_paint_strip _dfile_dir_locked _dfile_entry_locked _dfile_jump_name _dfile_jump_label _dfile_sort_dir_label _dfile_sort_file_label _dfile_sort_dir_short _dfile_sort_file_short _dfile_cycle_dir_sort _dfile_cycle_file_sort _dfile_status_compact _dfile_draw _dfile_erase _dfile_refresh _dfile_session_reset _dfile_cancel_restore; do
     assert_fn "$f"
   done
 }
@@ -45,10 +45,10 @@ test_dfile_child_row_window_fits() {
   for i in {1..20}; do
     child_row+=("folder$i")
   done
-  _dfile_window child_row 1 0 40 "" 1
+  _dnav_window child_row 1 0 40 "" 1
   used=0
   for i in {1..$#_dfile_vis}; do
-    w="$(_dfile_cell_w "${_dfile_vis[i]}" 0)"
+    w="$(_dnav_cell_w "${_dfile_vis[i]}" 0)"
     (( used += w ))
   done
   assert_eq "$_dfile_vis[1]" "Jump to: currentfolder" "Jump to: stays first while sel fits"

@@ -1115,13 +1115,6 @@ _dsearch_pin_jumps() {
 # ── UI ────────────────────────────────────────────────────────────────────
 # Matches dnav: black-on-cyan full-width bars (same DNAV_HIGHLIGHT / success bar).
 
-_dsearch_hl() {
-  print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}"
-}
-_dsearch_rst() {
-  print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}"
-}
-
 _dsearch_cols() {
   if (( $+functions[_dnav_usable_cols] )); then
     _dnav_usable_cols
@@ -1200,8 +1193,8 @@ _dsearch_paint_row() {
   local mode="$1" text="${2:-}"
   local hl rst maxw inner
   maxw="$(_dsearch_cols)"
-  hl="$(_dsearch_hl)"
-  rst="$(_dsearch_rst)"
+  hl="$(_dnav_hl)"
+  rst="$(_dnav_rst)"
 
   case $mode in
     bar)

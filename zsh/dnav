@@ -51,6 +51,9 @@ typeset -g DNAV_HIGHLIGHT DNAV_RESET
 DNAV_HIGHLIGHT=$'\e[30;46m'
 DNAV_RESET=$'\e[0m'
 
+_dnav_hl() { print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}"; }
+_dnav_rst() { print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}"; }
+
 # ── Config helpers ────────────────────────────────────────────────────────
 _dnav_config_dir() {
   if [[ -n ${DNAV_CONFIG_DIR:-} ]]; then
@@ -2051,8 +2054,6 @@ _dnav_settings_fill_body() {
   esac
 }
 
-# Manual line editor (raw _DNAV_MODE). Handles Backspace/Delete; Esc cancels.
-# Returns 0 and sets REPLY on Enter; returns 1 on Esc/cancel.
 # Manual line editor (raw mode). Handles Backspace/Delete; Esc cancels.
 # Returns 0 and sets REPLY on Enter; returns 1 on Esc/cancel.
 _dnav_inline_edit() {
