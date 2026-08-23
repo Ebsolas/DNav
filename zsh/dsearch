@@ -681,18 +681,14 @@ _dsearch_draw_sel() {
 }
 
 _dsearch_erase_ui() {
-  local i maxw
-  maxw="$(_dsearch_cols)"
+  local i
   _dsearch_cursor_hide
-  printf "\r%*s" $maxw ""
+  printf "\r\e[2K"
   for (( i=0; i < _dsearch_extra_lines; i++ )); do
-    printf "\n"
-    _dsearch_paint_row blank
+    printf "\n\r\e[2K"
   done
-  if (( _dsearch_extra_lines > 0 )); then
-    printf "\e[%dA" $_dsearch_extra_lines
-  fi
-  printf "\r%*s\r" $maxw ""
+  (( _dsearch_extra_lines > 0 )) && printf "\e[%dA" $_dsearch_extra_lines
+  printf "\r\e[2K"
   _dsearch_extra_lines=0
 }
 
@@ -765,12 +761,33 @@ _dsearch_drain_query() {
   done
 }
 
+# Drop the pid from the job table. Call whenever we clear _DSEARCH_WORKER_PID.
+_dsearch_worker_reap() {
+  local pid=$_DSEARCH_WORKER_PID
+  _DSEARCH_WORKER_PID=0
+  (( pid > 1 )) || return 0
+  wait "$pid" 2>/dev/null || true
+}
+
 _dsearch_worker_stop() {
   local pid=$_DSEARCH_WORKER_PID
   (( pid > 1 )) || { _DSEARCH_WORKER_PID=0; return 0 }
   kill "$pid" 2>/dev/null || true
   command pkill -P "$pid" 2>/dev/null || true
-  _DSEARCH_WORKER_PID=0
+  _dsearch_worker_reap
+}
+
+# Highlighted row is what Enter confirms. Re-rank only if the list is empty.
+# Sets REPLY to the path (not stdout — a flush may paint the TUI).
+_dsearch_commit_target() {
+  emulate -L zsh
+  if (( $#_dsearch_matches == 0 )); then
+    _dsearch_flush_filter
+  fi
+  (( $#_dsearch_matches )) || return 1
+  (( _dsearch_sel < 0 )) && _dsearch_sel=0
+  (( _dsearch_sel >= $#_dsearch_matches )) && _dsearch_sel=$(( $#_dsearch_matches - 1 ))
+  REPLY="${_dsearch_matches[_dsearch_sel+1]}"
 }
 
 # Rank $_dsearch_q off-thread. Hits land in $tmpdir/hits.$gen.
@@ -791,7 +808,7 @@ _dsearch_worker_start() {
   (( ++_DSEARCH_GEN ))
   gen=$_DSEARCH_GEN
   _DSEARCH_WORK_Q="$q"
-  setopt nomonitor nonotify
+  setopt localoptions nomonitor nonotify
   (
     emulate -L zsh
     setopt nomonitor nonotify
@@ -802,9 +819,8 @@ _dsearch_worker_start() {
       : > "$tmp/hits.$gen.tmp"
     fi
     /bin/mv -f -- "$tmp/hits.$gen.tmp" "$tmp/hits.$gen"
-  ) </dev/null >/dev/null 2>&1 &
+  ) </dev/null >/dev/null 2>&1 &!
   _DSEARCH_WORKER_PID=$!
-  disown $_DSEARCH_WORKER_PID 2>/dev/null || true
 }
 
 # 0 if the current generation produced a hits file (caller draws).
@@ -813,10 +829,10 @@ _dsearch_worker_poll() {
   [[ -n $tmp && $gen -gt 0 ]] || return 1
   f="$tmp/hits.$gen"
   [[ -f $f ]] || return 1
+  _dsearch_worker_reap
   _dsearch_take_top "${(@f)$(<"$f")}"
   /bin/rm -f -- "$f"
   _DSEARCH_SHOWN_Q="$_DSEARCH_WORK_Q"
-  _DSEARCH_WORKER_PID=0
   _DSEARCH_DIRTY=0
   _dsearch_sel=0
   return 0
@@ -833,7 +849,7 @@ _dsearch_maybe_tick() {
   fi
   _DSEARCH_LAST_TICK=$now
   if (( _DSEARCH_WORKER_PID > 1 )) && ! kill -0 $_DSEARCH_WORKER_PID 2>/dev/null; then
-    _DSEARCH_WORKER_PID=0
+    _dsearch_worker_reap
   fi
   if _dsearch_worker_poll; then
     _dsearch_draw "$_dsearch_q"
@@ -1111,14 +1127,10 @@ _dsearch_start() {
           _dsearch_open_help
           continue
         fi
-        _dsearch_flush_filter
-        if (( $#_dsearch_matches == 0 )); then
-          continue
-        fi
-        target="${_dsearch_matches[_dsearch_sel+1]}"
+        _dsearch_commit_target || continue
+        target="$REPLY"
         _dsearch_erase_ui
         _dsearch_session_cleanup
-        printf "\e[?25l"
         if [[ -d $target ]]; then
           if (( _DSEARCH_FOR_DFILE )); then
             cd -- "$target" 2>/dev/null || true
@@ -1130,6 +1142,7 @@ _dsearch_start() {
             (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
             return 0
           }
+          # Same pull-up as dfile: shared _dnav_finish → _dnav_success_bar.
           if (( $+functions[_dnav_finish] )); then
             _dnav_finish "${target:a}" dnav
           else

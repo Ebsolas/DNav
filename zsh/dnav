@@ -34,7 +34,7 @@ typeset -gi DNAV_CFG_LS_DNAV=-1 DNAV_CFG_LS_DJUMP=-1
 typeset -g DNAV_CFG_SUCCESS_ANIM=1 DNAV_CFG_FULL_REDRAW=0
 typeset -g DNAV_CFG_SUCCESS_BAR=1
 typeset -gi DNAV_CFG_SUCCESS_BAR_DNAV=-1 DNAV_CFG_SUCCESS_BAR_DJUMP=-1
-typeset -g DNAV_CFG_SUCCESS_ANIM_STEPS=8 DNAV_CFG_SUCCESS_ANIM_MS=25
+typeset -g DNAV_CFG_SUCCESS_ANIM_STEPS=8 DNAV_CFG_SUCCESS_ANIM_MS=2
 typeset -g DNAV_CFG_BRAND=DNav
 typeset -g DNAV_CFG_SEARCH_ROOTS=""
 typeset -gi DNAV_CFG_INDEX_AUTO=1
@@ -211,7 +211,7 @@ success_bar = 1
 # Animate the expand-to-path success bar (0 = instant bar)
 success_anim = 1
 success_anim_steps = 8
-success_anim_ms = 25
+success_anim_ms = 2
 
 # 1 = full line redraw every move (more compatible); 0 = partial chip repaint
 full_redraw = 0
@@ -290,7 +290,7 @@ _dnav_config_schema() {
   print -r -- 'success_bar_djump|cycle3|DNAV_CFG_SUCCESS_BAR_DJUMP|inherit||cycle3|Enter cycle inherit/on/off|path bar after djump: 1/0/inherit (inherit uses success_bar)'
   print -r -- 'success_anim|bool|DNAV_CFG_SUCCESS_ANIM|1|anim|toggle|Enter toggle|Animate the expand-to-path success bar (0 = instant)'
   print -r -- 'success_anim_steps|int|DNAV_CFG_SUCCESS_ANIM_STEPS|8||||success bar expand: number of animation steps'
-  print -r -- 'success_anim_ms|int|DNAV_CFG_SUCCESS_ANIM_MS|25||||success bar expand: milliseconds between steps'
+  print -r -- 'success_anim_ms|int|DNAV_CFG_SUCCESS_ANIM_MS|2||||success bar expand: milliseconds between steps'
   print -r -- 'full_redraw|bool|DNAV_CFG_FULL_REDRAW|0|redraw|toggle|Enter toggle · full line vs partial|1 = full line redraw every move; 0 = partial chip repaint'
   print -r -- 'search_roots|string|DNAV_CFG_SEARCH_ROOTS|||||'
   print -r -- 'index_auto|bool|DNAV_CFG_INDEX_AUTO|1|auto_index|||Rebuild search index when stale (1) or only via dnav --reindex (0)'
@@ -780,12 +780,8 @@ _dnav_update() {
   fi
 
   added="$(_dnav_config_merge_defaults)"
-  # source dnav already runs _dnav_config_load; only load again when we did not.
-  if (( copied )); then
-    source "$dest/dnav"
-  else
-    _dnav_config_load
-  fi
+  # Always re-source so already-loaded plugins (dsearch/dfile) pick up disk changes.
+  source "$dest/dnav"
   if [[ $added == <-> && added -gt 0 ]]; then
     print -r -- "dnav: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
   else
@@ -1038,6 +1034,18 @@ _dsearch_available() {
 #   _dfile_enter / _dfile_is_open
 #   _dsearch_start / _dsearch_start_for_dfile
 #   _djump_resolve / _djump_match_query
+
+# Re-source plugins already in this shell (source dnav / dnav --update).
+# Lazy load skips them otherwise, so search/file keep running the old copy.
+if (( $+functions[_dfile_enter] )); then
+  [[ -f $DNAV_DIR/dfile ]] && source "$DNAV_DIR/dfile"
+fi
+if (( $+functions[_dsearch_reindex] )); then
+  [[ -f $DNAV_DIR/dsearch-index ]] && source "$DNAV_DIR/dsearch-index"
+fi
+if (( $+functions[_dsearch_start] )); then
+  [[ -f $DNAV_DIR/dsearch ]] && source "$DNAV_DIR/dsearch"
+fi
 
 # After successful navigation (call only once terminal is restored). No-op on cancel paths.
 # $1 = dnav | djump  (specific flags inherit ls_after when unset / -1)
@@ -1656,6 +1664,54 @@ _dnav_cfg_cycle3_store() {
   esac
 }
 
+# Wait $1 milliseconds. Loop on wall-clock so a short /bin/sleep or a
+# SIGCHLD-interrupted zselect cannot skip the configured delay.
+_dnav_sleep_ms() {
+  emulate -L zsh
+  local -i ms=${1:-0} cs
+  local start remain delay now
+  (( ms < 1 )) && return 0
+  zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null || true
+  start=${EPOCHREALTIME:-0}
+  while true; do
+    if [[ -n ${EPOCHREALTIME:-} && $start != 0 ]]; then
+      remain=$(( ms - (EPOCHREALTIME - start) * 1000 ))
+      (( remain <= 0 )) && return 0
+    else
+      remain=$ms
+    fi
+    delay=$(( remain / 1000.0 ))
+    if /bin/sleep $delay 2>/dev/null || /usr/bin/sleep $delay 2>/dev/null; then
+      [[ -z ${EPOCHREALTIME:-} || $start == 0 ]] && return 0
+      continue
+    fi
+    cs=$(( (remain + 5) / 10 ))
+    (( cs < 1 )) && cs=1
+    if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+      now=${EPOCHREALTIME:-0}
+      zselect -t $cs
+      # zselect returned without waiting (signal): stop if the clock did not move.
+      if [[ -n ${EPOCHREALTIME:-} ]] && (( now != 0 && EPOCHREALTIME <= now )); then
+        return 0
+      fi
+    else
+      return 0
+    fi
+    [[ -z ${EPOCHREALTIME:-} || $start == 0 ]] && return 0
+  done
+}
+
+# Unbuffered write so animation frames are not held until a newline.
+_dnav_out() {
+  emulate -L zsh
+  zmodload -F zsh/system b:syswrite 2>/dev/null || true
+  if (( $+builtins[syswrite] )); then
+    syswrite -- "$1"
+    return $?
+  fi
+  printf '%s' "$1"
+}
+
 # Shared location bar (TUI select, dsearch, and shell djump/dKEY).
 # $1 = path; $2 = optional expand origin column; $3 = dnav|djump (bar visibility).
 # Always one terminal row: width from stty, tail-truncate, never fill last column.
@@ -1666,11 +1722,10 @@ _dnav_success_bar() {
   local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
   local rst="${DNAV_RESET:-\e[0m}"
   local max_w usable
-  local step left right width half display
+  local step left right width half display frame
   local anim=${DNAV_CFG_SUCCESS_ANIM:-1}
   local steps=${DNAV_CFG_SUCCESS_ANIM_STEPS:-8}
-  local ms=${DNAV_CFG_SUCCESS_ANIM_MS:-25}
-  local cs delay
+  local ms=${DNAV_CFG_SUCCESS_ANIM_MS:-2}
 
   _dnav_want_bar "$ctx" || return 0
 
@@ -1685,9 +1740,6 @@ _dnav_success_bar() {
   (( origin_mid >= usable )) && origin_mid=$(( usable / 2 ))
 
   if (( anim )); then
-    cs=$(( (ms + 5) / 10 ))
-    (( cs < 1 )) && cs=1
-    delay=$(printf '0.%03d' $ms)
     for (( step=1; step <= steps; step++ )); do
       half=$(( (usable * step) / (2 * steps) ))
       left=$(( origin_mid - half ))
@@ -1695,18 +1747,15 @@ _dnav_success_bar() {
       (( left < 0 )) && left=0
       (( right > usable )) && right=$usable
       width=$(( right - left ))
-      printf "\r\e[2K"
-      printf "\e[${left}C${hl}%*s${rst}" $width ""
-      if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
-        zselect -t $cs
-      else
-        /bin/sleep "$delay" 2>/dev/null || /usr/bin/sleep "$delay" 2>/dev/null || true
-      fi
+      frame=$(printf "\r\e[2K\e[${left}C${hl}%*s${rst}" $width "")
+      _dnav_out "$frame"
+      _dnav_sleep_ms $ms
     done
   fi
 
   display="$(_dnav_fit_end "$bar_path" $usable)"
-  printf "\r${hl}%-${usable}s${rst}\e[K\n" "$display"
+  frame=$(printf "\r${hl}%-${usable}s${rst}\e[K\n" "$display")
+  _dnav_out "$frame"
 }
 
 # After a successful cd (or file pick). $1=path $2=dnav|djump $3=optional origin col
@@ -2524,13 +2573,13 @@ _dnav_leave_about() {
   _dnav_draw
 }
 
-# Expand from _DNAV_SEL chip, then full-width path bar (shared _dnav_success_bar).
+# Expand from _DNAV_SEL chip via the shared finish path (bar + cleanup + ls).
 _dnav_success_from_sel() {
   local sel_path="$1"
   local origin_start=${_DNAV_ITEM_START[_DNAV_SEL+1]:-0}
   local origin_end=${_DNAV_ITEM_END[_DNAV_SEL+1]:-$_DNAV_COLS}
   local origin_mid=$(( (origin_start + origin_end) / 2 ))
-  _dnav_success_bar "$sel_path" "$origin_mid" dnav
+  _dnav_finish "$sel_path" dnav $origin_mid
 }
 
 dnav() {
@@ -2704,8 +2753,6 @@ dnav() {
             return 1
           }
           _dnav_success_from_sel "$(_dnav_logical_path "$target")"
-          _dnav_cleanup
-          _dnav_maybe_ls dnav
           return 0
         else
           _dnav_clear_menu

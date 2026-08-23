@@ -184,7 +184,7 @@ success_bar = 1
 # Animate the expand-to-path success bar (0 = instant bar)
 success_anim = 1
 success_anim_steps = 8
-success_anim_ms = 25
+success_anim_ms = 2
 
 # 1 = full line redraw every move; 0 = partial chip repaint
 full_redraw = 0

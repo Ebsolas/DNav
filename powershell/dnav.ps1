@@ -98,7 +98,7 @@ brand = DNav
 ls_after = 0
 success_anim = 1
 success_anim_steps = 8
-success_anim_ms = 25
+success_anim_ms = 2
 "@ | Set-Content -LiteralPath $configFile -Encoding UTF8
     }
 }

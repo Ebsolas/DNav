@@ -723,9 +723,87 @@ test_worker_ranks_off_thread() {
   assert_eq "$_DSEARCH_SHOWN_Q" "doc" "poll records the query that was ranked"
 }
 
+test_worker_reap_on_poll() {
+  _dsearch_q="doc"
+  _dsearch_matches=()
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_GEN=0
+  _DSEARCH_SHOWN_Q=""
+  _DSEARCH_WORK_Q=""
+  _DSEARCH_LAST_TICK=0
+  _dsearch_worker_start
+  local pid=$_DSEARCH_WORKER_PID i stat
+  for (( i=0; i < 80; i++ )); do
+    _dsearch_worker_poll && break
+    if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+      zselect -t 5
+    else
+      /bin/sleep 0.05
+    fi
+  done
+  _dsearch_worker_stop
+  assert_eq "$_DSEARCH_WORKER_PID" "0" "poll/stop cleared worker pid"
+  stat="$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  if [[ $stat == *Z* ]]; then
+    _dnav_test_fail "worker left as zombie (pid $pid)"
+  else
+    _dnav_test_pass "worker reaped (state=${stat:-gone})"
+  fi
+}
+
+test_commit_target_uses_visible_sel() {
+  functions -c _dsearch_flush_filter _dsearch_flush_filter_orig
+  _dsearch_matches=("$HOME/Documents" "$HOME/Downloads")
+  _dsearch_sel=1
+  _dsearch_q="doc"
+  _DSEARCH_SHOWN_Q="do"
+  _dsearch_flush_filter() {
+    _dnav_test_fail "Enter should not flush when a row is already selected"
+  }
+  _dsearch_commit_target
+  unfunction _dsearch_flush_filter
+  functions -c _dsearch_flush_filter_orig _dsearch_flush_filter
+  unfunction _dsearch_flush_filter_orig
+  assert_eq "$REPLY" "$HOME/Downloads" "Enter keeps the highlighted row"
+  assert_eq "$_dsearch_sel" "1" "selection stays on that row"
+}
+
+test_commit_target_flushes_when_empty() {
+  functions -c _dsearch_flush_filter _dsearch_flush_filter_orig
+  _dsearch_matches=()
+  _dsearch_sel=0
+  _dsearch_flush_filter() {
+    _dsearch_matches=("$HOME/Documents")
+  }
+  _dsearch_commit_target
+  unfunction _dsearch_flush_filter
+  functions -c _dsearch_flush_filter_orig _dsearch_flush_filter
+  unfunction _dsearch_flush_filter_orig
+  assert_eq "$REPLY" "$HOME/Documents" "empty list flushes then takes the top hit"
+}
+
+test_commit_target_clamps_sel() {
+  functions -c _dsearch_flush_filter _dsearch_flush_filter_orig
+  _dsearch_matches=("$HOME/Documents" "$HOME/Downloads")
+  _dsearch_sel=9
+  _dsearch_flush_filter() {
+    _dnav_test_fail "clamp should not re-rank"
+  }
+  _dsearch_commit_target
+  unfunction _dsearch_flush_filter
+  functions -c _dsearch_flush_filter_orig _dsearch_flush_filter
+  unfunction _dsearch_flush_filter_orig
+  assert_eq "$REPLY" "$HOME/Downloads" "out-of-range sel clamps to last row"
+  assert_eq "$_dsearch_sel" "1" "sel clamped"
+}
+
 run_test test_typing_still_hits
 run_test test_now_ms_is_integer
 run_test test_worker_ranks_off_thread
+run_test test_worker_reap_on_poll
+run_test test_commit_target_uses_visible_sel
+run_test test_commit_target_flushes_when_empty
+run_test test_commit_target_clamps_sel
 run_test test_awk_filter_direct
 run_test test_display_path_tilde
 run_test test_pin_jumps_prefers_jump

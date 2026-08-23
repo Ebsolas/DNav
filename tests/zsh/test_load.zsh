@@ -25,6 +25,9 @@ test_winch_helpers_exist() {
   assert_fn _dnav_paint_strip
   assert_fn _dnav_window
   assert_fn _dnav_finish
+  assert_fn _dnav_sleep_ms
+  assert_fn _dnav_out
+  assert_fn _dnav_success_bar
   assert_fn _dnav_usable_cols
   assert_fn _dnav_usable_from
   assert_fn _dnav_autowrap_off
@@ -314,6 +317,66 @@ test_update_repo_finds_source() {
   assert_eq "${got:A}" "${DNAV_REPO_ROOT:A}" "DNAV_UPDATE_FROM wins"
 }
 
+test_resourcing_reloads_search_plugin() {
+  _dsearch_start() { print -r -- STALE; }
+  source "$DNAV_ZSH_DIR/dnav"
+  if [[ ${functions[_dsearch_start]} == *STALE* ]]; then
+    _dnav_test_fail "re-source left a stale _dsearch_start"
+  else
+    _dnav_test_pass "re-source refreshed dsearch"
+  fi
+}
+
+test_success_bar_sleeps_per_step() {
+  emulate -L zsh
+  local -i n=0
+  local save_anim="${DNAV_CFG_SUCCESS_ANIM:-1}"
+  local save_steps="${DNAV_CFG_SUCCESS_ANIM_STEPS:-8}"
+  local save_ms="${DNAV_CFG_SUCCESS_ANIM_MS:-25}"
+  local save_bar="${DNAV_CFG_SUCCESS_BAR:-1}"
+  local save_bar_dnav="${DNAV_CFG_SUCCESS_BAR_DNAV:--1}"
+  functions -c _dnav_sleep_ms _dnav_sleep_ms_orig
+  DNAV_CFG_SUCCESS_ANIM=1
+  DNAV_CFG_SUCCESS_ANIM_STEPS=5
+  DNAV_CFG_SUCCESS_ANIM_MS=10
+  DNAV_CFG_SUCCESS_BAR=1
+  DNAV_CFG_SUCCESS_BAR_DNAV=1
+  COLUMNS=80
+  _dnav_sleep_ms() { n+=1 }
+  _dnav_success_bar /tmp "" dnav >/dev/null
+  unfunction _dnav_sleep_ms
+  functions -c _dnav_sleep_ms_orig _dnav_sleep_ms
+  unfunction _dnav_sleep_ms_orig
+  DNAV_CFG_SUCCESS_ANIM=$save_anim
+  DNAV_CFG_SUCCESS_ANIM_STEPS=$save_steps
+  DNAV_CFG_SUCCESS_ANIM_MS=$save_ms
+  DNAV_CFG_SUCCESS_BAR=$save_bar
+  DNAV_CFG_SUCCESS_BAR_DNAV=$save_bar_dnav
+  assert_eq "$n" "5" "success bar waits once per anim step"
+}
+
+test_sleep_ms_survives_sigchld() {
+  emulate -L zsh
+  zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null || true
+  local t0 t1
+  local -i elapsed
+  [[ -n ${EPOCHREALTIME:-} ]] || {
+    _dnav_test_pass "sleep_ms SIGCHLD check skipped (no EPOCHREALTIME)"
+    return 0
+  }
+  t0=$EPOCHREALTIME
+  ( /bin/sleep 0.02 ) &
+  _dnav_sleep_ms 80
+  t1=$EPOCHREALTIME
+  elapsed=$(( (t1 - t0) * 1000 ))
+  if (( elapsed >= 50 )); then
+    _dnav_test_pass "sleep_ms held through SIGCHLD (${elapsed}ms)"
+  else
+    _dnav_test_fail "sleep_ms returned early: ${elapsed}ms"
+  fi
+  wait 2>/dev/null || true
+}
+
 test_syntax_zsh_scripts() {
   local f
   for f in dnav dfile djump dsearch; do
@@ -347,5 +410,8 @@ run_test test_public_commands_defined
 run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated
 run_test test_update_repo_finds_source
+run_test test_resourcing_reloads_search_plugin
+run_test test_success_bar_sleeps_per_step
+run_test test_sleep_ms_survives_sigchld
 run_test test_syntax_zsh_scripts
 dnav_test_finish
