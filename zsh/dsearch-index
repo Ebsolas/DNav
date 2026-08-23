@@ -1,17 +1,8 @@
 #!/usr/bin/env zsh
-# dsearch-index — directory cache for dnav search
-#
-# Provides:
-#   _dsearch_reindex / _dsearch_index_start_bg / _dsearch_ensure_index
-# Sourced by dsearch (plugin UI) and by dnav open / dnav --reindex.
-#
-# Index: ${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx  (dirs only)
-# Auto-rebuild: config index_auto / index_when / index_ttl_hours
-# Scope: $HOME by default. Extra trees via DNAV_SEARCH_ROOTS or search_roots.
+# dsearch-index — dirs.idx cache (~/.cache/dnav)
+# $HOME by default; extra trees via search_roots / DNAV_SEARCH_ROOTS
 
-# ── Background index (starts with dnav; interruptible) ────────────────────
-# Uses an external zsh worker + PID file so interactive shells never print
-# "done" job lines (breaks TUI layout on iSH / busybox environments).
+# Background worker + PID file (avoids "done" job lines on iSH / busybox).
 typeset -gi _DSEARCH_INDEX_PID=0
 typeset -gi _DSEARCH_INDEX_HAS_SID=0
 typeset -g  _DSEARCH_INDEX_COUNT_FILE=""
@@ -19,7 +10,7 @@ typeset -g  _DSEARCH_INDEX_PID_FILE=""
 typeset -g  _DSEARCH_INDEX_TMP=""
 typeset -g  _DSEARCH_INDEX_STATE=idle   # idle|running|done|failed|cancelled
 
-# ── Index ─────────────────────────────────────────────────────────────────
+# Index path
 _dsearch_index_path() {
   print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx"
 }
@@ -28,7 +19,7 @@ _dsearch_index_dir() {
   print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/dnav"
 }
 
-# Portable mtime (GNU stat, BSD stat, or python fallback).
+# mtime: GNU stat, BSD stat, or python.
 _dsearch_file_mtime() {
   local f="$1" m
   m=$(stat -c %Y -- "$f" 2>/dev/null) && { print -rn -- "$m"; return 0; }
@@ -39,14 +30,14 @@ _dsearch_file_mtime() {
   return 1
 }
 
-# Seconds until dirs.idx is stale. 0 = never (missing/empty still counts as stale).
+# Seconds until dirs.idx is stale. 0 = never (missing/empty still stale).
 _dsearch_index_ttl_sec() {
   local h="${DNAV_CFG_INDEX_TTL_HOURS:-24}"
   [[ $h == <-> ]] || h=24
   print -rn -- $(( h * 3600 ))
 }
 
-# 0 if auto-index should run in this context (open | search).
+# 0 if auto-index should run here (open | search).
 _dsearch_index_wanted() {
   local ctx="${1:-open}"
   (( ${DNAV_CFG_INDEX_AUTO:-1} )) || return 1
@@ -80,8 +71,7 @@ _dsearch_index_count() {
   print -rn -- "$n"
 }
 
-# Constrained environments (iSH): keep indexing light.
-# A desktop box that happens to have a busybox binary is not light mode.
+# iSH / similar: light index. A desktop busybox binary is not light mode.
 _dsearch_constrained_env() {
   [[ -n ${DNAV_SEARCH_LIGHT:-} ]] && return 0
   [[ -d /var/ish || -d /ish || -e /proc/ish ]] && return 0
@@ -89,7 +79,7 @@ _dsearch_constrained_env() {
   return 1
 }
 
-# True if a background index is still running (poll PID file; never wait).
+# 1 if a background index is still running (PID file; never wait).
 _dsearch_index_running() {
   local pid=$_DSEARCH_INDEX_PID pf="$_DSEARCH_INDEX_PID_FILE"
   if (( pid <= 0 )) && [[ -n $pf && -f $pf ]]; then
@@ -106,7 +96,7 @@ _dsearch_index_running() {
   return 1
 }
 
-# True if mount/path is virtual or not useful for interactive navigation.
+# 1 if the path is virtual or not useful to navigate.
 _dsearch_skip_root() {
   case $1 in
     /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/user/*|/run/systemd/*) return 0 ;;
@@ -116,7 +106,7 @@ _dsearch_skip_root() {
   esac
 }
 
-# Collect user-facing directory roots to index.
+# Roots to index.
 _dsearch_collect_roots() {
   local -a roots
   local -A seen
@@ -149,8 +139,7 @@ _dsearch_collect_roots() {
   print -l -- "${roots[@]}"
 }
 
-# List dirs under $1, pruning noisy trees. Extra find flags follow (e.g. -xdev).
-# Portable: no -readable. BusyBox-safe.
+# Dirs under $1, prune noisy trees. Extra find flags follow. No -readable.
 _dsearch_find_dirs() {
   local root="$1"
   shift
@@ -179,7 +168,7 @@ _dsearch_meta_path() {
   print -r -- "$(_dsearch_index_dir)/dirs.idx.meta"
 }
 
-# Immediate subdirectories of $1 as "mtime name" lines, sorted.
+# Immediate subdirs of $1 as "mtime name", sorted.
 _dsearch_top_children() {
   local root="$1" p m
   [[ -d $root ]] || return 0
@@ -202,7 +191,7 @@ _dsearch_meta_children_for() {
   ' "$meta"
 }
 
-# Print lines from $1 that are $2 or $2/*.
+# Lines from $1 that are $2 or $2/*.
 _dsearch_emit_under() {
   local src="$1" prefix="$2"
   [[ -f $src && -n $prefix ]] || return 0
@@ -224,8 +213,7 @@ _dsearch_index_file_resolved() {
   print -r -- "$p"
 }
 
-# Install a user path list as dirs.idx. $1 = file or -.
-# Prints the number of directories kept. Returns 1 on failure.
+# Install a path list as dirs.idx. $1 = file or -. Prints count kept.
 _dsearch_import_index() {
   emulate -L zsh
   local src="$1" idx tmp line p n=0
@@ -264,9 +252,8 @@ _dsearch_import_index() {
   return 0
 }
 
-# Build index while writing a running directory count to $2.
-# $3 = tmp path (optional; default $idx.building so cancel can remove it).
-# DNAV_INDEX_FULL=1 → ignore sidecar and walk every root.
+# Walk into $idx. $2 = running count file. $3 = tmp (default $idx.building).
+# DNAV_INDEX_FULL=1 ignores the sidecar and walks every root.
 _dsearch_build_index_with_count() {
   local idx="$1" countfile="$2"
   local tmp="${3:-${idx}.building}"
@@ -359,8 +346,7 @@ _dsearch_build_index_with_count() {
   return 0
 }
 
-# Start background reindex if stale. Worker is fully detached (no job table).
-# $1 = 1|--force → rebuild even when the on-disk index is still fresh.
+# Start a detached reindex if stale. $1=1|--force ignores TTL.
 _dsearch_index_lock_dir() {
   print -r -- "$(_dsearch_index_dir)/index.lock"
 }
@@ -496,7 +482,7 @@ _dsearch_index_start_bg() {
   return 0
 }
 
-# Cancel background index (user left dnav early / Ctrl+C).
+# Cancel a background index.
 _dsearch_index_cancel() {
   local pid=$_DSEARCH_INDEX_PID pf="$_DSEARCH_INDEX_PID_FILE"
   if (( pid <= 0 )) && [[ -n $pf && -f $pf ]]; then
@@ -522,7 +508,7 @@ _dsearch_index_cancel() {
   _DSEARCH_INDEX_TMP=""
 }
 
-# Paint "Indexing... N" on one line; clear with \r\e[2K when done (no newlines).
+# "Indexing... N" on one line; clear with CR/EL (no newlines).
 _dsearch_index_paint_status() {
   local count="$1"
   local hl rst
@@ -531,7 +517,7 @@ _dsearch_index_paint_status() {
   printf "\r${hl} Indexing...${rst} %s\e[K" "$count"
 }
 
-# Poll a running worker. $1=tui (chip, leave cursor hidden) or cli (plain, show cursor).
+# Poll worker. $1=tui (chip) or cli (plain).
 _dsearch_index_finish_wait() {
   local how="${1:-tui}" count
   _dsearch_index_running || return 0
@@ -563,8 +549,7 @@ _dsearch_index_finish_wait() {
   _DSEARCH_INDEX_TMP=""
 }
 
-# Wait for background index if needed. Always leaves the cursor line clean.
-# Returns 0 if a usable index exists OR after creating an empty fallback.
+# Wait for a running index. Leaves the cursor line clean. 0 even with an empty fallback.
 _dsearch_index_wait_ui() {
   local idx
   idx="$(_dsearch_index_path)"
@@ -592,9 +577,7 @@ _dsearch_index_wait_ui() {
   return 0
 }
 
-# Ensure index is ready (start bg if needed, wait with UI if still running).
-# Never hard-fails: search UI should still open.
-# Respects index_auto / index_when; dnav --reindex is the manual path.
+# Start/wait for the index. Always 0 so search can open. Honors index_auto / index_when.
 _dsearch_ensure_index() {
   local idx
   idx="$(_dsearch_index_path)"
@@ -611,7 +594,7 @@ _dsearch_ensure_index() {
   return 0
 }
 
-# Rebuild dirs.idx from the shell (always; ignores index_auto / TTL).
+# Rebuild dirs.idx (ignores index_auto / TTL).
 _dsearch_reindex() {
   emulate -L zsh
   local idx n src

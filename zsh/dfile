@@ -1,15 +1,8 @@
 #!/usr/bin/env zsh
-# dfile — mini file explorer for dnav
+# dfile — file explorer overlay
 #
-# Layout (browse):
-#   [ DNav Files:] [cwd] sib …         ← brand + parent strip (cwd chip fixed, not focusable)
-#   [Jump to: cwd] child1 …            ← stay-here chip + dirs (focusable)
-#   - Show Hidden ○ -- Dir: Alpha -- File: Ext ---- [perm]
-#   (<47 cols: - SH ○ - D: A - F: DE ----)
-#   file1 file2 …                      ← files in cwd (focusable)
-#
-# Keys: hjkl / arrows, Tab/f dirs↔files, . hidden, o/O dir/file order,
-#       Enter exit/open, Esc, d Jump, s|/ Search
+# Rows: parent strip, Jump-to + dirs, status, files.
+# Keys: hjkl/arrows, Tab dirs↔files, . hidden, o/O sort, Enter, Esc, d jump, s search
 
 _dfile_available() { return 0 }
 
@@ -44,15 +37,14 @@ _dfile_cols() {
   print -rn -- "$w"
 }
 
-# 1 when the terminal is narrower than 47 columns (compact status).
+# 1 if the terminal is narrower than 47 columns.
 _dfile_status_compact() {
   local w="${1:-}"
   [[ $w == <-> ]] || w="$(_dfile_term_cols)"
   (( w < 47 ))
 }
 
-# Current-folder name for the Jump to: chip. Keeps the start; cuts the end
-# once longer than DNAV_CFG_DFILE_JUMP_NAME_MAX (default 20). $2 overrides max.
+# Jump-to chip name. Keeps the start; $2 overrides DNAV_CFG_DFILE_JUMP_NAME_MAX.
 _dfile_jump_name() {
   local cwd="${1:-}" name max
   name="${cwd:t}"
@@ -74,7 +66,7 @@ _dfile_jump_label() {
   print -rn -- " Jump to: $(_dfile_jump_name "$1" ${2:-}) "
 }
 
-# $1=dirs|files  $2=long|short  $3=optional mode
+# $1=dirs|files $2=long|short $3=optional mode
 _dfile_sort_chip() {
   local kind="$1" style="$2" val="$3" short=0
   [[ $style == short ]] && short=1
@@ -116,7 +108,7 @@ _dfile_cycle_file_sort() {
   esac
 }
 
-# 1 if path is a dir we cannot enter/list (need r+x).
+# 1 if a dir we cannot enter (need r+x).
 _dfile_dir_locked() {
   local d="$1"
   [[ -d $d ]] || return 0
@@ -124,7 +116,7 @@ _dfile_dir_locked() {
   return 0
 }
 
-# 1 if the entry is inaccessible (dir: no r+x; file: no read).
+# 1 if inaccessible (dir: no r+x; file: no read).
 _dfile_entry_locked() {
   local p="$1"
   if [[ -d $p ]]; then
@@ -135,9 +127,7 @@ _dfile_entry_locked() {
   return 0
 }
 
-# List basenames. kind=dirs|files. Returns 1 if unreadable; sets _DFILE_LIST_DENY.
-# Fills _DFILE_LIST_NAMES and parallel _DFILE_LIST_LOCKS (1 = inaccessible).
-# Callers must invoke this directly (not via $()) so the lock array survives.
+# kind=dirs|files. 1 if unreadable. Fills _DFILE_LIST_NAMES/_LOCKS. Not via $().
 typeset -ga _DFILE_LIST_LOCKS _DFILE_LIST_NAMES
 _dfile_list() {
   local dir="$1" kind="$2" show_hidden="$3"
@@ -358,9 +348,7 @@ _dfile_refresh() {
   _dfile_fix_focus
 }
 
-# Focus rules:
-# - Stay on _DFILE_CHILDREN even when empty (shows "Jump to: name" if _DFILE_FILES-only dir)
-# - Only bounce _DFILE_FILES → _DFILE_CHILDREN when _DFILE_FILES row is empty
+# Stay on children even when empty. Bounce files→children only if the files row is empty.
 _dfile_fix_focus() {
   if [[ $_DFILE_FOCUS == files ]]; then
     if (( $#_DFILE_FILES == 0 )); then
@@ -400,8 +388,7 @@ _dfile_paint_status() {
   fi
 }
 
-# Paint one browse strip at the current cursor line (no leading NL).
-# which: _DFILE_SIBLINGS | _DFILE_CHILDREN | _DFILE_FILES | status
+# Paint one strip at the cursor (no leading NL). which: siblings|children|files|status
 _dfile_paint_line() {
   local which="$1"
   local maxw brand brand_w rest_w active=0 hl rst
@@ -445,7 +432,7 @@ _dfile_paint_line() {
   esac
 }
 
-# Row index below top for a browse strip (_DFILE_SIBLINGS=0 … _DFILE_FILES=3).
+# Row below top: siblings=0 … files=3.
 _dfile_row_of() {
   case $1 in
     siblings) print -rn -- 0 ;;
@@ -456,8 +443,7 @@ _dfile_row_of() {
   esac
 }
 
-# Repaint one browse row in place (no full wipe — avoids selection flicker).
-# Cursor starts and ends on top row. Only valid when browse layout is up (_DFILE_BODY==3).
+# Repaint one browse row. Cursor starts/ends on top. Needs _DFILE_BODY==3.
 _dfile_repaint_row() {
   local which="$1" row
   [[ $_DFILE_MODE == browse && $_DFILE_BODY -eq 3 ]] || { _dfile_draw; return }
@@ -473,8 +459,7 @@ _dfile_repaint_row() {
   printf "\r"
 }
 
-# Full redraw. Paint over existing cells (no \e[2K wipe-first — that flickers).
-# Cursor starts and ends on top row (_DFILE_BODY invariant).
+# Full redraw over existing cells (no wipe-first). Cursor stays on top.
 _dfile_draw() {
   local old_body=$_DFILE_BODY leftover i n maxw hl rst
   # A resize already in progress: do not emit the 4-line browse body
@@ -521,7 +506,7 @@ _dfile_draw() {
     return
   fi
 
-  # ── Browse: overwrite 4 lines in place ────────────────────────────
+  # Browse: overwrite 4 lines in place
   _dfile_paint_line siblings
   printf "\n"
   _dfile_paint_line children
@@ -547,7 +532,7 @@ _dfile_draw() {
   printf "\e[3A\r"
 }
 
-# Wipe the explorer UI. Cursor starts on top row (_DFILE_BODY invariant).
+# Wipe explorer UI. Cursor on top.
 _dfile_erase() {
   local i
   printf "\r\e[2K"
@@ -576,9 +561,7 @@ _dfile_go() {
   _dfile_draw
 }
 
-# Resolve selected directory under _DFILE_CHILDREN _DFILE_FOCUS.
-# Sets reply=(dest). Returns 1 if nothing selected / not on dirs row.
-# _DFILE_SEL_C == 0 is the Jump to: chip — dest is _DFILE_CWD itself.
+# Selected dir under children focus. reply=(dest). SEL_C==0 is Jump to: (_DFILE_CWD).
 _dfile_sel_dir_path() {
   local name dest
   [[ $_DFILE_FOCUS == children ]] || return 1
@@ -591,8 +574,7 @@ _dfile_sel_dir_path() {
   reply=("$dest")
 }
 
-# Tab / f: toggle _DFILE_FOCUS between directories (_DFILE_CHILDREN) and _DFILE_FILES.
-# Children row always available (Jump to: when no subdirs). Files only if non-empty.
+# Tab/f: dirs ↔ files. Children row always exists; files only if non-empty.
 _dfile_toggle_focus() {
   local prev=$_DFILE_FOCUS
   if [[ $_DFILE_FOCUS == files ]]; then
@@ -606,8 +588,7 @@ _dfile_toggle_focus() {
   _dfile_repaint_row "$_DFILE_FOCUS"
 }
 
-# Drill into a directory inside the explorer (j / ↓). Stays in dfile.
-# On Jump to: chip, j does nothing (use Enter to leave at this folder).
+# j/↓ into a child dir. Jump-to chip: no-op (Enter leaves at this folder).
 _dfile_enter_sel_dir() {
   [[ $_DFILE_FOCUS == children ]] || return 1
   (( _DFILE_SEL_C == 0 )) && return 1
@@ -622,7 +603,7 @@ _dfile_enter_sel_dir() {
   _dfile_go "$dest"
 }
 
-# Leave dfile: cd to dest, show location bar, restore tty (optional ls).
+# Leave explorer at dest (path bar + maybe ls).
 _dfile_exit_to() {
   local dest="$1"
   _dfile_erase
@@ -645,8 +626,7 @@ _dfile_exit_to() {
   return 0
 }
 
-# Enter on a directory row: leave explorer at that folder + location bar.
-# Jump to: chip (_DFILE_SEL_C == 0) leaves at the current folder.
+# Enter on a dir row. Jump-to chip leaves at the current folder.
 _dfile_exit_sel_dir() {
   if [[ $_DFILE_FOCUS == children && _DFILE_SEL_C -eq 0 ]]; then
     _dfile_exit_to "$_DFILE_CWD"
@@ -662,7 +642,7 @@ _dfile_exit_sel_dir() {
   _dfile_exit_to "$dest"
 }
 
-# Open selected file: location bar, restore tty, then editor/xdg-open.
+# Open selected file (path bar, then $EDITOR / xdg-open).
 _dfile_open_file() {
   (( $#_DFILE_FILES )) || return 1
   local fpath="$_DFILE_CWD/${_DFILE_FILES[_DFILE_SEL_F+1]}"

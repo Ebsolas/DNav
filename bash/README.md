@@ -1,24 +1,16 @@
-# Bash port of DNav
+# Bash port
 
-These are bash rewrites of the zsh modules.
+Working ports of the zsh modules. About/Settings is simplified; bar, search, explorer, and jumps match the zsh UX. Needs bash 4+.
 
-| File | Role |
-|------|------|
-| `dnav` | Main navigation TUI |
-| `dfile` | File explorer |
-| `djump` | Jump table + `dKEY` commands + `dfavorite` |
-| `dsearch` | Fuzzy directory search |
-| `jumps` | Default jump table |
-
-**Status:** Working ports of core behavior. The bash `dnav` About view is simplified vs zsh (no full in-TUI settings editor). Search indexing, jumps, explorer, and main bar match the zsh UX.
-
-**Requirements:** bash 4+, a terminal with ANSI support.
-
-To try without the root installer:
+| File | |
+|------|-|
+| `dnav` | folder bar |
+| `dfile` | file explorer |
+| `djump` | jumps and `dKEY` commands |
+| `dsearch` | search |
+| `jumps` | default jump table |
 
 ```bash
-source bash/dnav   # loads djump/dfile/dsearch if present
+source bash/dnav
 dnav
 ```
-
-A future `install.sh --shell bash` (or `bash/install.sh`) can install these the same way the zsh package is installed today.

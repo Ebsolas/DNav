@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# install.sh — install DNav for zsh
+# install.sh — zsh install (~/.local/share/dnav, ~/.config/dnav, zshrc hook)
 #
-# Usage:
-#   ./install.sh                 # install to ~/.local/share/dnav + seed config + hook zshrc
-#   ./install.sh --update        # refresh scripts + merge new config keys (keep values)
-#   ./install.sh --prefix DIR    # install scripts under DIR (default: $XDG_DATA_HOME/dnav)
-#   ./install.sh --config DIR    # config dir (default: $XDG_CONFIG_HOME/dnav)
-#   ./install.sh --no-rc         # skip shell rc edits
-#   ./install.sh --force-config  # overwrite config/folders/jumps with package defaults
-#   ./install.sh --uninstall     # remove install + rc hook (keeps user config)
+#   ./install.sh                 default
+#   ./install.sh --update        refresh scripts; merge new config keys
+#   ./install.sh --prefix DIR    script dir
+#   ./install.sh --config DIR    config dir
+#   ./install.sh --no-rc         skip zshrc
+#   ./install.sh --force-config  overwrite config/folders/jumps
+#   ./install.sh --uninstall     remove scripts + hook (keeps config)
 #   ./install.sh -h
 #
 set -euo pipefail
@@ -43,7 +42,7 @@ usage() {
   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-# ── Args ──────────────────────────────────────────────────────────────────
+# Args
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;

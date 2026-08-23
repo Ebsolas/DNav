@@ -1,24 +1,10 @@
 #!/usr/bin/env zsh
-# dnav - quick navigation to common folders (zsh version of the PowerShell dnav)
+# dnav — folder bar TUI
 #
-# Optional modules (place next to this file):
-#   dfile          – mini multi-column file explorer (expand below the nav bar)
-#   dsearch-index  – directory cache (auto-index / dnav --reindex)
-#   dsearch        – fuzzy path search overlay (loads dsearch-index)
-#
-# User config (created on first load):
-#   ${XDG_CONFIG_HOME:-~/.config}/dnav/config    – colors, defaults, flags
-#   ${XDG_CONFIG_HOME:-~/.config}/dnav/folders   – main bar labels + paths
-#   ${XDG_CONFIG_HOME:-~/.config}/dnav/jumps     – dKEY jump aliases
-#
-# Env overrides (optional):
-#   DNAV_JUMPS=path        alternate jumps file
-#   DNAV_SEARCH_ROOTS=…    dsearch roots (space-separated)
-#   DNAV_CONFIG_DIR=path   alternate config directory
-#
-# ls after select/jump is config only:  ls_after = 1  in ~/.config/dnav/config
+# Optional siblings in this directory: dfile, dsearch, dsearch-index, djump
+# Config: ~/.config/dnav/{config,folders,jumps}
+# Env: DNAV_CONFIG_DIR, DNAV_JUMPS, DNAV_SEARCH_ROOTS
 
-# ── Locate this script’s directory (works when sourced or executed) ───────
 typeset -g DNAV_DIR
 if [[ -n ${(%):-%x} ]]; then
   DNAV_DIR=${${(%):-%x}:A:h}
@@ -26,7 +12,7 @@ else
   DNAV_DIR=${0:A:h}
 fi
 
-# ── Config globals (filled by _dnav_config_load) ──────────────────────────
+# Config globals (filled by _dnav_config_load)
 typeset -g DNAV_CONFIG_DIR
 typeset -g DNAV_CFG_COLOR_FG=30 DNAV_CFG_COLOR_BG=46
 typeset -g DNAV_CFG_LS=0 DNAV_CFG_SHOW_HIDDEN=0
@@ -60,7 +46,7 @@ DNAV_RESET=$'\e[0m'
 _dnav_hl() { print -rn -- "${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}"; }
 _dnav_rst() { print -rn -- "${DNAV_RESET:-${RESET:-\e[0m}}"; }
 
-# ── Config helpers ────────────────────────────────────────────────────────
+# Config helpers
 _dnav_config_dir() {
   if [[ -n ${DNAV_CONFIG_DIR:-} ]]; then
     print -r -- "$DNAV_CONFIG_DIR"
@@ -76,7 +62,7 @@ _dnav_truthy() {
   esac
 }
 
-# Map color names → ANSI numbers (fg 30–37 / 90–97, bg 40–47 / 100–107).
+# Names or 30–37/90–97 (fg) and 40–47/100–107 (bg).
 _dnav_color_num() {
   local kind="$1" name="${(L)2}" n
   # bare number
@@ -121,7 +107,7 @@ _dnav_apply_colors() {
   DNAV_RESET=$'\e[0m'
 }
 
-# Trim leading/trailing whitespace. Safe under EXTENDED_GLOB.
+# Trim; safe under EXTENDED_GLOB.
 _dnav_trim() {
   emulate -L zsh
   setopt localoptions no_extended_glob
@@ -131,8 +117,7 @@ _dnav_trim() {
   print -r -- "$s"
 }
 
-# Strip a # comment: only at start of line (after indent) or after whitespace.
-# Foo#Bar and /tmp/proj#2 are kept. "Foo # note" drops " # note".
+# Drop `#` comments only after whitespace or at line start. Keep Foo#Bar.
 _dnav_strip_comment() {
   emulate -L zsh
   setopt localoptions no_extended_glob
@@ -153,7 +138,7 @@ _dnav_strip_comment() {
   print -r -- "$s"
 }
 
-# Expand ~ in a path; empty stays empty.
+# Expand ~. Empty stays empty.
 _dnav_expand_path() {
   local p="$1"
   [[ -z $p || $p == - ]] && { print -r -- ""; return 0 }
@@ -163,15 +148,14 @@ _dnav_expand_path() {
   print -r -- "$p"
 }
 
-# Logical absolute path (no symlink resolve). Display + pin identity.
-# Use :A / pwd -P only after cd when the physical location matters.
+# Logical absolute path (${p:a}); no symlink resolve.
 _dnav_logical_path() {
   local p="$1"
   [[ -z $p || $p == - ]] && { print -r -- ""; return 0 }
   print -r -- "${p:a}"
 }
 
-# Write default user config files (first run).
+# Create missing config files only.
 _dnav_config_seed() {
   local dir="$1"
   mkdir -p "$dir" 2>/dev/null || return 1
@@ -276,8 +260,7 @@ EOF
   fi
 }
 
-# key|type|var|default|aliases|ui|hint|note
-# empty default → load-only (not merged into existing configs)
+# key|type|var|default|aliases|ui|hint|note  (empty default = load-only)
 _dnav_config_schema() {
   print -r -- 'color_fg|color:fg|DNAV_CFG_COLOR_FG|black|highlight_fg,fg|value|Enter edit number/name|fg: color name or ANSI 30–37 / 90–97 (black red green yellow blue magenta cyan white)'
   print -r -- 'color_bg|color:bg|DNAV_CFG_COLOR_BG|cyan|highlight_bg,bg|value|Enter edit number/name|bg: color name or ANSI 40–47 / 100–107'
@@ -442,7 +425,7 @@ _dnav_config_load_folders() {
   (( ${#DNAV_FOLDER_NAMES} > 0 ))
 }
 
-# Persist folders file (About is never written — hardcoded in TUI).
+# Persist folders (About is not written).
 _dnav_folders_save() {
   emulate -L zsh
   setopt localoptions no_multios clobber
@@ -470,13 +453,13 @@ _dnav_folders_save() {
   /bin/mv -f -- "$tmp" "$f" || { /bin/rm -f -- "$tmp"; return 1 }
 }
 
-# Persist jumps file from current map (shared with djump add|edit|remove).
+# Persist jumps from the current map.
 _dnav_jumps_save() {
   (( $+functions[_djump_save] )) || return 1
   _djump_save
 }
 
-# Current config keys + built-in defaults. One "key value" per line.
+# "key value" lines for merge.
 _dnav_config_defaults() {
   emulate -L zsh
   _dnav_config_schema_init
@@ -501,7 +484,7 @@ _dnav_config_canon_key() {
   print -r -- "${_DNAV_CFG_CANON[$k]:-$k}"
 }
 
-# Uncommented assignment keys in a config file (canonical names).
+# Canonical keys already set in the config file.
 _dnav_config_existing_keys() {
   local f="$1" line stripped k
   [[ -f $f ]] || return 0
@@ -516,8 +499,7 @@ _dnav_config_existing_keys() {
   done < "$f"
 }
 
-# Append any missing default keys and ensure each known key has its note.
-# Never changes existing values. Prints the number of keys added.
+# Add missing keys and notes. Does not change existing values. Prints count added.
 _dnav_config_merge_defaults() {
   emulate -L zsh
   setopt localoptions no_multios clobber
@@ -591,7 +573,7 @@ _dnav_config_merge_defaults() {
   print -r -- "$added"
 }
 
-# Load (and seed) user config. Safe to call multiple times (dconfig -r).
+# Load config (dconfig -r).
 _dnav_config_load() {
   DNAV_CONFIG_DIR="$(_dnav_config_dir)"
   local key
@@ -602,7 +584,7 @@ _dnav_config_load() {
   DNAV_FOLDER_NAMES=()
   DNAV_FOLDER_PATHS=()
 
-  # Creates only files that are missing; never overwrites user edits.
+  # Missing files only.
   _dnav_config_seed "$DNAV_CONFIG_DIR"
 
   _dnav_config_load_kv "$DNAV_CONFIG_DIR/config"
@@ -651,7 +633,7 @@ _dnav_print_help() {
   print -r -- "  dhelp                list saved jumps"
 }
 
-# Reload config + jump commands.
+# Reload config and jumps.
 dconfig() {
   case ${1:-} in
     -r|--reload|'')
@@ -691,8 +673,7 @@ dconfig() {
   esac
 }
 
-# Repo root used by dnav --update / install.sh --update.
-# Order: DNAV_UPDATE_FROM, $DNAV_DIR/.source, sibling DNav/, ~/.local/share/DNav
+# Repo root: DNAV_UPDATE_FROM, $DNAV_DIR/.source, sibling DNav/, ~/.local/share/DNav
 _dnav_update_repo() {
   local c line
   local -a cands
@@ -734,8 +715,7 @@ _dnav_update_copy() {
   return 0
 }
 
-# Refresh installed scripts from the git/source tree.
-# Merges new config keys into ~/.config/dnav/config; never overwrites existing values.
+# Copy repo scripts onto the install; merge new config keys only.
 _dnav_update() {
   emulate -L zsh
   setopt localoptions no_multios
@@ -784,7 +764,7 @@ _dnav_update() {
   fi
 
   added="$(_dnav_config_merge_defaults)"
-  # Always re-source so already-loaded plugins (dsearch/dfile) pick up disk changes.
+  # Reload this file so already-loaded plugins pick up disk changes.
   source "$dest/dnav"
   if [[ $added == <-> && added -gt 0 ]]; then
     print -r -- "dnav: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
@@ -794,11 +774,11 @@ _dnav_update() {
 }
 _dnav_config_load
 
-# ── Chip strip (engine; dfile/About/main bar all use this) ────────────────
+# Chip strip (dfile / About / main bar)
 typeset -ga _dnav_vis
 typeset -ga _dfile_vis
 
-# Screen columns of $1 (CJK/emoji occupy 2). ${#s} is characters, not cells.
+# Display columns of $1 (CJK/emoji = 2).
 _dnav_disp_w() {
   emulate -L zsh
   setopt localoptions multibyte
@@ -836,7 +816,7 @@ _dnav_cell_w() {
   fi
 }
 
-# Windowing: reply=(win_start), _dnav_vis=(labels). Also copies to _dfile_vis.
+# reply=(win_start); fills _dnav_vis (and _dfile_vis).
 _dnav_window() {
   local aname="$1" sel="$2" win="$3" maxw="$4" lockname="${5:-}" sticky="${6:-0}"
   local -a all locks
@@ -930,7 +910,7 @@ _dnav_paint_strip() {
   (( win > 0 )) && more_l=1
   (( n > 0 && win + $#_dnav_vis < n )) && more_r=1
 
-  # Second pass only when < > markers steal columns. Do not window a third time.
+  # Re-window once if < > markers stole columns.
   if (( more_l || more_r )); then
     (( more_l )) && ind_l=2
     (( more_r )) && ind_r=2
@@ -996,9 +976,7 @@ _dnav_paint_strip() {
   reply=($win)
 }
 
-# ── Optional modules ──────────────────────────────────────────────────────
-# djump is eager (dKEY commands). dfile/dsearch load on first use.
-# dsearch-index loads for auto-index / --reindex without the search overlay.
+# djump is eager. dfile/dsearch load on first use; dsearch-index for auto-index/--reindex.
 _dnav_load_module() {
   local name="$1" f
   f="$DNAV_DIR/$name"
@@ -1034,13 +1012,7 @@ _dsearch_available() {
   (( $+functions[_dsearch_start] ))
 }
 (( $+functions[_djump_available] )) || _djump_available() { return 1 }
-# Entry points modules provide:
-#   _dfile_enter / _dfile_is_open
-#   _dsearch_start / _dsearch_start_for_dfile
-#   _djump_resolve / _djump_match_query
-
-# Re-source plugins already in this shell (source dnav / dnav --update).
-# Lazy load skips them otherwise, so search/file keep running the old copy.
+# Re-source plugins already in this shell (lazy load would keep the old copy).
 if (( $+functions[_dfile_enter] )); then
   [[ -f $DNAV_DIR/dfile ]] && source "$DNAV_DIR/dfile"
 fi
@@ -1051,8 +1023,7 @@ if (( $+functions[_dsearch_start] )); then
   [[ -f $DNAV_DIR/dsearch ]] && source "$DNAV_DIR/dsearch"
 fi
 
-# After successful navigation (call only once terminal is restored). No-op on cancel paths.
-# $1 = dnav | djump  (specific flags inherit ls_after when unset / -1)
+# $1 = dnav | djump (inherit ls_after when the specific flag is -1)
 _dnav_want_ls() {
   local ctx="${1:-dnav}"
   case $ctx in
@@ -1107,9 +1078,7 @@ _dnav_sync_term_size() {
   fi
 }
 
-# Paint width. Spare 2, not 1: a line painted at COLUMNS-1 becomes exactly
-# full-width after a 1-col shrink, the terminal soft-wraps, and the screen
-# scrolls (bar walks up; blank lines pile up below). COLUMNS-2 stays short.
+# Spare 2 columns. COLUMNS-1 wraps on a 1-col shrink and the bar walks up.
 _dnav_usable_from() {
   local w="${1:-0}"
   [[ $w == <-> ]] || w=80
@@ -1122,8 +1091,7 @@ _dnav_usable_cols() {
   _dnav_usable_from "$(_dnav_term_cols)"
 }
 
-# DECAWM (CSI ? 7). Off: write/shrink clips on the right instead of wrapping
-# onto the next row. Must be restored in cleanup or the user's shell wraps wrong.
+# DECAWM off so shrink clips instead of wrapping. Restore in cleanup.
 _dnav_autowrap_off() { printf '\e[?7l'; }
 _dnav_autowrap_on()  { printf '\e[?7h'; }
 
@@ -1136,10 +1104,10 @@ typeset -gi _DNAV_LAST_LINES=0
 typeset -gi _DNAV_PEND_COLS=0
 typeset -gi _DNAV_PEND_LINES=0
 typeset -gi _DNAV_STEADY=0
-# Identical stty samples required before leaving resize mode (~6×0.04s).
+# Identical stty samples before leaving resize mode (~6×0.04s).
 typeset -gi _DNAV_STEADY_NEED=6
 
-# ── TUI session (dnav / About). Plugins use _DFILE_* / _dsearch_*. ─
+# TUI session (plugins use _DFILE_* / _dsearch_*).
 typeset -g  DNAV_ABORT=0
 typeset -g  _DNAV_STTY_ORIG=""
 typeset -gi _DNAV_CLEANED=0
@@ -1190,7 +1158,7 @@ _dnav_status_set() {
   fi
 }
 
-# Called from the 40ms read poll. Returns 0 if the message just expired.
+# 0 if the status message just expired (40ms poll).
 _dnav_status_tick() {
   (( _DNAV_STATUS_LEFT > 0 )) || return 1
   (( _DNAV_STATUS_LEFT -= 40 ))
@@ -1209,15 +1177,13 @@ _dnav_status_style() {
   esac
 }
 
-# Visible label for the status slot (leading -- separates it from dashes/text).
+# Status slot text; leading -- separates it from the dashed gutter.
 _dnav_status_label() {
   [[ -n ${_DNAV_STATUS_TEXT:-} ]] || { print -r -- ""; return }
   print -r -- "-- ${_DNAV_STATUS_TEXT} "
 }
 
-# Paint the status text as a top layer on the current row. $1 = line width.
-# Overwrites whatever is on the right, including decorations, so the
-# temporary message stays readable. $2 is ignored (old reserved-left hint).
+# Paint status on the right of the current row. $1 = line width.
 _dnav_status_paint_right() {
   emulate -L zsh
   setopt localoptions multibyte
@@ -1244,8 +1210,7 @@ _dnav_status_repaint() {
   fi
 }
 
-# Best existing directory for an entry path. REPLY=dir.
-# Returns 0 if $1 is already a directory; 1 if we climbed or fell back to $PWD.
+# Best existing dir for $1 (REPLY). 0 if $1 is a dir; 1 if climbed or $PWD.
 _dnav_resolve_dir() {
   local raw="${1:-}" p
   if [[ -z $raw ]]; then
@@ -1325,7 +1290,7 @@ _dnav_session_reset() {
   done
 }
 
-# Brand chip text only — same bytes as the live TUI, no extra spaces.
+# Brand chip text, same bytes as the live TUI.
 _dnav_resize_chip_label() {
   if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
     print -r -- " DNav Search:"
@@ -1338,7 +1303,7 @@ _dnav_resize_chip_label() {
   fi
 }
 
-# Rows currently painted below the top TUI line (search 0–10, dfile 3, …).
+# Rows painted below the top TUI line.
 _dnav_tui_below() {
   if (( ${+_DSEARCH_OPEN} && _DSEARCH_OPEN )); then
     print -rn -- "${_dsearch_extra_lines:-0}"
@@ -1394,10 +1359,7 @@ _dnav_resize_finish() {
   _dnav_mark_size
 }
 
-# Call from the TUI read loop. Compact chip while WINCH fires or stty is
-# still changing. Full redraw only after STEADY_NEED identical samples.
-# Always sample stty here: WINCH often does not arrive (or does not
-# interrupt read -k). Painters still read the COLUMNS cache, not stty.
+# Compact chip while size is changing. Sample stty; WINCH often misses read -k.
 _dnav_maybe_resize() {
   local c l
   (( ${DNAV_ABORT:-0} )) && return 1
@@ -1420,7 +1382,7 @@ _dnav_maybe_resize() {
       _dnav_paint_resize_chip
       return 1
     fi
-    # Same stty size as last sample, no new WINCH — still counting.
+    # Size unchanged; still counting toward STEADY_NEED.
     (( _DNAV_STEADY++ ))
     if (( _DNAV_STEADY < _DNAV_STEADY_NEED )); then
       return 1
@@ -1429,7 +1391,7 @@ _dnav_maybe_resize() {
     return 0
   fi
 
-  # stty matches the pre-resize size. Stay compact until WINCH/stty settle.
+  # Back at the pre-resize size; stay compact until samples settle.
   if (( _DNAV_RESIZE_MODE )); then
     (( _DNAV_STEADY++ ))
     if (( _DNAV_STEADY < _DNAV_STEADY_NEED )); then
@@ -1443,9 +1405,7 @@ _dnav_maybe_resize() {
   return 1
 }
 
-# Blocking key read that still notices terminal resizes (WINCH often
-# does not interrupt a bare read -k). Poll ~25×/sec so resize mode starts
-# before the bar can reflow.
+# Blocking key read; poll ~25/s because WINCH often does not interrupt read -k.
 _dnav_read_key() {
   REPLY=""
   while true; do
@@ -1465,7 +1425,7 @@ _dnav_read_key() {
   done
 }
 
-# Classify one already-read byte into a key token. Sets REPLY.
+# Classify one byte; sets REPLY.
 _dnav_classify_key() {
   local k="$1" k2 k3 k4
   REPLY=""
@@ -1517,7 +1477,7 @@ _dnav_classify_key() {
   esac
 }
 
-# One token if a byte is already waiting. Never blocks (search drain).
+# One token if a byte is waiting. Never blocks.
 _dnav_try_read_token() {
   local k
   REPLY=""
@@ -1529,8 +1489,7 @@ _dnav_try_read_token() {
   _dnav_classify_key "$k"
 }
 
-# One key token: esc/up/down/left/right/home/end/delete/enter/tab/backspace/
-# ctrl-c/ctrl-a/ctrl-e/ctrl-n/ctrl-p/ctrl-u, or a single printable char.
+# One key token (arrows, ctrl-*, printable, …).
 _dnav_read_token() {
   local k
   REPLY=""
@@ -1552,8 +1511,7 @@ _dnav_read_token() {
   done
 }
 
-# Redraw in place. Autowrap is off so shrink clips on the right; do not CUU
-# (that is what walked the bar up the screen).
+# Redraw in place. No CUU (that walked the bar up the screen).
 _dnav_handle_winch() {
   (( _DNAV_RESIZING )) && return 0
   (( ${DNAV_ABORT:-0} )) && return 0
@@ -1578,7 +1536,7 @@ _dnav_handle_winch() {
   _DNAV_RESIZING=0
 }
 
-# Fit string to display width, keep the start (chips, About rows).
+# Truncate to display width, keep the start.
 _dnav_fit_start() {
   emulate -L zsh
   setopt localoptions multibyte
@@ -1603,7 +1561,7 @@ _dnav_fit_start() {
   print -r -- "${acc}…"
 }
 
-# Fit string to display width, keep the end (most specific path tail).
+# Truncate to display width, keep the tail.
 _dnav_fit_end() {
   emulate -L zsh
   setopt localoptions multibyte
@@ -1624,8 +1582,7 @@ _dnav_fit_end() {
   print -r -- "…${rest}"
 }
 
-# Set a key=value in ~/.config/dnav/config (preserves other lines / comments).
-# Creates the file if needed. Always writes through a temp file + mv.
+# Set key=value in config (temp + mv; keeps other lines).
 _dnav_config_set() {
   emulate -L zsh
   setopt localoptions no_multios clobber
@@ -1663,7 +1620,7 @@ _dnav_config_set() {
   return 0
 }
 
-# Persist inherit/-1/1/0 cycle3 flags as inherit|1|0 in the config file.
+# Store cycle3 as inherit|1|0.
 _dnav_cfg_cycle3_store() {
   case $1 in
     -1) print -rn -- inherit ;;
@@ -1672,8 +1629,7 @@ _dnav_cfg_cycle3_store() {
   esac
 }
 
-# Wait $1 milliseconds. Loop on wall-clock so a short /bin/sleep or a
-# SIGCHLD-interrupted zselect cannot skip the configured delay.
+# Sleep $1 ms. Wall-clock loop: SIGCHLD can abort zselect.
 _dnav_sleep_ms() {
   emulate -L zsh
   local -i ms=${1:-0} cs
@@ -1698,7 +1654,7 @@ _dnav_sleep_ms() {
     if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
       now=${EPOCHREALTIME:-0}
       zselect -t $cs
-      # zselect returned without waiting (signal): stop if the clock did not move.
+      # Interrupted without the clock moving — do not spin.
       if [[ -n ${EPOCHREALTIME:-} ]] && (( now != 0 && EPOCHREALTIME <= now )); then
         return 0
       fi
@@ -1709,9 +1665,7 @@ _dnav_sleep_ms() {
   done
 }
 
-# Unbuffered write so animation frames are not held until a newline.
-# Interactive runs write /dev/tty (djump's cooked stdout can line-buffer).
-# Tests redirect stdout, so they keep fd 1.
+# Unbuffered write. /dev/tty when stdout is a tty (djump line-buffers otherwise).
 _dnav_out() {
   emulate -L zsh
   zmodload -F zsh/system b:sysopen b:syswrite 2>/dev/null || true
@@ -1732,9 +1686,7 @@ _dnav_out() {
   printf '%s' "$1"
 }
 
-# Shared location bar (TUI select, dsearch, and shell djump/dKEY).
-# $1 = path; $2 = optional expand origin column; $3 = dnav|djump (bar visibility).
-# Always one terminal row: width from stty, tail-truncate, never fill last column.
+# Path bar. $1=path $2=origin col $3=dnav|djump. One row, never the last column.
 _dnav_success_bar() {
   emulate -L zsh
   setopt localoptions nomonitor nonotify
@@ -1752,7 +1704,7 @@ _dnav_success_bar() {
   _dnav_want_bar "$ctx" || return 0
 
   max_w="$(_dnav_term_cols)"
-  # Last column wrap (iSH / narrow ttys): keep one spare cell
+  # Spare last column (wrap on iSH / narrow ttys).
   usable=$(( max_w > 1 ? max_w - 1 : 1 ))
   (( steps < 1 )) && steps=1
   (( ms < 1 )) && ms=1
@@ -1761,7 +1713,7 @@ _dnav_success_bar() {
   fi
   (( origin_mid >= usable )) && origin_mid=$(( usable / 2 ))
 
-  # Flush any pending TUI printf (chip strip) before unbuffered frames.
+  # Flush pending TUI printf before unbuffered frames.
   command true
 
   if (( anim )); then
@@ -1783,7 +1735,7 @@ _dnav_success_bar() {
   _dnav_out "$frame"
 }
 
-# After a successful cd (or file pick). $1=path $2=dnav|djump $3=optional origin col
+# $1=path $2=dnav|djump $3=origin col. Bar, restore tty, maybe ls.
 _dnav_finish() {
   local dest="$1" ctx="${2:-dnav}" origin="${3:-}"
   if (( $+functions[_dnav_success_bar] )); then
@@ -1801,7 +1753,7 @@ _dnav_finish() {
 
 _dnav_cleanup() {
   (( _DNAV_CLEANED )) && return
-  # Stop background search index if still running (user left early)
+  # Stop a still-running index worker.
   (( $+functions[_dsearch_index_cancel] )) && _dsearch_index_cancel
   [[ -n $_DNAV_STTY_ORIG ]] && stty "$_DNAV_STTY_ORIG" 2>/dev/null
   _dnav_autowrap_on
@@ -1809,7 +1761,7 @@ _dnav_cleanup() {
   _DNAV_CLEANED=1
 }
 
-# Wipe the main bar / help overlay (not plugin body lines).
+# Wipe the main bar / About overlay (not plugin body).
 _dnav_clear_menu() {
   local i
   printf "\r\e[2K"
@@ -1823,12 +1775,11 @@ _dnav_clear_menu() {
   _DNAV_HELP_EXTRA=0
 }
 
-# Full abort: tear down plugin UIs, clear the bar, restore tty.
-# Used by INT/TERM/QUIT and by Ctrl+C as a byte ($'\x03').
+# INT/TERM/QUIT / Ctrl+C: tear down plugins, clear bar, restore tty.
 _dnav_abort() {
   DNAV_ABORT=1
   (( $+functions[_dsearch_index_cancel] )) && _dsearch_index_cancel
-  # Innermost plugin UIs first (dsearch may sit on dfile or main).
+  # Innermost plugin first (search can sit on dfile).
   if (( $+functions[_dsearch_erase_ui] )) && {
        (( ${_dsearch_extra_lines:-0} > 0 )) || [[ -n ${_dsearch_tmpdir:-} ]]
      }; then
@@ -1843,14 +1794,14 @@ _dnav_abort() {
   _dnav_cleanup
 }
 
-# Brand width: " Brand " + trailing space
+# Width of " Brand " plus trailing space.
 _dnav_brand_w() {
   emulate -L zsh
   setopt localoptions multibyte
   print -rn -- $(( ${(m)#_DNAV_BRAND} + 3 ))
 }
 
-# Keep _DNAV_SEL chip in the horizontal window; sets _DNAV_BAR_WIN.
+# Keep the selected chip in the window; sets _DNAV_BAR_WIN.
 _dnav_ensure_bar_visible() {
   local brand_w=$(_dnav_brand_w)
   local avail=$(( _DNAV_COLS - brand_w ))
@@ -1861,7 +1812,7 @@ _dnav_ensure_bar_visible() {
   reply=($old_win $_DNAV_BAR_WIN)
 }
 
-# Layout visible chips for partial paint / success animation origin.
+# Layout visible chips (_DNAV_ITEM_START/END).
 _dnav_compute_positions() {
   local brand_w=$(_dnav_brand_w)
   local avail=$(( _DNAV_COLS - brand_w ))
@@ -1901,7 +1852,7 @@ _dnav_compute_positions() {
   done
 }
 
-# Full bar paint: _DNAV_BRAND + scrolling folder chips + < > overflow.
+# Full bar: brand + chips + overflow markers.
 _dnav_draw() {
   _DNAV_COLS="$(_dnav_usable_cols)"
   local brand_w=$(_dnav_brand_w)
@@ -1915,7 +1866,7 @@ _dnav_draw() {
   printf "\r"
 }
 
-# Repaint one visible chip (partial redraw). idx = 0-based into _DNAV_NAMES.
+# Repaint one visible chip. idx is 0-based into _DNAV_NAMES.
 _dnav_paint_item() {
   local idx="$1"
   local i=$(( idx + 1 ))
@@ -1973,7 +1924,7 @@ _dnav_about_init() {
   _DNAV_ABOUT_TAB=help
 }
 
-# Help-tab topic bodies (Move includes former Navigate).
+# Help-tab topic bodies.
 _dnav_help_topic_body() {
   case $1 in
     Move)
@@ -2105,8 +2056,7 @@ _dnav_settings_fill_body() {
   esac
 }
 
-# Manual line editor (raw mode). Handles Backspace/Delete; Esc cancels.
-# Returns 0 and sets REPLY on Enter; returns 1 on Esc/cancel.
+# Raw-mode line editor. 0+REPLY on Enter; 1 on Esc.
 _dnav_inline_edit() {
   local prompt="$1" buf="${2:-}" k
   local edit_row=$(( _DNAV_HELP_EXTRA > 0 ? _DNAV_HELP_EXTRA : 0 ))
@@ -2149,7 +2099,7 @@ _dnav_inline_edit() {
   }
 }
 
-# Word/hard wrap text to display width; prints one physical row per line.
+# Wrap text to display width.
 _dnav_wrap_lines() {
   emulate -L zsh
   setopt localoptions multibyte
@@ -2184,7 +2134,7 @@ _dnav_wrap_lines() {
   done
 }
 
-# Paint exactly one terminal row of width maxw (truncate/pad; never soft-wrap).
+# One terminal row of width maxw; never soft-wrap.
 _dnav_paint_row() {
   emulate -L zsh
   setopt localoptions multibyte
@@ -2202,7 +2152,7 @@ _dnav_paint_row() {
   esac
 }
 
-# Paint a named chip strip; reply=(new_win).
+# Named chip strip; reply=(new_win).
 _dnav_about_paint_strip() {
   _dnav_paint_strip "$1" $2 $3 1 $4
 }
@@ -2212,7 +2162,7 @@ _dnav_about_refresh_style() {
   _DNAV_BRAND="${DNAV_CFG_BRAND:-DNav}"
 }
 
-# Temporarily leave raw _DNAV_MODE, edit a file, restore TUI.
+# Leave raw mode, $EDITOR a file, restore TUI.
 _dnav_about_edit_file() {
   local file="$1"
   local ed="${EDITOR:-${VISUAL:-vi}}"
@@ -2376,7 +2326,7 @@ _dnav_settings_apply_edit() {
   return 0
 }
 
-# Delete _DNAV_SEL folder/jump row (x key).
+# Delete the selected folder/jump row.
 _dnav_settings_delete_row() {
   local kind="${_DNAV_ABOUT_KIND[_DNAV_SETTINGS_ROW+1]}"
   local rkey="${_DNAV_ABOUT_KEY[_DNAV_SETTINGS_ROW+1]}"
@@ -2437,7 +2387,7 @@ _dnav_draw_about() {
   (( maxw < 20 )) && maxw=20
   printf "\e[?25l\r"
 
-  # Row 0: [ DNav About:] [ Help ] Settings   Tab to switch
+  # About header: Help | Settings
   printf "${DNAV_HIGHLIGHT} DNav About:${DNAV_RESET} "
   if [[ $_DNAV_ABOUT_TAB == help ]]; then
     printf "${DNAV_HIGHLIGHT} Help ${DNAV_RESET} "
@@ -2448,7 +2398,7 @@ _dnav_draw_about() {
   fi
   printf "\e[2mTab to switch\e[22m\e[K"
 
-  # Row 1: section strip
+  # Section strip
   printf "\n\r"
   if [[ $_DNAV_ABOUT_TAB == help ]]; then
     _dnav_about_paint_strip _DNAV_HELP_TOPICS $_DNAV_HELP_SEL $_DNAV_HELP_WIN $maxw
@@ -2458,7 +2408,7 @@ _dnav_draw_about() {
     _DNAV_SETTINGS_WIN=$reply[1]
   fi
 
-  # Build wrapped display rows (each row ≤ maxw, so layout stays stable)
+  # Wrapped display rows (each ≤ maxw)
   display=()
   if [[ $_DNAV_ABOUT_TAB == help ]]; then
     topic="${_DNAV_HELP_TOPICS[_DNAV_HELP_SEL+1]}"
@@ -2467,7 +2417,7 @@ _dnav_draw_about() {
     for line in "${blines[@]}"; do
       display+=(" $line")
     done
-    # scroll window for long help
+    # Scroll window for long help
     (( _DNAV_HELP_SCROLL < 0 )) && _DNAV_HELP_SCROLL=0
     if (( $#display > body_max )); then
       (( _DNAV_HELP_SCROLL > $#display - body_max )) && _DNAV_HELP_SCROLL=$(( $#display - body_max ))
@@ -2483,7 +2433,7 @@ _dnav_draw_about() {
   else
     _dnav_settings_fill_body
     raw=("${_DNAV_ABOUT_BODY[@]}")
-    # Settings: keep 1 logical row = 1 interactive row (truncate, don't multi-wrap)
+    # Settings: 1 logical row = 1 interactive row (truncate)
     for (( i=1; i <= $#raw; i++ )); do
       line=" ${raw[i]}"
       if (( ${#line} > maxw )); then
@@ -2549,7 +2499,7 @@ _dnav_about_move_h() {
 _dnav_about_move_v() {
   local dir="$1" maxr=0
   if [[ $_DNAV_ABOUT_TAB == help ]]; then
-    # Scroll long wrapped help body
+    # Scroll wrapped help body
     (( _DNAV_HELP_SCROLL += dir ))
     (( _DNAV_HELP_SCROLL < 0 )) && _DNAV_HELP_SCROLL=0
     _dnav_draw_about
@@ -2564,7 +2514,7 @@ _dnav_about_move_v() {
   _dnav_draw_about
 }
 
-# Rebuild main bar arrays from config folders + hardcoded About.
+# Main bar arrays from folders + About.
 _dnav_reload_main_bar() {
   if (( ${#DNAV_FOLDER_NAMES} > 0 )); then
     _DNAV_NAMES=("${DNAV_FOLDER_NAMES[@]}")
@@ -2599,7 +2549,7 @@ _dnav_leave_about() {
   _dnav_draw
 }
 
-# Wipe the chip strip, then the same blank-line expand as dfile/dsearch.
+# Clear the chip strip, then the shared path bar.
 _dnav_success_from_sel() {
   _dnav_clear_menu
   _dnav_finish "$1" dnav
@@ -2648,9 +2598,7 @@ dnav() {
 
   _dnav_session_reset
 
-  # Save terminal settings (globals: EXIT trap may run after function locals die).
-  # LOCAL_TRAPS is required: without it, INT/TERM/QUIT traps leak into the
-  # interactive shell after dnav returns.
+  # Globals: EXIT trap can run after function locals die. localtraps so INT does not leak.
   _DNAV_STTY_ORIG=$(stty -g 2>/dev/null)
   _DNAV_CLEANED=0
   setopt localoptions localtraps
@@ -2851,7 +2799,7 @@ dnav() {
 }
 
 
-# When sourced the function is available; when run directly it executes
+# Run when executed, not when sourced.
 if [[ "${ZSH_EVAL_CONTEXT:-}" != *:file ]]; then
   dnav "$@"
 fi

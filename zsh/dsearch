@@ -1,11 +1,6 @@
 #!/usr/bin/env zsh
-# dsearch — fuzzy directory search plugin for dnav
-#
-# Provides:
-#   _dsearch_available    – true when this file is sourced
-#   _dsearch_start        – search overlay (0 = navigated/done, 1 = cancel → main)
-#
-# Indexer lives in dsearch-index (walk, import, --reindex).
+# dsearch — fuzzy directory search overlay
+# Indexer: dsearch-index
 
 if (( ! $+functions[_dsearch_reindex] )); then
   _dsearch_idx="${DNAV_DIR:-${${(%):-%x}:A:h}}/dsearch-index"
@@ -15,7 +10,7 @@ fi
 
 _dsearch_available() { return 0 }
 
-# ── Session state (search UI) ─────────────────────────────────────────────
+# Session state
 typeset -ga _dsearch_matches
 typeset -gi _dsearch_sel=0
 typeset -gi _dsearch_extra_lines=0
@@ -49,7 +44,7 @@ _dsearch_cur_clamp() {
   (( _dsearch_cur > ${#_dsearch_q} )) && _dsearch_cur=${#_dsearch_q}
 }
 
-# Insert $1 at the caret; move caret forward.
+# Insert $1 at the caret.
 _dsearch_insert() {
   local ch="$1"
   _dsearch_cur_clamp
@@ -57,7 +52,7 @@ _dsearch_insert() {
   (( _dsearch_cur++ ))
 }
 
-# Delete the character before the caret.
+# Backspace.
 _dsearch_backspace() {
   _dsearch_cur_clamp
   (( _dsearch_cur > 0 )) || return 1
@@ -65,7 +60,7 @@ _dsearch_backspace() {
   (( _dsearch_cur-- ))
 }
 
-# Delete the character at the caret (forward delete).
+# Forward delete.
 _dsearch_delete() {
   _dsearch_cur_clamp
   (( _dsearch_cur < ${#_dsearch_q} )) || return 1
@@ -76,7 +71,7 @@ _dsearch_cursor_hide() {
   printf "\e[0 q\e[?25l"
 }
 
-# Thin bar caret on the query. Call after painting the search bar.
+# Query caret. Call after painting the bar.
 _dsearch_place_cursor() {
   local label=" DNav Search:" col maxw
   if [[ ${_dsearch_view:-search} != search || ${_dsearch_focus:-list} != list ]]; then
@@ -91,10 +86,7 @@ _dsearch_place_cursor() {
   printf "\r\e[6 q\e[%dG\e[?25h" $col
 }
 
-# ── awk filter (hot path) ─────────────────────────────────────────────────
-# Args: query, maxn, src_file
-# Prints top maxn paths (one per line). Soft-AND: a missed token penalizes
-# instead of dropping the path. All-token hits always rank above near-misses.
+# query, maxn, src_file → top paths. Soft-AND; all-token hits beat near-misses.
 _dsearch_awk_filter() {
   local query="$1" maxn="$2" src="$3"
   local home_p config_p data_p state_p cache_p
@@ -377,8 +369,7 @@ _dsearch_awk_filter() {
   ' "$src"
 }
 
-# Apply filter for $query against the full directory index.
-# Sets _dsearch_matches (top maxn). Jump aliases that contain every token are pinned.
+# Fill _dsearch_matches (top maxn). Pins jump aliases that contain every token.
 _dsearch_apply_filter() {
   local query="$1"
   local maxn="${2:-10}"
@@ -408,9 +399,7 @@ _dsearch_take_top() {
   done
 }
 
-# 0 if $1 contains every whitespace-separated token from $2 as a
-# contiguous substring (any order). Single-token queries skip this
-# check (the scorer already gated them).
+# 0 if $1 contains every token from $2 (any order). Single-token skips (scorer).
 _dsearch_path_has_tokens() {
   emulate -L zsh
   local p="${(L)1}" q="$2" tok
@@ -424,7 +413,7 @@ _dsearch_path_has_tokens() {
   return 0
 }
 
-# Prepend djump matches for the query (dirs only), then cap to maxn.
+# Prepend matching jump dirs, then cap to maxn.
 _dsearch_pin_jumps() {
   local query="$1" maxn="${2:-10}"
   (( $+functions[_djump_available] )) && _djump_available || return 0
@@ -455,8 +444,7 @@ _dsearch_pin_jumps() {
   _dsearch_matches=("${out[@]:0:$maxn}")
 }
 
-# ── UI ────────────────────────────────────────────────────────────────────
-# Matches dnav: black-on-cyan full-width bars (same DNAV_HIGHLIGHT / success bar).
+# UI (same highlight as the main bar).
 
 _dsearch_cols() {
   if (( $+functions[_dnav_usable_cols] )); then
@@ -470,7 +458,7 @@ _dsearch_cols() {
   print -rn -- "$w"
 }
 
-# Shorten path for display (~ for $HOME); optional max length.
+# Display path (~ for $HOME).
 _dsearch_display_path() {
   local p="$1" maxw="${2:-0}"
   local home="$HOME"
@@ -487,7 +475,7 @@ _dsearch_display_path() {
   print -r -- "$p"
 }
 
-# Truncate/pad a string to exactly w display columns.
+# Truncate/pad to w columns.
 _dsearch_fit() {
   local s="$1" w="$2" pad
   if (( $+functions[_dnav_fit_end] )); then
@@ -511,12 +499,12 @@ _dsearch_fit() {
   printf "%-${w}s" "$s"
 }
 
-# Focus: list (result rows) | help (Help chip on the bar)
+# Focus: list | help
 typeset -g _dsearch_focus=list
-# View: search (normal) | help (help overlay inside dsearch)
+# View: search | help
 typeset -g _dsearch_view=search
 
-# Help body lines (shown under the bar when Help is opened)
+# Help overlay body.
 _dsearch_help_lines() {
   print -r -- "Type to search. Last word is a prefix; extra words narrow the list but a miss still shows near matches."
   print -r -- "↑, ↓, Ctrl+N, Ctrl+P        move selection"
@@ -529,9 +517,7 @@ _dsearch_help_lines() {
   print -r -- "Ctrl+U                      clear the query"
 }
 
-# Paint one row. Bar uses chip styling (not a full-width cyan fill).
-# $1 = mode: bar | sel | row | blank | help_row
-# $2 = text (ignored for blank)
+# $1 = bar | sel | row | blank | help_row. Bar is a chip, not a full-width fill.
 _dsearch_paint_row() {
   local mode="$1" text="${2:-}"
   local hl rst maxw inner
@@ -600,7 +586,7 @@ _dsearch_paint_row() {
   esac
 }
 
-# Full redraw of prompt + dropdown (or help overlay).
+# Full redraw of bar + list (or help).
 _dsearch_draw() {
   local query="$1"
   local n p disp i leftover
@@ -651,7 +637,7 @@ _dsearch_draw() {
   _dsearch_place_cursor
 }
 
-# Selection moved only — repaint two rows + bar (minimal flicker).
+# Selection moved: repaint two rows + bar.
 _dsearch_draw_sel() {
   local query="$1"
   local old="$2"   # previous index
@@ -714,8 +700,7 @@ _dsearch_close_help() {
   _dsearch_draw "$_dsearch_q"
 }
 
-# Query bar is always live. Ranking runs in a background job; the list
-# is refreshed about every 30ms from that job (never on the key path).
+# Query is live. Rank in a background job; refresh ~30ms, never on the key path.
 typeset -gi _DSEARCH_DIRTY=0
 typeset -gi _DSEARCH_WORKER_PID=0
 typeset -gi _DSEARCH_GEN=0
@@ -736,7 +721,7 @@ _dsearch_now_ms() {
   fi
 }
 
-# Pull already-buffered print/edit keys into the query. Navigation is pushback.
+# Drain buffered print/edit keys. Navigation is pushback.
 _dsearch_drain_query() {
   while _dnav_try_read_token; do
     case $REPLY in
@@ -761,7 +746,7 @@ _dsearch_drain_query() {
   done
 }
 
-# Drop the pid from the job table. Call whenever we clear _DSEARCH_WORKER_PID.
+# wait(2) the ranker. Call whenever _DSEARCH_WORKER_PID is cleared.
 _dsearch_worker_reap() {
   local pid=$_DSEARCH_WORKER_PID
   _DSEARCH_WORKER_PID=0
@@ -777,8 +762,7 @@ _dsearch_worker_stop() {
   _dsearch_worker_reap
 }
 
-# Highlighted row is what Enter confirms. Re-rank only if the list is empty.
-# Sets REPLY to the path (not stdout — a flush may paint the TUI).
+# Enter: highlighted row. Re-rank only if empty. Path in REPLY (flush may paint).
 _dsearch_commit_target() {
   emulate -L zsh
   if (( $#_dsearch_matches == 0 )); then
@@ -790,8 +774,7 @@ _dsearch_commit_target() {
   REPLY="${_dsearch_matches[_dsearch_sel+1]}"
 }
 
-# Rank $_dsearch_q off-thread. Hits land in $tmpdir/hits.$gen.
-# In-flight work is only cancelled for an empty query or a flush.
+# Rank $_dsearch_q off-thread → $tmpdir/hits.$gen. Cancel only on empty query or flush.
 _dsearch_worker_start() {
   local q="$_dsearch_q" gen tmp
   tmp="$_dsearch_tmpdir"
@@ -823,7 +806,7 @@ _dsearch_worker_start() {
   _DSEARCH_WORKER_PID=$!
 }
 
-# 0 if the current generation produced a hits file (caller draws).
+# 0 if this generation has a hits file (caller draws).
 _dsearch_worker_poll() {
   local gen=$_DSEARCH_GEN tmp="$_dsearch_tmpdir" f
   [[ -n $tmp && $gen -gt 0 ]] || return 1
@@ -838,9 +821,7 @@ _dsearch_worker_poll() {
   return 0
 }
 
-# About every 30ms: reap a finished job and start one for the live query
-# if nothing is running. Do not cancel an in-flight rank — that is what
-# keeps the list moving while the user types.
+# ~30ms: reap a finished job; start one for the live query if idle. Do not cancel in-flight.
 _dsearch_maybe_tick() {
   local now
   now="$(_dsearch_now_ms)"
@@ -865,7 +846,7 @@ _dsearch_maybe_tick() {
   fi
 }
 
-# Paint the query now. Never ranks here.
+# Paint the query. Does not rank.
 _dsearch_note_query() {
   _dsearch_drain_query
   _dsearch_sel=0
@@ -879,7 +860,7 @@ _dsearch_note_query() {
   _dsearch_maybe_tick
 }
 
-# Need results for the live query now (Enter / arrows).
+# Block until results match the live query (Enter / arrows).
 _dsearch_flush_filter() {
   local i
   if [[ $_dsearch_q == "$_DSEARCH_SHOWN_Q" ]]; then
@@ -915,7 +896,7 @@ _dsearch_flush_filter() {
   _dsearch_draw "$_dsearch_q"
 }
 
-# 0 = REPLY is a key; 1 = 30ms tick (or abort). Keys already waiting never wait.
+# 0 = REPLY is a key; 1 = 30ms tick. Waiting keys never wait.
 _dsearch_wait_key() {
   local k
   REPLY=""
@@ -945,7 +926,7 @@ _dsearch_wait_key() {
   return 1
 }
 
-# Move highlight in the dropdown (arrows / Ctrl+N / Ctrl+P — not j/k, those type)
+# Move highlight (arrows / Ctrl+N/P). j/k type.
 _dsearch_sel_up() {
   [[ ${_dsearch_view:-search} == search ]] || return 1
   if [[ ${_dsearch_focus:-list} == help ]]; then
@@ -971,13 +952,11 @@ _dsearch_sel_down() {
   _dsearch_draw_sel "$_dsearch_q" $old
 }
 
-# ── Main entry ────────────────────────────────────────────────────────────
-# Return 0 → navigated/done (or for_dfile: path in DNAV_SEARCH_RESULT)
-# Return 1 → cancelled
+# 0 = navigated (or DNAV_SEARCH_RESULT for dfile). 1 = cancelled.
 typeset -gi _DSEARCH_FOR_DFILE=0
 typeset -g  DNAV_SEARCH_RESULT=""
 
-# Search while dfile is open: confirm stays in explorer (no dnav exit/cleanup).
+# Search from dfile: confirm stays in the explorer.
 _dsearch_start_for_dfile() {
   _DSEARCH_FOR_DFILE=1
   DNAV_SEARCH_RESULT=""
@@ -1142,7 +1121,7 @@ _dsearch_start() {
             (( $+functions[_dnav_cleanup] )) && _dnav_cleanup
             return 0
           }
-          # Same pull-up as dfile: shared _dnav_finish → _dnav_success_bar.
+          # Same path bar as dfile.
           if (( $+functions[_dnav_finish] )); then
             _dnav_finish "${target:a}" dnav
           else

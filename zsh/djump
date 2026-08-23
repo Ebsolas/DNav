@@ -1,26 +1,8 @@
 #!/usr/bin/env zsh
-# djump — standalone jump table (works with or without dnav)
+# djump — jump table and dKEY commands (works without dnav)
 #
-# Data file (first match wins):
-#   $DNAV_JUMPS
-#   $DNAV_CONFIG_DIR/jumps     (~/.config/dnav/jumps)
-#   $DNAV_DIR/jumps            (package default)
-#
-# API:
-#   _djump_available
-#   _djump_load / _djump_save
-#   _djump_add / _djump_edit / _djump_remove
-#   _djump_resolve KEY     → prints absolute path, return 0/1
-#   _djump_list_keys
-#   _djump_match_query S   → keys matching s / ds (for typeahead / search pin)
-#   _djump_goto KEY        → cd to jump (for shell cmds)
-#   _djump_cmd_clash KEY   → 0 if dKEY is taken (REPLY = why)
-#   djump [-r|-l|-c|add|edit|remove|KEY]
-#   dhelp                      jump list only (not usage)
-#   djump -h / --help          usage
-#
-# When sourced, each jump key is also installed as `dKEY` (home → dhome)
-# unless that name is reserved or already taken on the system.
+# Jumps file, first match: $DNAV_JUMPS, $DNAV_CONFIG_DIR/jumps, $DNAV_DIR/jumps
+# Sourced, each key becomes `dKEY` unless that name is reserved or taken.
 
 _djump_available() { return 0 }
 
@@ -43,7 +25,7 @@ _djump_data_path() {
   fi
 }
 
-# Path we write favorites to (always user config, not package tree).
+# User config jumps file (never the package copy).
 _djump_user_path() {
   if [[ -n ${DNAV_JUMPS:-} ]]; then
     print -r -- "$DNAV_JUMPS"
@@ -54,7 +36,7 @@ _djump_user_path() {
   print -r -- "$cfg/jumps"
 }
 
-# Compact path for storage (~ for $HOME). Never treats bare "~" as a relative name.
+# Compact path for storage (~ for $HOME). Bare "~" is home, not relative.
 _djump_store_path() {
   local p="$1" store
   if [[ $p == '~' ]]; then
@@ -74,7 +56,7 @@ _djump_store_path() {
   print -r -- "$store"
 }
 
-# Persist current map to the user jumps file (temp + mv) and reinstall dKEY commands.
+# Write the map (temp + mv) and reinstall dKEY commands.
 _djump_save() {
   emulate -L zsh
   setopt localoptions no_multios clobber
@@ -101,19 +83,19 @@ _djump_save() {
   return 0
 }
 
-# Label as stored (do not strip a leading "d" — "docs" stays "docs").
+# Stored label. Do not strip a leading d ("docs" stays "docs").
 _djump_valid_label() {
   [[ $1 =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]]
 }
 
-# True if dNAME is a jump function we installed (body still calls _djump_goto).
+# 1 if dNAME is a jump function we installed.
 _djump_owned() {
   local jname="$1"
   (( $+functions[$jname] )) || return 1
   [[ ${functions[$jname]} == *_djump_goto* ]]
 }
 
-# 0 = clash (REPLY = reserved|alias|builtin|function|command). 1 = free or ours.
+# 0 = clash (REPLY=reserved|alias|builtin|function|command). 1 = free or ours.
 _djump_cmd_clash() {
   local key="$1"
   local jname="d${key}"
@@ -139,7 +121,7 @@ _djump_cmd_clash() {
   esac
 }
 
-# Remove previously installed dKEY functions we still own.
+# Unfunction dKEY commands we still own.
 _djump_uninstall_cmds() {
   local cmd
   for cmd in "${_DJUMP_SHELL_CMDS[@]}"; do
@@ -150,8 +132,7 @@ _djump_uninstall_cmds() {
   _DJUMP_SHELL_CMDS=()
 }
 
-# Install one shell function per jump: dhome, dproj, …
-# Skip reserved / already-taken names; keep the table row.
+# Install dKEY functions. Skip reserved/taken names; keep the table row.
 _djump_install_cmds() {
   local key cmd why
   local -a skipped
@@ -171,7 +152,7 @@ _djump_install_cmds() {
   _DJUMP_SKIPPED=("${skipped[@]}")
 }
 
-# One-line skip summary (for djump -r). Empty if nothing skipped.
+# One-line skip summary for djump -r. Empty if none.
 _djump_skip_summary() {
   local -a names
   local rec
@@ -185,7 +166,7 @@ _djump_skip_summary() {
   print -r -- "djump: skipped ${#_DJUMP_SKIPPED} command${plural} that already exist (${(j:, :)names}). djump KEY still works."
 }
 
-# Same comment rule as _dnav_strip_comment. Prefer the engine when sourced via dnav.
+# Same comment rule as _dnav_strip_comment.
 _djump_strip_comment() {
   if (( $+functions[_dnav_strip_comment] )); then
     _dnav_strip_comment "$1"
@@ -255,7 +236,7 @@ _djump_ensure() {
   (( _DJUMP_LOADED )) || _djump_load
 }
 
-# Empty table is a valid starting point for add (no jumps file yet).
+# Empty table is valid (no jumps file yet).
 _djump_ensure_table() {
   _djump_ensure 2>/dev/null || {
     _DJUMP_MAP=()
@@ -265,7 +246,7 @@ _djump_ensure_table() {
   }
 }
 
-# Expand path: ~ and relatives against $PWD; print absolute if possible.
+# Expand ~ / relatives against $PWD; print absolute if possible.
 _djump_expand() {
   local p="$1" out
   if [[ $p == '~' || $p == '~/'* ]]; then
@@ -283,7 +264,7 @@ _djump_expand() {
   fi
 }
 
-# Resolve jump key. Exact map key wins; only then try stripping a leading d.
+# Resolve key. Exact map key wins; then try stripping a leading d.
 _djump_resolve() {
   local raw="$1" key jpath
   _djump_ensure || return 1
@@ -298,7 +279,7 @@ _djump_resolve() {
   _djump_expand "$jpath"
 }
 
-# Map "dwork" → "work" only when "dwork" is not itself a key.
+# "dwork" → "work" only when "dwork" is not itself a key.
 _djump_existing_label() {
   local label="$1"
   if [[ -n ${_DJUMP_MAP[$label]:-} ]]; then
@@ -312,8 +293,7 @@ _djump_existing_label() {
   return 1
 }
 
-# cd to a jump target (used by dKEY shell commands and `djump KEY`).
-# Uses the same cyan success bar as dnav when available.
+# cd to a jump target (dKEY / djump KEY).
 _djump_goto() {
   local key="$1" dest
   [[ -n $key ]] || return 1
@@ -330,7 +310,7 @@ _djump_goto() {
     return 1
   }
   dest="${dest:a}"
-  # Same bar as dnav/dfile/dsearch. Not _dnav_finish: that restores TUI tty.
+  # Same bar as dnav. Not _dnav_finish (that restores TUI tty).
   if (( $+functions[_dnav_success_bar] )); then
     _dnav_success_bar "$dest" "" djump
   elif [[ -o interactive ]]; then
@@ -357,7 +337,7 @@ _djump_list_keys() {
   print -l -- "${_DJUMP_KEYS[@]}"
 }
 
-# Print matching keys for query (case-insensitive). Query may be "dhome", "home", "ho".
+# Matching keys for query (case-insensitive). "dhome", "home", "ho".
 _djump_match_query() {
   local q="${(L)1}" k kl dkl
   local -a hits
@@ -373,8 +353,7 @@ _djump_match_query() {
   (( $#hits )) && print -l -- "${hits[@]}"
 }
 
-# Mutators used by `djump` and by dnav Settings. On failure REPLY is the error.
-# On success REPLY is a one-line confirmation.
+# Add/edit/remove. REPLY is an error or a one-line confirmation.
 _djump_add() {
   local label="$1" jpath="${2:-$PWD}" dest why
   REPLY=""
@@ -480,7 +459,7 @@ _djump_print_list() {
   done
 }
 
-# Jump list only (plain text, pipe-friendly). Not usage. Warnings go to stderr.
+# Jump list (plain text). Not usage. Warnings on stderr.
 dhelp() {
   _djump_print_list || return 1
   _djump_warn_stolen
@@ -509,7 +488,7 @@ _djump_print_help() {
   print -r -- "dhelp prints the same list as djump --list."
 }
 
-# Warn about dKEY names that exist but are no longer our function (alias, etc.).
+# Warn if dKEY exists but is no longer our function.
 _djump_warn_stolen() {
   local k cmd
   _djump_ensure 2>/dev/null || return 0
@@ -560,15 +539,7 @@ _djump_check() {
   return 0
 }
 
-# User-facing: list, reload, manage, or jump.
-#   djump                 list keys as dKEY → path
-#   djump -l              same
-#   djump -r              reload jumps file + reinstall dKEY cmds
-#   djump -c / --check    clash report
-#   djump add LABEL [PATH]
-#   djump edit LABEL [PATH]
-#   djump remove LABEL
-#   djump home            cd to key "home" (same as dhome)
+# djump [-l|-r|-c|add|edit|remove|KEY]
 djump() {
   local msg
   case ${1:-} in
@@ -631,8 +602,7 @@ djump() {
   esac
 }
 
-# Load once when sourced (installs dKEY commands into the shell).
-# Skipped clashes stay quiet here — use djump -r / djump --check to see them.
+# Load once when sourced. Clash details: djump -r / --check.
 _djump_load 2>/dev/null || true
 if [[ -n ${DNAV_JUMP_WARN:-} && ${DNAV_JUMP_WARN} != 0 ]]; then
   _djump_skip_summary && true
