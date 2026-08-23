@@ -166,6 +166,8 @@ brand = DNav
 ls_after = 0
 # ls_after_dnav = inherit
 # ls_after_djump = inherit
+# milliseconds to wait after the path bar before ls (0 = no wait)
+ls_after_ms = 0
 
 # dfile: show hidden files/dirs by default (toggle still works with .)
 show_hidden = 0

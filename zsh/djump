@@ -330,7 +330,7 @@ _djump_goto() {
     return 1
   }
   dest="${dest:a}"
-  # Same bar as dnav/dfile/dsearch (_dnav_finish also restores TUI tty, skip here).
+  # Same bar as dnav/dfile/dsearch. Not _dnav_finish: that restores TUI tty.
   if (( $+functions[_dnav_success_bar] )); then
     _dnav_success_bar "$dest" "" djump
   elif [[ -o interactive ]]; then

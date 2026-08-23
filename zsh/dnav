@@ -31,10 +31,12 @@ typeset -g DNAV_CONFIG_DIR
 typeset -g DNAV_CFG_COLOR_FG=30 DNAV_CFG_COLOR_BG=46
 typeset -g DNAV_CFG_LS=0 DNAV_CFG_SHOW_HIDDEN=0
 typeset -gi DNAV_CFG_LS_DNAV=-1 DNAV_CFG_LS_DJUMP=-1
+typeset -gi DNAV_CFG_LS_AFTER_MS=0
 typeset -g DNAV_CFG_SUCCESS_ANIM=1 DNAV_CFG_FULL_REDRAW=0
 typeset -g DNAV_CFG_SUCCESS_BAR=1
 typeset -gi DNAV_CFG_SUCCESS_BAR_DNAV=-1 DNAV_CFG_SUCCESS_BAR_DJUMP=-1
 typeset -g DNAV_CFG_SUCCESS_ANIM_STEPS=8 DNAV_CFG_SUCCESS_ANIM_MS=2
+typeset -gi _DNAV_TTY_FD=0
 typeset -g DNAV_CFG_BRAND=DNav
 typeset -g DNAV_CFG_SEARCH_ROOTS=""
 typeset -gi DNAV_CFG_INDEX_AUTO=1
@@ -193,6 +195,8 @@ brand = DNav
 ls_after = 0
 # ls_after_dnav = 1
 # ls_after_djump = 0
+# milliseconds to wait after the path bar before ls (0 = no wait)
+ls_after_ms = 0
 
 # dfile: show hidden files/dirs by default (toggle still works with .)
 show_hidden = 0
@@ -281,6 +285,7 @@ _dnav_config_schema() {
   print -r -- 'ls_after|bool|DNAV_CFG_LS|0|ls|toggle|Enter toggle (default)|ls -a after a successful select/jump (1/0)'
   print -r -- 'ls_after_dnav|cycle3|DNAV_CFG_LS_DNAV|inherit||cycle3|Enter cycle inherit/on/off|ls after dnav: 1/0/inherit (inherit uses ls_after)'
   print -r -- 'ls_after_djump|cycle3|DNAV_CFG_LS_DJUMP|inherit||cycle3|Enter cycle inherit/on/off|ls after djump: 1/0/inherit (inherit uses ls_after)'
+  print -r -- 'ls_after_ms|int|DNAV_CFG_LS_AFTER_MS|0|ls_delay,ls_delay_ms|value|Enter edit (0 = no wait)|milliseconds to wait after the path bar before ls (0 = no wait)'
   print -r -- 'show_hidden|bool|DNAV_CFG_SHOW_HIDDEN|0|hidden|toggle|Enter toggle|dfile: show hidden files/dirs by default (toggle with .)'
   print -r -- 'dfile_sort_dirs|enum:alpha,hidden_first|DNAV_CFG_DFILE_SORT_DIRS|alpha||enum|Enter cycle alpha/hidden_first|dfile dir order: alpha | hidden_first'
   print -r -- 'dfile_sort_files|enum:alpha,ext,dot_first,dot_ext|DNAV_CFG_DFILE_SORT_FILES|alpha||enum|Enter cycle alpha/ext/dot_first/dot_ext|dfile file order: alpha | ext | dot_first | dot_ext'
@@ -304,7 +309,6 @@ _dnav_config_schema() {
 
 _dnav_config_schema_init() {
   emulate -L zsh
-  (( $#_DNAV_CFG_KEYS )) && return 0
   local line key type var def aliases ui hint note a
   local -a f
   _DNAV_CFG_KEYS=()
@@ -660,7 +664,7 @@ dconfig() {
         print -r -- "dconfig: ${DNAV_CONFIG_DIR}"
         print -r -- "  color  fg=${DNAV_CFG_COLOR_FG} bg=${DNAV_CFG_COLOR_BG}"
         print -r -- "  brand  ${DNAV_CFG_BRAND}"
-        print -r -- "  ls_after=${DNAV_CFG_LS}  dnav=${DNAV_CFG_LS_DNAV}  djump=${DNAV_CFG_LS_DJUMP}"
+        print -r -- "  ls_after=${DNAV_CFG_LS}  dnav=${DNAV_CFG_LS_DNAV}  djump=${DNAV_CFG_LS_DJUMP}  ms=${DNAV_CFG_LS_AFTER_MS}"
         print -r -- "  success_bar=${DNAV_CFG_SUCCESS_BAR}  dnav=${DNAV_CFG_SUCCESS_BAR_DNAV}  djump=${DNAV_CFG_SUCCESS_BAR_DJUMP}"
         print -r -- "  success_anim=${DNAV_CFG_SUCCESS_ANIM}  steps=${DNAV_CFG_SUCCESS_ANIM_STEPS}  ms=${DNAV_CFG_SUCCESS_ANIM_MS}  full_redraw=${DNAV_CFG_FULL_REDRAW}"
         print -r -- "  show_hidden=${DNAV_CFG_SHOW_HIDDEN}"
@@ -1070,7 +1074,11 @@ _dnav_want_bar() {
 }
 
 _dnav_maybe_ls() {
+  emulate -L zsh
+  local -i ms
   _dnav_want_ls "${1:-dnav}" || return 0
+  ms=${DNAV_CFG_LS_AFTER_MS:-0}
+  (( ms > 0 )) && (( $+functions[_dnav_sleep_ms] )) && _dnav_sleep_ms $ms
   command ls -a --color=auto
 }
 
@@ -1702,12 +1710,24 @@ _dnav_sleep_ms() {
 }
 
 # Unbuffered write so animation frames are not held until a newline.
+# Interactive runs write /dev/tty (djump's cooked stdout can line-buffer).
+# Tests redirect stdout, so they keep fd 1.
 _dnav_out() {
   emulate -L zsh
-  zmodload -F zsh/system b:syswrite 2>/dev/null || true
+  zmodload -F zsh/system b:sysopen b:syswrite 2>/dev/null || true
+  if [[ -t 1 ]] && (( $+builtins[sysopen] )) && (( _DNAV_TTY_FD <= 0 )); then
+    sysopen -w -u _DNAV_TTY_FD /dev/tty 2>/dev/null || _DNAV_TTY_FD=0
+  fi
   if (( $+builtins[syswrite] )); then
+    if [[ -t 1 ]] && (( _DNAV_TTY_FD > 0 )); then
+      syswrite -o $_DNAV_TTY_FD -- "$1"
+      return $?
+    fi
     syswrite -- "$1"
     return $?
+  fi
+  if [[ -t 1 ]]; then
+    printf '%s' "$1" >/dev/tty 2>/dev/null && return 0
   fi
   printf '%s' "$1"
 }
@@ -1716,6 +1736,8 @@ _dnav_out() {
 # $1 = path; $2 = optional expand origin column; $3 = dnav|djump (bar visibility).
 # Always one terminal row: width from stty, tail-truncate, never fill last column.
 _dnav_success_bar() {
+  emulate -L zsh
+  setopt localoptions nomonitor nonotify
   local bar_path="$1"
   local origin_mid="${2:-}"
   local ctx="${3:-dnav}"
@@ -1739,6 +1761,9 @@ _dnav_success_bar() {
   fi
   (( origin_mid >= usable )) && origin_mid=$(( usable / 2 ))
 
+  # Flush any pending TUI printf (chip strip) before unbuffered frames.
+  command true
+
   if (( anim )); then
     for (( step=1; step <= steps; step++ )); do
       half=$(( (usable * step) / (2 * steps) ))
@@ -1747,14 +1772,14 @@ _dnav_success_bar() {
       (( left < 0 )) && left=0
       (( right > usable )) && right=$usable
       width=$(( right - left ))
-      frame=$(printf "\r\e[2K\e[${left}C${hl}%*s${rst}" $width "")
+      printf -v frame "\r\e[2K\e[${left}C${hl}%*s${rst}" $width ""
       _dnav_out "$frame"
       _dnav_sleep_ms $ms
     done
   fi
 
   display="$(_dnav_fit_end "$bar_path" $usable)"
-  frame=$(printf "\r${hl}%-${usable}s${rst}\e[K\n" "$display")
+  printf -v frame "\r${hl}%-${usable}s${rst}\e[K\n" "$display"
   _dnav_out "$frame"
 }
 
@@ -2006,6 +2031,7 @@ _dnav_help_topic_body() {
       print -r -- "dnav --update                 refresh scripts; merge new config keys"
       print -r -- "dnav --reindex                rebuild the search index"
       print -r -- "ls_after=1                    run ls after a successful jump"
+      print -r -- "ls_after_ms=N                 wait N ms after the path bar before ls"
       ;;
   esac
 }
@@ -2573,13 +2599,10 @@ _dnav_leave_about() {
   _dnav_draw
 }
 
-# Expand from _DNAV_SEL chip via the shared finish path (bar + cleanup + ls).
+# Wipe the chip strip, then the same blank-line expand as dfile/dsearch.
 _dnav_success_from_sel() {
-  local sel_path="$1"
-  local origin_start=${_DNAV_ITEM_START[_DNAV_SEL+1]:-0}
-  local origin_end=${_DNAV_ITEM_END[_DNAV_SEL+1]:-$_DNAV_COLS}
-  local origin_mid=$(( (origin_start + origin_end) / 2 ))
-  _dnav_finish "$sel_path" dnav $origin_mid
+  _dnav_clear_menu
+  _dnav_finish "$1" dnav
 }
 
 dnav() {

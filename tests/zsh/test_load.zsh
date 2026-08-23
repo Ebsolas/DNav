@@ -327,6 +327,48 @@ test_resourcing_reloads_search_plugin() {
   fi
 }
 
+test_maybe_ls_waits_after_bar() {
+  emulate -L zsh
+  local slept=0
+  local save_ls="${DNAV_CFG_LS:-0}"
+  local save_ls_dnav="${DNAV_CFG_LS_DNAV:--1}"
+  local save_ms="${DNAV_CFG_LS_AFTER_MS:-0}"
+  functions -c _dnav_sleep_ms _dnav_sleep_ms_orig
+  DNAV_CFG_LS=1
+  DNAV_CFG_LS_DNAV=1
+  DNAV_CFG_LS_AFTER_MS=400
+  _dnav_sleep_ms() { slept=$1 }
+  _dnav_maybe_ls dnav >/dev/null
+  unfunction _dnav_sleep_ms
+  functions -c _dnav_sleep_ms_orig _dnav_sleep_ms
+  unfunction _dnav_sleep_ms_orig
+  DNAV_CFG_LS=$save_ls
+  DNAV_CFG_LS_DNAV=$save_ls_dnav
+  DNAV_CFG_LS_AFTER_MS=$save_ms
+  assert_eq "$slept" "400" "ls waits ls_after_ms when ls is on"
+}
+
+test_maybe_ls_skips_wait_when_ls_off() {
+  emulate -L zsh
+  local slept=0
+  local save_ls="${DNAV_CFG_LS:-0}"
+  local save_ls_dnav="${DNAV_CFG_LS_DNAV:--1}"
+  local save_ms="${DNAV_CFG_LS_AFTER_MS:-0}"
+  functions -c _dnav_sleep_ms _dnav_sleep_ms_orig
+  DNAV_CFG_LS=0
+  DNAV_CFG_LS_DNAV=0
+  DNAV_CFG_LS_AFTER_MS=400
+  _dnav_sleep_ms() { slept=$1 }
+  _dnav_maybe_ls dnav >/dev/null
+  unfunction _dnav_sleep_ms
+  functions -c _dnav_sleep_ms_orig _dnav_sleep_ms
+  unfunction _dnav_sleep_ms_orig
+  DNAV_CFG_LS=$save_ls
+  DNAV_CFG_LS_DNAV=$save_ls_dnav
+  DNAV_CFG_LS_AFTER_MS=$save_ms
+  assert_eq "$slept" "0" "no wait when ls is off"
+}
+
 test_success_bar_sleeps_per_step() {
   emulate -L zsh
   local -i n=0
@@ -411,6 +453,8 @@ run_test test_dnav_dir_points_at_package
 run_test test_config_dir_isolated
 run_test test_update_repo_finds_source
 run_test test_resourcing_reloads_search_plugin
+run_test test_maybe_ls_waits_after_bar
+run_test test_maybe_ls_skips_wait_when_ls_off
 run_test test_success_bar_sleeps_per_step
 run_test test_sleep_ms_survives_sigchld
 run_test test_syntax_zsh_scripts

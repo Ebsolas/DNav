@@ -37,6 +37,7 @@ test_color_num() {
 test_seeded_config_loaded() {
   assert_eq "$DNAV_CFG_BRAND" "ZshTestNav" "brand from fixture"
   assert_eq "$DNAV_CFG_LS" "0" "ls_after off"
+  assert_eq "$DNAV_CFG_LS_AFTER_MS" "0" "ls_after_ms default 0"
   assert_eq "$DNAV_CFG_SUCCESS_ANIM" "0" "success_anim off"
   assert_eq "$DNAV_CFG_INDEX_AUTO" "1" "index_auto default on"
   assert_eq "$DNAV_CFG_INDEX_WHEN" "open" "index_when default open"
@@ -190,6 +191,7 @@ EOF
   assert_contains "$txt" "# dfile Jump to: folder name max (cuts the end)" "notes Jump to: max"
   assert_contains "$txt" "success_bar = 1" "adds success_bar"
   assert_contains "$txt" "# Cyan path bar after select (0 = hide)" "notes success_bar"
+  assert_contains "$txt" "ls_after_ms = 0" "adds ls_after_ms"
   added="$(_dnav_config_merge_defaults "$DNAV_TEST_CONFIG")"
   assert_eq "$added" "0" "second merge is a no-op"
   txt="$(<"$DNAV_TEST_CONFIG/config")"
@@ -332,6 +334,7 @@ test_seed_folders_are_generic() {
 
 test_schema_canon_and_aliases() {
   assert_eq "$(_dnav_config_canon_key ls)" "ls_after" "ls → ls_after"
+  assert_eq "$(_dnav_config_canon_key ls_delay)" "ls_after_ms" "ls_delay → ls_after_ms"
   assert_eq "$(_dnav_config_canon_key fg)" "color_fg" "fg → color_fg"
   assert_eq "$(_dnav_config_canon_key auto_index)" "index_auto" "auto_index → index_auto"
   local n
@@ -386,7 +389,22 @@ EOF
   assert_eq "$DNAV_CFG_STATUS_TIMEOUT_MS" "1500" "timeout parsed"
 }
 
+test_ls_after_ms_config() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = DelayCfg
+ls_after_ms = 400
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS_AFTER_MS" "400" "ls_after_ms parsed"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+ls_delay = 250
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS_AFTER_MS" "250" "ls_delay alias"
+}
+
 run_test test_seed_folders_are_generic
 run_test test_inaccessible_config_keys
+run_test test_ls_after_ms_config
 run_test test_seed_does_not_clobber_existing
 dnav_test_finish
