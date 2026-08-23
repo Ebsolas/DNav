@@ -39,6 +39,7 @@ typeset -g DNAV_CFG_SEARCH_ROOTS=""
 typeset -gi DNAV_CFG_INDEX_AUTO=1
 typeset -g DNAV_CFG_INDEX_WHEN=open
 typeset -gi DNAV_CFG_INDEX_TTL_HOURS=24
+typeset -g DNAV_CFG_INDEX_FILE=""
 typeset -g DNAV_CFG_DFILE_SORT_DIRS=alpha
 typeset -g DNAV_CFG_DFILE_SORT_FILES=alpha
 typeset -g DNAV_CFG_DFILE_JUMP_NAME_MAX=20
@@ -218,6 +219,8 @@ index_auto = 1
 index_when = open
 # Hours until the on-disk index is stale. 0 = never (still build if missing)
 index_ttl_hours = 24
+# If set, auto-index / dnav --reindex import this list instead of walking.
+# index_file = ~/.cache/dnav/my-dirs
 
 # Status message auto-clear (ms). 0 = keep until the next message
 status_timeout_ms = 3000
@@ -315,6 +318,7 @@ _dnav_config_load_kv() {
         if [[ $val == <-> ]]; then
           DNAV_CFG_INDEX_TTL_HOURS=$val
         fi ;;
+      index_file)                   DNAV_CFG_INDEX_FILE="$val" ;;
       dfile_sort_dirs)
         case ${(L)val} in hidden_first|hidden|dot_first) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;; *) DNAV_CFG_DFILE_SORT_DIRS=alpha ;; esac ;;
       dfile_sort_files)
@@ -451,6 +455,7 @@ _dnav_config_key_note() {
     index_auto) print -r -- "Rebuild search index when stale (1) or only via dnav --reindex (0)" ;;
     index_when) print -r -- "When to auto-index: open (with dnav) | search (when search opens)" ;;
     index_ttl_hours) print -r -- "Hours until the search index is stale (0 = never; still build if missing)" ;;
+    index_file) print -r -- "Path list to import instead of walking (empty = find search_roots)" ;;
     status_timeout_ms) print -r -- "Status message auto-clear in milliseconds (0 = keep)" ;;
     inaccessible_color) print -r -- "dfile locked/unreadable color (name or ANSI fg)" ;;
     inaccessible_icon) print -r -- "dfile lock glyph on inaccessible entries (1/0)" ;;
@@ -469,6 +474,7 @@ _dnav_config_canon_key() {
     auto_index|index_auto) print -r -- index_auto ;;
     index_on|index_when) print -r -- index_when ;;
     index_ttl|index_ttl_hours) print -r -- index_ttl_hours ;;
+    index_file) print -r -- index_file ;;
     dfile_jump_max|dfile_jump_name_max) print -r -- dfile_jump_name_max ;;
     status_timeout|status_timeout_ms) print -r -- status_timeout_ms ;;
     inaccessible_color) print -r -- inaccessible_color ;;
@@ -589,6 +595,7 @@ _dnav_config_load() {
   DNAV_CFG_INDEX_AUTO=1
   DNAV_CFG_INDEX_WHEN=open
   DNAV_CFG_INDEX_TTL_HOURS=24
+  DNAV_CFG_INDEX_FILE=""
   DNAV_CFG_DFILE_SORT_DIRS=alpha
   DNAV_CFG_DFILE_SORT_FILES=alpha
   DNAV_CFG_DFILE_JUMP_NAME_MAX=20
@@ -638,6 +645,7 @@ _dnav_print_help() {
   print -r -- "Options:"
   print -r -- "  -u, --update         update installed scripts and merge new config keys"
   print -r -- "      --reindex        rebuild the directory search index and exit"
+  print -r -- "      --reindex --from FILE   install a path list (or - for stdin); no walk"
   print -r -- "  -h, --help           display this help and exit"
   print -r -- ""
   print -r -- "Related commands:"
@@ -664,6 +672,7 @@ dconfig() {
         print -r -- "  success_anim=${DNAV_CFG_SUCCESS_ANIM}  steps=${DNAV_CFG_SUCCESS_ANIM_STEPS}  ms=${DNAV_CFG_SUCCESS_ANIM_MS}  full_redraw=${DNAV_CFG_FULL_REDRAW}"
         print -r -- "  show_hidden=${DNAV_CFG_SHOW_HIDDEN}"
         print -r -- "  index_auto=${DNAV_CFG_INDEX_AUTO}  when=${DNAV_CFG_INDEX_WHEN}  ttl_hours=${DNAV_CFG_INDEX_TTL_HOURS}"
+        [[ -n $DNAV_CFG_INDEX_FILE ]] && print -r -- "  index_file=${DNAV_CFG_INDEX_FILE}"
         print -r -- "  folders ${#DNAV_FOLDER_NAMES}  jumps ${#_DJUMP_KEYS:-0}"
       fi
       ;;

@@ -199,6 +199,8 @@ index_auto = 1
 index_when = open
 # Hours until the on-disk index is stale. 0 = never (still build if missing)
 index_ttl_hours = 24
+# If set, auto-index / dnav --reindex import this list instead of walking.
+# index_file = ~/.cache/dnav/my-dirs
 
 # Status message auto-clear (ms). 0 = keep until the next message
 status_timeout_ms = 3000

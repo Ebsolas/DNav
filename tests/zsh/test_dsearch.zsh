@@ -103,11 +103,70 @@ test_reindex_help() {
   local got
   got="$(_dsearch_reindex --help)"
   assert_contains "$got" "Usage: dnav --reindex" "reindex help usage"
+  assert_contains "$got" "--from" "reindex help lists --from"
   if [[ $got == *$'\e'* ]]; then
     _dnav_test_fail "reindex help should be plain text"
   else
     _dnav_test_pass "reindex help is pipe-friendly"
   fi
+}
+
+test_import_index_from_file() {
+  local src="$DNAV_TEST_TMP/import.list" idx n
+  idx="$(_dsearch_index_path)"
+  print -r -- "# comment" > "$src"
+  print -r -- "" >> "$src"
+  print -r -- "$HOME/Documents" >> "$src"
+  print -r -- "$HOME/no-such-dir" >> "$src"
+  print -r -- "~/Projects" >> "$src"
+  n="$(_dsearch_import_index "$src")"
+  assert_eq "$n" "2" "import keeps two existing dirs"
+  assert_file "$idx"
+  local txt
+  txt="$(<"$idx")"
+  assert_contains "$txt" "$HOME/Documents" "imported Documents"
+  assert_contains "$txt" "$HOME/Projects" "imported Projects"
+  if [[ $txt == *no-such-dir* ]]; then
+    _dnav_test_fail "import kept a missing path"
+  else
+    _dnav_test_pass "import dropped missing paths"
+  fi
+  dnav_test_write_index "$idx"
+}
+
+test_sidecar_skips_unchanged_root() {
+  local idx count meta
+  idx="$(_dsearch_index_path)"
+  dnav_test_write_index "$idx"
+  print -r -- "$HOME/.sidecar-sentinel" >> "$idx"
+  meta="$(_dsearch_meta_path)"
+  {
+    print -r -- "v 1"
+    print -r -- "r $HOME"
+    _dsearch_top_children "$HOME" | while IFS= read -r line; do
+      [[ -n $line ]] && print -r -- "c $line"
+    done
+  } > "$meta"
+  count="$DNAV_TEST_TMP/idx.count"
+  DNAV_INDEX_FULL=0
+  _dsearch_build_index_with_count "$idx" "$count" "$DNAV_TEST_TMP/idx.building"
+  local txt
+  txt="$(<"$idx")"
+  if [[ $txt == *sidecar-sentinel* ]]; then
+    _dnav_test_pass "unchanged root kept sentinel from old index"
+  else
+    _dnav_test_fail "sidecar skip re-walked and dropped sentinel"
+  fi
+  DNAV_INDEX_FULL=1
+  _dsearch_build_index_with_count "$idx" "$count" "$DNAV_TEST_TMP/idx.building"
+  txt="$(<"$idx")"
+  if [[ $txt == *sidecar-sentinel* ]]; then
+    _dnav_test_fail "full rebuild should drop sentinel"
+  else
+    _dnav_test_pass "full rebuild drops sidecar sentinel"
+  fi
+  unset DNAV_INDEX_FULL
+  dnav_test_write_index "$idx"
 }
 
 test_apply_filter_returns_matches() {
@@ -582,6 +641,8 @@ run_test test_index_ttl_zero_fresh_not_stale
 run_test test_index_wanted_respects_auto_and_when
 run_test test_ensure_index_auto_off_does_not_start
 run_test test_reindex_help
+run_test test_import_index_from_file
+run_test test_sidecar_skips_unchanged_root
 run_test test_apply_filter_returns_matches
 run_test test_apply_filter_one_char
 run_test test_apply_filter_fuzzy_doc

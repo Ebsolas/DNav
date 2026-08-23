@@ -201,6 +201,7 @@ test_dnav_help_lists_entry_points() {
   assert_contains "$got" "dconfig" "help lists dconfig"
   assert_contains "$got" "djump" "help lists djump"
   assert_contains "$got" "--reindex" "help lists --reindex"
+  assert_contains "$got" "--from" "help lists --reindex --from"
   if [[ $got == *$'\e'* ]]; then
     _dnav_test_fail "dnav --help should be plain text"
   else

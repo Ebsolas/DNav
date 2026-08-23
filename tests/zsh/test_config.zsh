@@ -64,6 +64,11 @@ EOF
   assert_eq "$DNAV_CFG_INDEX_AUTO" "1" "auto_index alias"
   assert_eq "$DNAV_CFG_INDEX_WHEN" "search" "index_on s alias"
   assert_eq "$DNAV_CFG_INDEX_TTL_HOURS" "0" "index_ttl alias"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+index_file = ~/my-dirs
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_INDEX_FILE" "~/my-dirs" "index_file path"
 }
 
 test_reload_picks_up_edits() {
