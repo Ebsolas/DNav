@@ -330,6 +330,15 @@ test_seed_folders_are_generic() {
   fi
 }
 
+test_schema_canon_and_aliases() {
+  assert_eq "$(_dnav_config_canon_key ls)" "ls_after" "ls → ls_after"
+  assert_eq "$(_dnav_config_canon_key fg)" "color_fg" "fg → color_fg"
+  assert_eq "$(_dnav_config_canon_key auto_index)" "index_auto" "auto_index → index_auto"
+  local n
+  n="$(_dnav_config_key_note ls_after)"
+  assert_contains "$n" "ls -a after" "schema note for ls_after"
+}
+
 test_seed_does_not_clobber_existing() {
   local txt
   print -r -- "brand = KeepMe" > "$DNAV_TEST_CONFIG/config"
@@ -345,6 +354,7 @@ run_test test_truthy
 run_test test_expand_path_tilde
 run_test test_color_num
 run_test test_seeded_config_loaded
+run_test test_schema_canon_and_aliases
 run_test test_index_config_keys
 run_test test_reload_picks_up_edits
 run_test test_folders_skip_about_help

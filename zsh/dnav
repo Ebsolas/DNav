@@ -47,6 +47,9 @@ typeset -gi DNAV_CFG_STATUS_TIMEOUT_MS=3000
 typeset -g DNAV_CFG_INACC_COLOR=31
 typeset -g DNAV_CFG_INACC_ICON=1
 typeset -ga DNAV_FOLDER_NAMES DNAV_FOLDER_PATHS
+typeset -ga _DNAV_CFG_KEYS
+typeset -gA _DNAV_CFG_TYPE _DNAV_CFG_VAR _DNAV_CFG_DEF
+typeset -gA _DNAV_CFG_NOTE _DNAV_CFG_UI _DNAV_CFG_HINT _DNAV_CFG_CANON
 typeset -g DNAV_HIGHLIGHT DNAV_RESET
 DNAV_HIGHLIGHT=$'\e[30;46m'
 DNAV_RESET=$'\e[0m'
@@ -268,82 +271,142 @@ EOF
   fi
 }
 
+# key|type|var|default|aliases|ui|hint|note
+# empty default → load-only (not merged into existing configs)
+_dnav_config_schema() {
+  print -r -- 'color_fg|color:fg|DNAV_CFG_COLOR_FG|black|highlight_fg,fg|value|Enter edit number/name|fg: color name or ANSI 30–37 / 90–97 (black red green yellow blue magenta cyan white)'
+  print -r -- 'color_bg|color:bg|DNAV_CFG_COLOR_BG|cyan|highlight_bg,bg|value|Enter edit number/name|bg: color name or ANSI 40–47 / 100–107'
+  print -r -- 'brand|string|DNAV_CFG_BRAND|DNav||value|Enter edit text|Brand chip label on the main bar'
+  print -r -- 'ls_after|bool|DNAV_CFG_LS|0|ls|toggle|Enter toggle (default)|ls -a after a successful select/jump (1/0)'
+  print -r -- 'ls_after_dnav|cycle3|DNAV_CFG_LS_DNAV|inherit||cycle3|Enter cycle inherit/on/off|ls after dnav: 1/0/inherit (inherit uses ls_after)'
+  print -r -- 'ls_after_djump|cycle3|DNAV_CFG_LS_DJUMP|inherit||cycle3|Enter cycle inherit/on/off|ls after djump: 1/0/inherit (inherit uses ls_after)'
+  print -r -- 'show_hidden|bool|DNAV_CFG_SHOW_HIDDEN|0|hidden|toggle|Enter toggle|dfile: show hidden files/dirs by default (toggle with .)'
+  print -r -- 'dfile_sort_dirs|enum:alpha,hidden_first|DNAV_CFG_DFILE_SORT_DIRS|alpha||enum|Enter cycle alpha/hidden_first|dfile dir order: alpha | hidden_first'
+  print -r -- 'dfile_sort_files|enum:alpha,ext,dot_first,dot_ext|DNAV_CFG_DFILE_SORT_FILES|alpha||enum|Enter cycle alpha/ext/dot_first/dot_ext|dfile file order: alpha | ext | dot_first | dot_ext'
+  print -r -- 'dfile_jump_name_max|int1|DNAV_CFG_DFILE_JUMP_NAME_MAX|20|dfile_jump_max|value|Enter edit (Jump to: name max)|dfile Jump to: folder name max (cuts the end)'
+  print -r -- 'success_bar|bool|DNAV_CFG_SUCCESS_BAR|1||toggle|Enter toggle (default)|Cyan path bar after select (0 = hide)'
+  print -r -- 'success_bar_dnav|cycle3|DNAV_CFG_SUCCESS_BAR_DNAV|inherit||cycle3|Enter cycle inherit/on/off|path bar after dnav: 1/0/inherit (inherit uses success_bar)'
+  print -r -- 'success_bar_djump|cycle3|DNAV_CFG_SUCCESS_BAR_DJUMP|inherit||cycle3|Enter cycle inherit/on/off|path bar after djump: 1/0/inherit (inherit uses success_bar)'
+  print -r -- 'success_anim|bool|DNAV_CFG_SUCCESS_ANIM|1|anim|toggle|Enter toggle|Animate the expand-to-path success bar (0 = instant)'
+  print -r -- 'success_anim_steps|int|DNAV_CFG_SUCCESS_ANIM_STEPS|8||||success bar expand: number of animation steps'
+  print -r -- 'success_anim_ms|int|DNAV_CFG_SUCCESS_ANIM_MS|25||||success bar expand: milliseconds between steps'
+  print -r -- 'full_redraw|bool|DNAV_CFG_FULL_REDRAW|0|redraw|toggle|Enter toggle · full line vs partial|1 = full line redraw every move; 0 = partial chip repaint'
+  print -r -- 'search_roots|string|DNAV_CFG_SEARCH_ROOTS|||||'
+  print -r -- 'index_auto|bool|DNAV_CFG_INDEX_AUTO|1|auto_index|||Rebuild search index when stale (1) or only via dnav --reindex (0)'
+  print -r -- 'index_when|enum:open,search|DNAV_CFG_INDEX_WHEN|open|index_on|||When to auto-index: open (with dnav) | search (when search opens)'
+  print -r -- 'index_ttl_hours|int|DNAV_CFG_INDEX_TTL_HOURS|24|index_ttl|||Hours until the search index is stale (0 = never; still build if missing)'
+  print -r -- 'index_file|string|DNAV_CFG_INDEX_FILE|||||Path list to import instead of walking (empty = find search_roots)'
+  print -r -- 'status_timeout_ms|int|DNAV_CFG_STATUS_TIMEOUT_MS|3000|status_timeout|value|Enter edit (0 = keep)|Status message auto-clear in milliseconds (0 = keep)'
+  print -r -- 'inaccessible_color|color:fg|DNAV_CFG_INACC_COLOR|red||value|Enter edit number/name|dfile locked/unreadable color (name or ANSI fg)'
+  print -r -- 'inaccessible_icon|bool|DNAV_CFG_INACC_ICON|1||toggle|Enter toggle lock glyph|dfile lock glyph on inaccessible entries (1/0)'
+}
+
+_dnav_config_schema_init() {
+  emulate -L zsh
+  (( $#_DNAV_CFG_KEYS )) && return 0
+  local line key type var def aliases ui hint note a
+  local -a f
+  _DNAV_CFG_KEYS=()
+  _DNAV_CFG_TYPE=()
+  _DNAV_CFG_VAR=()
+  _DNAV_CFG_DEF=()
+  _DNAV_CFG_NOTE=()
+  _DNAV_CFG_UI=()
+  _DNAV_CFG_HINT=()
+  _DNAV_CFG_CANON=()
+  while IFS= read -r line; do
+    f=("${(@s:|:)line}")
+    key="${f[1]}"; type="${f[2]}"; var="${f[3]}"; def="${f[4]}"
+    aliases="${f[5]}"; ui="${f[6]}"; hint="${f[7]}"; note="${f[8]}"
+    _DNAV_CFG_KEYS+=("$key")
+    _DNAV_CFG_TYPE[$key]="$type"
+    _DNAV_CFG_VAR[$key]="$var"
+    _DNAV_CFG_DEF[$key]="$def"
+    _DNAV_CFG_NOTE[$key]="$note"
+    _DNAV_CFG_UI[$key]="$ui"
+    _DNAV_CFG_HINT[$key]="$hint"
+    _DNAV_CFG_CANON[$key]="$key"
+    for a in ${(s:,:)aliases}; do
+      [[ -n $a ]] && _DNAV_CFG_CANON[$a]="$key"
+    done
+  done < <(_dnav_config_schema)
+}
+
+_dnav_config_var_set() {
+  local _dnav_vs_var="$1" _dnav_vs_val="$2"
+  eval "$_dnav_vs_var=\"\$_dnav_vs_val\""
+}
+
+_dnav_config_enum_norm() {
+  emulate -L zsh
+  local key="$1" val="${(L)2}"
+  case $key in
+    dfile_sort_dirs)
+      case $val in hidden_first|hidden|dot_first) print -r -- hidden_first ;; *) print -r -- alpha ;; esac ;;
+    dfile_sort_files)
+      case $val in
+        ext|extension) print -r -- ext ;;
+        dot_first|hidden_first|dot) print -r -- dot_first ;;
+        dot_ext|dot_extension|hidden_ext) print -r -- dot_ext ;;
+        *) print -r -- alpha ;;
+      esac ;;
+    index_when)
+      case $val in search|s) print -r -- search ;; *) print -r -- open ;; esac ;;
+    *) print -r -- "$2" ;;
+  esac
+}
+
+_dnav_config_assign() {
+  emulate -L zsh
+  _dnav_config_schema_init
+  local key="$(_dnav_config_canon_key "$1")" val="$2"
+  local type="${_DNAV_CFG_TYPE[$key]:-}" var="${_DNAV_CFG_VAR[$key]:-}"
+  [[ -n $type && -n $var ]] || return 0
+  case $type in
+    bool)
+      if _dnav_truthy "$val"; then _dnav_config_var_set "$var" 1; else _dnav_config_var_set "$var" 0; fi ;;
+    cycle3)
+      case ${(L)val} in
+        inherit|-1|'') _dnav_config_var_set "$var" -1 ;;
+        *) if _dnav_truthy "$val"; then _dnav_config_var_set "$var" 1; else _dnav_config_var_set "$var" 0; fi ;;
+      esac ;;
+    int)
+      [[ $val == <-> ]] || return 0
+      _dnav_config_var_set "$var" "$val" ;;
+    int1)
+      [[ $val == <-> ]] && (( val >= 1 )) || return 0
+      _dnav_config_var_set "$var" "$val" ;;
+    string)
+      _dnav_config_var_set "$var" "$val" ;;
+    color:fg)
+      _dnav_config_var_set "$var" "$(_dnav_color_num fg "$val")" ;;
+    color:bg)
+      _dnav_config_var_set "$var" "$(_dnav_color_num bg "$val")" ;;
+    enum:*)
+      _dnav_config_var_set "$var" "$(_dnav_config_enum_norm "$key" "$val")" ;;
+  esac
+}
+
 _dnav_config_load_kv() {
   emulate -L zsh
   setopt localoptions no_extended_glob
   local f="$1" line key val
   [[ -f $f ]] || return 1
+  _dnav_config_schema_init
   while IFS= read -r line || [[ -n $line ]]; do
     line="$(_dnav_trim "$(_dnav_strip_comment "$line")")"
     [[ -z $line ]] && continue
-    if [[ $line != *=* ]]; then
-      continue
-    fi
+    [[ $line == *=* ]] || continue
     key="${line%%=*}"
     val="${line#*=}"
     key="${key%"${key##*[![:space:]]}"}"
     key="${key#"${key%%[![:space:]]*}"}"
     val="${val%"${val##*[![:space:]]}"}"
     val="${val#"${val%%[![:space:]]*}"}"
-    # strip optional quotes
     if [[ $val == \"*\" || $val == \'*\' ]]; then
       val="${val[2,-2]}"
     fi
-    key="${(L)key}"
-    case $key in
-      color_fg|highlight_fg|fg)     DNAV_CFG_COLOR_FG="$val" ;;
-      color_bg|highlight_bg|bg)     DNAV_CFG_COLOR_BG="$val" ;;
-      brand)                        DNAV_CFG_BRAND="$val" ;;
-      ls_after|ls)                  _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
-      ls_after_dnav)
-        case ${(L)val} in inherit|-1|'') DNAV_CFG_LS_DNAV=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_LS_DNAV=1 || DNAV_CFG_LS_DNAV=0 ;; esac ;;
-      ls_after_djump)
-        case ${(L)val} in inherit|-1|'') DNAV_CFG_LS_DJUMP=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_LS_DJUMP=1 || DNAV_CFG_LS_DJUMP=0 ;; esac ;;
-      show_hidden|hidden)           _dnav_truthy "$val" && DNAV_CFG_SHOW_HIDDEN=1 || DNAV_CFG_SHOW_HIDDEN=0 ;;
-      success_bar)                  _dnav_truthy "$val" && DNAV_CFG_SUCCESS_BAR=1 || DNAV_CFG_SUCCESS_BAR=0 ;;
-      success_bar_dnav)
-        case ${(L)val} in inherit|-1|'') DNAV_CFG_SUCCESS_BAR_DNAV=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_SUCCESS_BAR_DNAV=1 || DNAV_CFG_SUCCESS_BAR_DNAV=0 ;; esac ;;
-      success_bar_djump)
-        case ${(L)val} in inherit|-1|'') DNAV_CFG_SUCCESS_BAR_DJUMP=-1 ;; *) _dnav_truthy "$val" && DNAV_CFG_SUCCESS_BAR_DJUMP=1 || DNAV_CFG_SUCCESS_BAR_DJUMP=0 ;; esac ;;
-      success_anim|anim)            _dnav_truthy "$val" && DNAV_CFG_SUCCESS_ANIM=1 || DNAV_CFG_SUCCESS_ANIM=0 ;;
-      success_anim_steps)           [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_STEPS=$val ;;
-      success_anim_ms)              [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_MS=$val ;;
-      full_redraw|redraw)           _dnav_truthy "$val" && DNAV_CFG_FULL_REDRAW=1 || DNAV_CFG_FULL_REDRAW=0 ;;
-      search_roots)                 DNAV_CFG_SEARCH_ROOTS="$val" ;;
-      index_auto|auto_index)
-        _dnav_truthy "$val" && DNAV_CFG_INDEX_AUTO=1 || DNAV_CFG_INDEX_AUTO=0 ;;
-      index_when|index_on)
-        case ${(L)val} in
-          search|s) DNAV_CFG_INDEX_WHEN=search ;;
-          *) DNAV_CFG_INDEX_WHEN=open ;;
-        esac ;;
-      index_ttl_hours|index_ttl)
-        if [[ $val == <-> ]]; then
-          DNAV_CFG_INDEX_TTL_HOURS=$val
-        fi ;;
-      index_file)                   DNAV_CFG_INDEX_FILE="$val" ;;
-      dfile_sort_dirs)
-        case ${(L)val} in hidden_first|hidden|dot_first) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;; *) DNAV_CFG_DFILE_SORT_DIRS=alpha ;; esac ;;
-      dfile_sort_files)
-        case ${(L)val} in
-          ext|extension) DNAV_CFG_DFILE_SORT_FILES=ext ;;
-          dot_first|hidden_first|dot) DNAV_CFG_DFILE_SORT_FILES=dot_first ;;
-          dot_ext|dot_extension|hidden_ext) DNAV_CFG_DFILE_SORT_FILES=dot_ext ;;
-          *) DNAV_CFG_DFILE_SORT_FILES=alpha ;;
-        esac ;;
-      dfile_jump_name_max|dfile_jump_max)
-        if [[ $val == <-> ]] && (( val >= 1 )); then
-          DNAV_CFG_DFILE_JUMP_NAME_MAX=$val
-        fi ;;
-      status_timeout_ms)
-        if [[ $val == <-> ]]; then
-          DNAV_CFG_STATUS_TIMEOUT_MS=$val
-        fi ;;
-      inaccessible_color)
-        DNAV_CFG_INACC_COLOR="$(_dnav_color_num fg "$val")" ;;
-      inaccessible_icon)
-        _dnav_truthy "$val" && DNAV_CFG_INACC_ICON=1 || DNAV_CFG_INACC_ICON=0 ;;
-    esac
+    _dnav_config_assign "$key" "$val"
   done < "$f"
 }
 
@@ -410,80 +473,27 @@ _dnav_jumps_save() {
 
 # Current config keys + built-in defaults. One "key value" per line.
 _dnav_config_defaults() {
-  print -r -- "color_fg black"
-  print -r -- "color_bg cyan"
-  print -r -- "brand DNav"
-  print -r -- "ls_after 0"
-  print -r -- "ls_after_dnav inherit"
-  print -r -- "ls_after_djump inherit"
-  print -r -- "show_hidden 0"
-  print -r -- "dfile_sort_dirs alpha"
-  print -r -- "dfile_sort_files alpha"
-  print -r -- "dfile_jump_name_max 20"
-  print -r -- "success_bar 1"
-  print -r -- "success_bar_dnav inherit"
-  print -r -- "success_bar_djump inherit"
-  print -r -- "success_anim 1"
-  print -r -- "success_anim_steps 8"
-  print -r -- "success_anim_ms 25"
-  print -r -- "full_redraw 0"
-  print -r -- "index_auto 1"
-  print -r -- "index_when open"
-  print -r -- "index_ttl_hours 24"
-  print -r -- "status_timeout_ms 3000"
-  print -r -- "inaccessible_color red"
-  print -r -- "inaccessible_icon 1"
+  emulate -L zsh
+  _dnav_config_schema_init
+  local key def
+  for key in "${_DNAV_CFG_KEYS[@]}"; do
+    def="${_DNAV_CFG_DEF[$key]}"
+    [[ -n $def ]] || continue
+    print -r -- "$key $def"
+  done
 }
 
-# One-line note written above a key in the user config.
 _dnav_config_key_note() {
-  case $1 in
-    color_fg) print -r -- "fg: color name or ANSI 30–37 / 90–97 (black red green yellow blue magenta cyan white)" ;;
-    color_bg) print -r -- "bg: color name or ANSI 40–47 / 100–107" ;;
-    brand) print -r -- "Brand chip label on the main bar" ;;
-    ls_after) print -r -- "ls -a after a successful select/jump (1/0)" ;;
-    ls_after_dnav) print -r -- "ls after dnav: 1/0/inherit (inherit uses ls_after)" ;;
-    ls_after_djump) print -r -- "ls after djump: 1/0/inherit (inherit uses ls_after)" ;;
-    show_hidden) print -r -- "dfile: show hidden files/dirs by default (toggle with .)" ;;
-    dfile_sort_dirs) print -r -- "dfile dir order: alpha | hidden_first" ;;
-    dfile_sort_files) print -r -- "dfile file order: alpha | ext | dot_first | dot_ext" ;;
-    dfile_jump_name_max) print -r -- "dfile Jump to: folder name max (cuts the end)" ;;
-    success_bar) print -r -- "Cyan path bar after select (0 = hide)" ;;
-    success_bar_dnav) print -r -- "path bar after dnav: 1/0/inherit (inherit uses success_bar)" ;;
-    success_bar_djump) print -r -- "path bar after djump: 1/0/inherit (inherit uses success_bar)" ;;
-    success_anim) print -r -- "Animate the expand-to-path success bar (0 = instant)" ;;
-    success_anim_steps) print -r -- "success bar expand: number of animation steps" ;;
-    success_anim_ms) print -r -- "success bar expand: milliseconds between steps" ;;
-    full_redraw) print -r -- "1 = full line redraw every move; 0 = partial chip repaint" ;;
-    index_auto) print -r -- "Rebuild search index when stale (1) or only via dnav --reindex (0)" ;;
-    index_when) print -r -- "When to auto-index: open (with dnav) | search (when search opens)" ;;
-    index_ttl_hours) print -r -- "Hours until the search index is stale (0 = never; still build if missing)" ;;
-    index_file) print -r -- "Path list to import instead of walking (empty = find search_roots)" ;;
-    status_timeout_ms) print -r -- "Status message auto-clear in milliseconds (0 = keep)" ;;
-    inaccessible_color) print -r -- "dfile locked/unreadable color (name or ANSI fg)" ;;
-    inaccessible_icon) print -r -- "dfile lock glyph on inaccessible entries (1/0)" ;;
-    *) print -rn -- "" ;;
-  esac
+  _dnav_config_schema_init
+  local n="${_DNAV_CFG_NOTE[$1]:-}"
+  [[ -n $n ]] && print -r -- "$n"
 }
 
 _dnav_config_canon_key() {
-  case ${(L)1} in
-    ls|ls_after) print -r -- ls_after ;;
-    hidden|show_hidden) print -r -- show_hidden ;;
-    anim|success_anim) print -r -- success_anim ;;
-    fg|highlight_fg|color_fg) print -r -- color_fg ;;
-    bg|highlight_bg|color_bg) print -r -- color_bg ;;
-    redraw|full_redraw) print -r -- full_redraw ;;
-    auto_index|index_auto) print -r -- index_auto ;;
-    index_on|index_when) print -r -- index_when ;;
-    index_ttl|index_ttl_hours) print -r -- index_ttl_hours ;;
-    index_file) print -r -- index_file ;;
-    dfile_jump_max|dfile_jump_name_max) print -r -- dfile_jump_name_max ;;
-    status_timeout|status_timeout_ms) print -r -- status_timeout_ms ;;
-    inaccessible_color) print -r -- inaccessible_color ;;
-    inaccessible_icon) print -r -- inaccessible_icon ;;
-    *) print -r -- "${(L)1}" ;;
-  esac
+  emulate -L zsh
+  _dnav_config_schema_init
+  local k="${(L)1}"
+  print -r -- "${_DNAV_CFG_CANON[$k]:-$k}"
 }
 
 # Uncommented assignment keys in a config file (canonical names).
@@ -579,32 +589,11 @@ _dnav_config_merge_defaults() {
 # Load (and seed) user config. Safe to call multiple times (dconfig -r).
 _dnav_config_load() {
   DNAV_CONFIG_DIR="$(_dnav_config_dir)"
-  # Defaults before file overlay
-  DNAV_CFG_COLOR_FG=30
-  DNAV_CFG_COLOR_BG=46
-  DNAV_CFG_LS=0
-  DNAV_CFG_LS_DNAV=-1
-  DNAV_CFG_LS_DJUMP=-1
-  DNAV_CFG_SHOW_HIDDEN=0
-  DNAV_CFG_SUCCESS_ANIM=1
-  DNAV_CFG_SUCCESS_BAR=1
-  DNAV_CFG_SUCCESS_BAR_DNAV=-1
-  DNAV_CFG_SUCCESS_BAR_DJUMP=-1
-  DNAV_CFG_SUCCESS_ANIM_STEPS=8
-  DNAV_CFG_SUCCESS_ANIM_MS=25
-  DNAV_CFG_FULL_REDRAW=0
-  DNAV_CFG_BRAND=DNav
-  DNAV_CFG_SEARCH_ROOTS=""
-  DNAV_CFG_INDEX_AUTO=1
-  DNAV_CFG_INDEX_WHEN=open
-  DNAV_CFG_INDEX_TTL_HOURS=24
-  DNAV_CFG_INDEX_FILE=""
-  DNAV_CFG_DFILE_SORT_DIRS=alpha
-  DNAV_CFG_DFILE_SORT_FILES=alpha
-  DNAV_CFG_DFILE_JUMP_NAME_MAX=20
-  DNAV_CFG_STATUS_TIMEOUT_MS=3000
-  DNAV_CFG_INACC_COLOR=31
-  DNAV_CFG_INACC_ICON=1
+  local key
+  _dnav_config_schema_init
+  for key in "${_DNAV_CFG_KEYS[@]}"; do
+    _dnav_config_assign "$key" "${_DNAV_CFG_DEF[$key]}"
+  done
   DNAV_FOLDER_NAMES=()
   DNAV_FOLDER_PATHS=()
 
@@ -1980,7 +1969,7 @@ _dnav_settings_row() {
 
 _dnav_settings_fill_body() {
   local tab="${_DNAV_SETTINGS_TABS[_DNAV_SETTINGS_SEL+1]}"
-  local onoff i k path
+  local onoff i k path key ui var disp hint
   _DNAV_ABOUT_BODY=()
   _DNAV_ABOUT_KIND=()
   _DNAV_ABOUT_KEY=()
@@ -1988,34 +1977,19 @@ _dnav_settings_fill_body() {
   _DNAV_ABOUT_NROWS=0
   case $tab in
     General)
-      onoff="$(_dnav_settings_onoff DNAV_CFG_LS)"
-      _dnav_settings_row toggle ls_after "ls_after          $onoff          Enter toggle (default)"
-      onoff="$(_dnav_settings_cycle3 DNAV_CFG_LS_DNAV)"
-      _dnav_settings_row cycle3 ls_after_dnav "ls_after_dnav     $onoff          Enter cycle inherit/on/off"
-      onoff="$(_dnav_settings_cycle3 DNAV_CFG_LS_DJUMP)"
-      _dnav_settings_row cycle3 ls_after_djump "ls_after_djump    $onoff          Enter cycle inherit/on/off"
-      onoff="$(_dnav_settings_onoff DNAV_CFG_SUCCESS_BAR)"
-      _dnav_settings_row toggle success_bar "success_bar       $onoff          Enter toggle (default)"
-      onoff="$(_dnav_settings_cycle3 DNAV_CFG_SUCCESS_BAR_DNAV)"
-      _dnav_settings_row cycle3 success_bar_dnav "success_bar_dnav  $onoff          Enter cycle inherit/on/off"
-      onoff="$(_dnav_settings_cycle3 DNAV_CFG_SUCCESS_BAR_DJUMP)"
-      _dnav_settings_row cycle3 success_bar_djump "success_bar_djump $onoff          Enter cycle inherit/on/off"
-      onoff="$(_dnav_settings_onoff DNAV_CFG_SHOW_HIDDEN)"
-      _dnav_settings_row toggle show_hidden "show_hidden       $onoff          Enter toggle"
-      _dnav_settings_row cycle_dirs dfile_sort_dirs "dfile_sort_dirs   ${DNAV_CFG_DFILE_SORT_DIRS}          Enter cycle alpha/hidden_first"
-      _dnav_settings_row cycle_files dfile_sort_files "dfile_sort_files  ${DNAV_CFG_DFILE_SORT_FILES}          Enter cycle alpha/ext/dot_first/dot_ext"
-      _dnav_settings_row value dfile_jump_name_max "dfile_jump_name_max ${DNAV_CFG_DFILE_JUMP_NAME_MAX}        Enter edit (Jump to: name max)"
-      onoff="$(_dnav_settings_onoff DNAV_CFG_SUCCESS_ANIM)"
-      _dnav_settings_row toggle success_anim "success_anim      $onoff          Enter toggle"
-      onoff="$(_dnav_settings_onoff DNAV_CFG_FULL_REDRAW)"
-      _dnav_settings_row toggle full_redraw "full_redraw       $onoff          Enter toggle · full line vs partial"
-      _dnav_settings_row value color_fg "color_fg          ${DNAV_CFG_COLOR_FG}          Enter edit number/name"
-      _dnav_settings_row value color_bg "color_bg          ${DNAV_CFG_COLOR_BG}          Enter edit number/name"
-      _dnav_settings_row value brand "brand             ${DNAV_CFG_BRAND}          Enter edit text"
-      _dnav_settings_row value status_timeout_ms "status_timeout_ms ${DNAV_CFG_STATUS_TIMEOUT_MS}        Enter edit (0 = keep)"
-      _dnav_settings_row value inaccessible_color "inaccessible_color ${DNAV_CFG_INACC_COLOR}         Enter edit number/name"
-      onoff="$(_dnav_settings_onoff DNAV_CFG_INACC_ICON)"
-      _dnav_settings_row toggle inaccessible_icon "inaccessible_icon $onoff          Enter toggle lock glyph"
+      _dnav_config_schema_init
+      for key in "${_DNAV_CFG_KEYS[@]}"; do
+        ui="${_DNAV_CFG_UI[$key]}"
+        [[ -n $ui ]] || continue
+        var="${_DNAV_CFG_VAR[$key]}"
+        hint="${_DNAV_CFG_HINT[$key]}"
+        case $ui in
+          toggle) disp="$(_dnav_settings_onoff "$var")" ;;
+          cycle3) disp="$(_dnav_settings_cycle3 "$var")" ;;
+          *) disp="${(P)var}" ;;
+        esac
+        _dnav_settings_row "$ui" "$key" "${(r:18:)key} ${(r:10:)disp} $hint"
+      done
       _DNAV_ABOUT_NROWS=$#_DNAV_ABOUT_BODY
       ;;
     Folders)
@@ -2186,137 +2160,94 @@ _dnav_about_edit_file() {
   _dnav_draw_about
 }
 
+_dnav_settings_apply_key() {
+  emulate -L zsh
+  _dnav_config_schema_init
+  local kind="$1" key="$2" var type val i n cur
+  local -a opts
+  var="${_DNAV_CFG_VAR[$key]:-}"
+  type="${_DNAV_CFG_TYPE[$key]:-}"
+  [[ -n $var ]] || return 1
+  eval "cur=\${$var}"
+  case $kind in
+    toggle)
+      cur=$(( 1 - cur ))
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$cur"
+      ;;
+    cycle3)
+      case $cur in
+        -1) cur=1 ;;
+        1)  cur=0 ;;
+        *)  cur=-1 ;;
+      esac
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$(_dnav_cfg_cycle3_store "$cur")"
+      ;;
+    enum)
+      opts=("${(@s:,:)${type#enum:}}")
+      n=$#opts
+      (( n )) || return 1
+      i=1
+      while (( i <= n )); do
+        [[ ${opts[i]} == "$cur" ]] && break
+        (( i++ ))
+      done
+      if (( i >= n )); then
+        cur="${opts[1]}"
+      else
+        cur="${opts[i+1]}"
+      fi
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$cur"
+      ;;
+    value)
+      _dnav_inline_edit "$key (Esc cancel): " "$cur" || return 1
+      val="${REPLY//[$'\r\n']/}"
+      [[ -z $val ]] && return 1
+      case $type in
+        int)
+          [[ $val == <-> ]] || return 1
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$val"
+          ;;
+        int1)
+          [[ $val == <-> ]] && (( val >= 1 )) || return 1
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$val"
+          ;;
+        color:fg)
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$(_dnav_color_num fg "$val")"
+          _dnav_apply_colors
+          _dnav_about_refresh_style
+          ;;
+        color:bg)
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$(_dnav_color_num bg "$val")"
+          _dnav_apply_colors
+          _dnav_about_refresh_style
+          ;;
+        *)
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$val"
+          [[ $key == brand ]] && _DNAV_BRAND="$val"
+          ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 _dnav_settings_apply_edit() {
   local kind="${_DNAV_ABOUT_KIND[_DNAV_SETTINGS_ROW+1]}"
   local rkey="${_DNAV_ABOUT_KEY[_DNAV_SETTINGS_ROW+1]}"
   local ridx="${_DNAV_ABOUT_IDX[_DNAV_SETTINGS_ROW+1]}"
   local val label dest k
   case $kind in
-    toggle)
-      case $rkey in
-        ls_after)
-          DNAV_CFG_LS=$(( 1 - DNAV_CFG_LS ))
-          _dnav_config_set ls_after "$DNAV_CFG_LS"
-          ;;
-        success_bar)
-          DNAV_CFG_SUCCESS_BAR=$(( 1 - DNAV_CFG_SUCCESS_BAR ))
-          _dnav_config_set success_bar "$DNAV_CFG_SUCCESS_BAR"
-          ;;
-        show_hidden)
-          DNAV_CFG_SHOW_HIDDEN=$(( 1 - DNAV_CFG_SHOW_HIDDEN ))
-          _dnav_config_set show_hidden "$DNAV_CFG_SHOW_HIDDEN"
-          ;;
-        success_anim)
-          DNAV_CFG_SUCCESS_ANIM=$(( 1 - DNAV_CFG_SUCCESS_ANIM ))
-          _dnav_config_set success_anim "$DNAV_CFG_SUCCESS_ANIM"
-          ;;
-        full_redraw)
-          DNAV_CFG_FULL_REDRAW=$(( 1 - DNAV_CFG_FULL_REDRAW ))
-          _dnav_config_set full_redraw "$DNAV_CFG_FULL_REDRAW"
-          ;;
-        inaccessible_icon)
-          DNAV_CFG_INACC_ICON=$(( 1 - DNAV_CFG_INACC_ICON ))
-          _dnav_config_set inaccessible_icon "$DNAV_CFG_INACC_ICON"
-          ;;
-      esac
-      ;;
-    cycle3)
-      case $rkey in
-        ls_after_dnav)
-          case $DNAV_CFG_LS_DNAV in
-            -1) DNAV_CFG_LS_DNAV=1 ;;
-            1)  DNAV_CFG_LS_DNAV=0 ;;
-            *)  DNAV_CFG_LS_DNAV=-1 ;;
-          esac
-          _dnav_config_set ls_after_dnav "$(_dnav_cfg_cycle3_store "$DNAV_CFG_LS_DNAV")"
-          ;;
-        ls_after_djump)
-          case $DNAV_CFG_LS_DJUMP in
-            -1) DNAV_CFG_LS_DJUMP=1 ;;
-            1)  DNAV_CFG_LS_DJUMP=0 ;;
-            *)  DNAV_CFG_LS_DJUMP=-1 ;;
-          esac
-          _dnav_config_set ls_after_djump "$(_dnav_cfg_cycle3_store "$DNAV_CFG_LS_DJUMP")"
-          ;;
-        success_bar_dnav)
-          case $DNAV_CFG_SUCCESS_BAR_DNAV in
-            -1) DNAV_CFG_SUCCESS_BAR_DNAV=1 ;;
-            1)  DNAV_CFG_SUCCESS_BAR_DNAV=0 ;;
-            *)  DNAV_CFG_SUCCESS_BAR_DNAV=-1 ;;
-          esac
-          _dnav_config_set success_bar_dnav "$(_dnav_cfg_cycle3_store "$DNAV_CFG_SUCCESS_BAR_DNAV")"
-          ;;
-        success_bar_djump)
-          case $DNAV_CFG_SUCCESS_BAR_DJUMP in
-            -1) DNAV_CFG_SUCCESS_BAR_DJUMP=1 ;;
-            1)  DNAV_CFG_SUCCESS_BAR_DJUMP=0 ;;
-            *)  DNAV_CFG_SUCCESS_BAR_DJUMP=-1 ;;
-          esac
-          _dnav_config_set success_bar_djump "$(_dnav_cfg_cycle3_store "$DNAV_CFG_SUCCESS_BAR_DJUMP")"
-          ;;
-      esac
-      ;;
-    cycle_dirs)
-      case $DNAV_CFG_DFILE_SORT_DIRS in
-        alpha) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;;
-        *)     DNAV_CFG_DFILE_SORT_DIRS=alpha ;;
-      esac
-      _dnav_config_set dfile_sort_dirs "$DNAV_CFG_DFILE_SORT_DIRS"
-      ;;
-    cycle_files)
-      case $DNAV_CFG_DFILE_SORT_FILES in
-        alpha)     DNAV_CFG_DFILE_SORT_FILES=ext ;;
-        ext)       DNAV_CFG_DFILE_SORT_FILES=dot_first ;;
-        dot_first) DNAV_CFG_DFILE_SORT_FILES=dot_ext ;;
-        *)         DNAV_CFG_DFILE_SORT_FILES=alpha ;;
-      esac
-      _dnav_config_set dfile_sort_files "$DNAV_CFG_DFILE_SORT_FILES"
-      ;;
-    value)
-      case $rkey in
-        color_fg) _dnav_inline_edit "color_fg (Esc cancel): " "$DNAV_CFG_COLOR_FG" || return 1 ;;
-        color_bg) _dnav_inline_edit "color_bg (Esc cancel): " "$DNAV_CFG_COLOR_BG" || return 1 ;;
-        brand)    _dnav_inline_edit "brand (Esc cancel): " "$DNAV_CFG_BRAND" || return 1 ;;
-        dfile_jump_name_max) _dnav_inline_edit "dfile_jump_name_max (Esc cancel): " "$DNAV_CFG_DFILE_JUMP_NAME_MAX" || return 1 ;;
-        status_timeout_ms) _dnav_inline_edit "status_timeout_ms (Esc cancel): " "$DNAV_CFG_STATUS_TIMEOUT_MS" || return 1 ;;
-        inaccessible_color) _dnav_inline_edit "inaccessible_color (Esc cancel): " "$DNAV_CFG_INACC_COLOR" || return 1 ;;
-        *) return 1 ;;
-      esac
-      val="${REPLY//[$'\r\n']/}"
-      [[ -z $val ]] && return 1
-      case $rkey in
-        color_fg)
-          _dnav_config_set color_fg "$val"
-          DNAV_CFG_COLOR_FG="$(_dnav_color_num fg "$val")"
-          _dnav_apply_colors
-          _dnav_about_refresh_style
-          ;;
-        color_bg)
-          _dnav_config_set color_bg "$val"
-          DNAV_CFG_COLOR_BG="$(_dnav_color_num bg "$val")"
-          _dnav_apply_colors
-          _dnav_about_refresh_style
-          ;;
-        brand)
-          _dnav_config_set brand "$val"
-          DNAV_CFG_BRAND="$val"
-          _DNAV_BRAND="$val"
-          ;;
-        dfile_jump_name_max)
-          [[ $val == <-> ]] && (( val >= 1 )) || return 1
-          _dnav_config_set dfile_jump_name_max "$val"
-          DNAV_CFG_DFILE_JUMP_NAME_MAX=$val
-          ;;
-        status_timeout_ms)
-          [[ $val == <-> ]] || return 1
-          _dnav_config_set status_timeout_ms "$val"
-          DNAV_CFG_STATUS_TIMEOUT_MS=$val
-          ;;
-        inaccessible_color)
-          _dnav_config_set inaccessible_color "$val"
-          DNAV_CFG_INACC_COLOR="$(_dnav_color_num fg "$val")"
-          ;;
-      esac
+    toggle|cycle3|enum|value)
+      _dnav_settings_apply_key "$kind" "$rkey" || return 1
       ;;
     folder)
       (( ridx > 0 )) || return 1
