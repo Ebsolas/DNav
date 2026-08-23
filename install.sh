@@ -28,7 +28,7 @@ UNINSTALL=0
 UPDATE=0
 
 # Files shipped with the package (relative to PACKAGE_DIR)
-PACKAGE_FILES=(dnav dfile djump dsearch jumps)
+PACKAGE_FILES=(dnav dfile djump dsearch dsearch-index jumps)
 
 # Markers for idempotent .zshrc edits
 RC_BEGIN="# >>> dnav >>>"

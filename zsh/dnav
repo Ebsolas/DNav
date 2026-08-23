@@ -2,8 +2,9 @@
 # dnav - quick navigation to common folders (zsh version of the PowerShell dnav)
 #
 # Optional modules (place next to this file):
-#   dfile   – mini multi-column file explorer (expand below the nav bar)
-#   dsearch – fuzzy path search (type-to-filter, works in both nav and dfile views)
+#   dfile          – mini multi-column file explorer (expand below the nav bar)
+#   dsearch-index  – directory cache (auto-index / dnav --reindex)
+#   dsearch        – fuzzy path search overlay (loads dsearch-index)
 #
 # User config (created on first load):
 #   ${XDG_CONFIG_HOME:-~/.config}/dnav/config    – colors, defaults, flags
@@ -755,7 +756,7 @@ _dnav_update() {
   dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
   if [[ ${dest:A} != ${repo:A}/zsh ]]; then
     print -r -- "dnav: $repo  →  $dest"
-    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch jumps || {
+    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch dsearch-index jumps || {
       print -u2 -- "dnav: failed to copy zsh scripts"
       return 1
     }
@@ -997,6 +998,7 @@ _dnav_paint_strip() {
 
 # ── Optional modules ──────────────────────────────────────────────────────
 # djump is eager (dKEY commands). dfile/dsearch load on first use.
+# dsearch-index loads for auto-index / --reindex without the search overlay.
 _dnav_load_module() {
   local name="$1" f
   f="$DNAV_DIR/$name"
@@ -1005,8 +1007,13 @@ _dnav_load_module() {
       (( $+functions[_dfile_enter] )) && return 0
       [[ -f $f ]] && source "$f"
       ;;
+    dsearch-index)
+      (( $+functions[_dsearch_reindex] )) && return 0
+      [[ -f $f ]] && source "$f"
+      ;;
     dsearch)
       (( $+functions[_dsearch_start] )) && return 0
+      _dnav_load_module dsearch-index
       [[ -f $f ]] && source "$f"
       ;;
     djump)
@@ -2536,7 +2543,7 @@ dnav() {
       ;;
     --reindex)
       shift
-      _dnav_load_module dsearch
+      _dnav_load_module dsearch-index
       if (( $+functions[_dsearch_reindex] )); then
         _dsearch_reindex "$@"
         return $?
@@ -2583,7 +2590,7 @@ dnav() {
   printf "\e[?25l"
   _dnav_autowrap_off
 
-  _dnav_load_module dsearch
+  _dnav_load_module dsearch-index
   if (( $+functions[_dsearch_index_wanted] )) && _dsearch_index_wanted open; then
     _dsearch_index_start_bg
   fi

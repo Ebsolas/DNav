@@ -115,7 +115,7 @@ source ~/.local/share/dnav/dnav
 ~/.config/dnav/jumps      # dKEY aliases (home → dhome)
 ```
 
-`dnav f [PATH]` opens the file explorer (invalid PATH lands on the nearest existing folder). `dnav s [QUERY]` opens search.
+`dnav f [PATH]` opens the file explorer (invalid PATH lands on the nearest existing folder). `dnav s [QUERY]` opens search. Opening `dnav` or `dnav --reindex` loads `dsearch-index` only; the search overlay (`dsearch`) loads when you actually search.
 
 After editing: `dconfig -r` (or About → Settings).
 

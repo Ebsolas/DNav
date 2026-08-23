@@ -614,6 +614,30 @@ test_index_cancel_refuses_pid_1() {
   assert_eq "$_DSEARCH_INDEX_PID" "0" "pid 1 not kept"
 }
 
+test_index_module_standalone() {
+  local out
+  out="$(zsh -fc '
+    emulate -L zsh
+    source "'"$ROOT"'/zsh/dsearch-index"
+    (( $+functions[_dsearch_reindex] )) || exit 1
+    (( $+functions[_dsearch_start] )) && exit 2
+    _dsearch_reindex --help
+  ')" || {
+    _dnav_test_fail "dsearch-index alone failed (exit $?)"
+    return
+  }
+  assert_contains "$out" "Usage: dnav --reindex" "index file has reindex help"
+  if (( $+functions[_dsearch_start] )); then
+    _dnav_test_pass "parent still has search UI from setup"
+  fi
+}
+
+test_search_plugin_loads_index() {
+  assert_fn _dsearch_reindex
+  assert_fn _dsearch_start
+  assert_fn _dsearch_apply_filter
+}
+
 test_find_dirs_exists_dead_hooks_gone() {
   assert_fn _dsearch_find_dirs
   if (( $+functions[_dsearch_in_dfile] )); then
@@ -634,6 +658,8 @@ run_test test_collect_roots_space_in_home
 run_test test_collect_roots_default_is_home
 run_test test_collect_roots_env_override
 run_test test_index_cancel_refuses_pid_1
+run_test test_index_module_standalone
+run_test test_search_plugin_loads_index
 run_test test_index_path
 run_test test_index_not_stale_when_fresh
 run_test test_index_stale_when_missing
