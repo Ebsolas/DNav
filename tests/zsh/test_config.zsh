@@ -38,7 +38,32 @@ test_seeded_config_loaded() {
   assert_eq "$DNAV_CFG_BRAND" "ZshTestNav" "brand from fixture"
   assert_eq "$DNAV_CFG_LS" "0" "ls_after off"
   assert_eq "$DNAV_CFG_SUCCESS_ANIM" "0" "success_anim off"
+  assert_eq "$DNAV_CFG_INDEX_AUTO" "1" "index_auto default on"
+  assert_eq "$DNAV_CFG_INDEX_WHEN" "open" "index_when default open"
+  assert_eq "$DNAV_CFG_INDEX_TTL_HOURS" "24" "index_ttl_hours default 24"
   assert_ge "$#DNAV_FOLDER_NAMES" 3 "folders loaded"
+}
+
+test_index_config_keys() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = IdxCfg
+index_auto = 0
+index_when = search
+index_ttl_hours = 6
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_INDEX_AUTO" "0" "index_auto off"
+  assert_eq "$DNAV_CFG_INDEX_WHEN" "search" "index_when search"
+  assert_eq "$DNAV_CFG_INDEX_TTL_HOURS" "6" "index_ttl_hours 6"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+auto_index = yes
+index_on = s
+index_ttl = 0
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_INDEX_AUTO" "1" "auto_index alias"
+  assert_eq "$DNAV_CFG_INDEX_WHEN" "search" "index_on s alias"
+  assert_eq "$DNAV_CFG_INDEX_TTL_HOURS" "0" "index_ttl alias"
 }
 
 test_reload_picks_up_edits() {
@@ -315,6 +340,7 @@ run_test test_truthy
 run_test test_expand_path_tilde
 run_test test_color_num
 run_test test_seeded_config_loaded
+run_test test_index_config_keys
 run_test test_reload_picks_up_edits
 run_test test_folders_skip_about_help
 run_test test_dconfig_path

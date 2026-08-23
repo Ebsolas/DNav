@@ -36,6 +36,9 @@ typeset -gi DNAV_CFG_SUCCESS_BAR_DNAV=-1 DNAV_CFG_SUCCESS_BAR_DJUMP=-1
 typeset -g DNAV_CFG_SUCCESS_ANIM_STEPS=8 DNAV_CFG_SUCCESS_ANIM_MS=25
 typeset -g DNAV_CFG_BRAND=DNav
 typeset -g DNAV_CFG_SEARCH_ROOTS=""
+typeset -gi DNAV_CFG_INDEX_AUTO=1
+typeset -g DNAV_CFG_INDEX_WHEN=open
+typeset -gi DNAV_CFG_INDEX_TTL_HOURS=24
 typeset -g DNAV_CFG_DFILE_SORT_DIRS=alpha
 typeset -g DNAV_CFG_DFILE_SORT_FILES=alpha
 typeset -g DNAV_CFG_DFILE_JUMP_NAME_MAX=20
@@ -208,6 +211,14 @@ full_redraw = 0
 # dsearch roots (space-separated). Empty = $HOME only.
 # search_roots = $HOME /opt /mnt
 
+# Directory index for search (dirs.idx under ~/.cache/dnav).
+# auto: 1 = rebuild when stale; 0 = only dnav --reindex
+index_auto = 1
+# when: open = start with dnav; search = wait until search opens
+index_when = open
+# Hours until the on-disk index is stale. 0 = never (still build if missing)
+index_ttl_hours = 24
+
 # Status message auto-clear (ms). 0 = keep until the next message
 status_timeout_ms = 3000
 # Locked / unreadable entries in dfile (color name or ANSI fg)
@@ -293,6 +304,17 @@ _dnav_config_load_kv() {
       success_anim_ms)              [[ $val == <-> ]] && DNAV_CFG_SUCCESS_ANIM_MS=$val ;;
       full_redraw|redraw)           _dnav_truthy "$val" && DNAV_CFG_FULL_REDRAW=1 || DNAV_CFG_FULL_REDRAW=0 ;;
       search_roots)                 DNAV_CFG_SEARCH_ROOTS="$val" ;;
+      index_auto|auto_index)
+        _dnav_truthy "$val" && DNAV_CFG_INDEX_AUTO=1 || DNAV_CFG_INDEX_AUTO=0 ;;
+      index_when|index_on)
+        case ${(L)val} in
+          search|s) DNAV_CFG_INDEX_WHEN=search ;;
+          *) DNAV_CFG_INDEX_WHEN=open ;;
+        esac ;;
+      index_ttl_hours|index_ttl)
+        if [[ $val == <-> ]]; then
+          DNAV_CFG_INDEX_TTL_HOURS=$val
+        fi ;;
       dfile_sort_dirs)
         case ${(L)val} in hidden_first|hidden|dot_first) DNAV_CFG_DFILE_SORT_DIRS=hidden_first ;; *) DNAV_CFG_DFILE_SORT_DIRS=alpha ;; esac ;;
       dfile_sort_files)
@@ -398,6 +420,9 @@ _dnav_config_defaults() {
   print -r -- "success_anim_steps 8"
   print -r -- "success_anim_ms 25"
   print -r -- "full_redraw 0"
+  print -r -- "index_auto 1"
+  print -r -- "index_when open"
+  print -r -- "index_ttl_hours 24"
   print -r -- "status_timeout_ms 3000"
   print -r -- "inaccessible_color red"
   print -r -- "inaccessible_icon 1"
@@ -423,6 +448,9 @@ _dnav_config_key_note() {
     success_anim_steps) print -r -- "success bar expand: number of animation steps" ;;
     success_anim_ms) print -r -- "success bar expand: milliseconds between steps" ;;
     full_redraw) print -r -- "1 = full line redraw every move; 0 = partial chip repaint" ;;
+    index_auto) print -r -- "Rebuild search index when stale (1) or only via dnav --reindex (0)" ;;
+    index_when) print -r -- "When to auto-index: open (with dnav) | search (when search opens)" ;;
+    index_ttl_hours) print -r -- "Hours until the search index is stale (0 = never; still build if missing)" ;;
     status_timeout_ms) print -r -- "Status message auto-clear in milliseconds (0 = keep)" ;;
     inaccessible_color) print -r -- "dfile locked/unreadable color (name or ANSI fg)" ;;
     inaccessible_icon) print -r -- "dfile lock glyph on inaccessible entries (1/0)" ;;
@@ -438,6 +466,9 @@ _dnav_config_canon_key() {
     fg|highlight_fg|color_fg) print -r -- color_fg ;;
     bg|highlight_bg|color_bg) print -r -- color_bg ;;
     redraw|full_redraw) print -r -- full_redraw ;;
+    auto_index|index_auto) print -r -- index_auto ;;
+    index_on|index_when) print -r -- index_when ;;
+    index_ttl|index_ttl_hours) print -r -- index_ttl_hours ;;
     dfile_jump_max|dfile_jump_name_max) print -r -- dfile_jump_name_max ;;
     status_timeout|status_timeout_ms) print -r -- status_timeout_ms ;;
     inaccessible_color) print -r -- inaccessible_color ;;
@@ -555,6 +586,9 @@ _dnav_config_load() {
   DNAV_CFG_FULL_REDRAW=0
   DNAV_CFG_BRAND=DNav
   DNAV_CFG_SEARCH_ROOTS=""
+  DNAV_CFG_INDEX_AUTO=1
+  DNAV_CFG_INDEX_WHEN=open
+  DNAV_CFG_INDEX_TTL_HOURS=24
   DNAV_CFG_DFILE_SORT_DIRS=alpha
   DNAV_CFG_DFILE_SORT_FILES=alpha
   DNAV_CFG_DFILE_JUMP_NAME_MAX=20
@@ -571,10 +605,9 @@ _dnav_config_load() {
   _dnav_apply_colors
   _dnav_config_load_folders "$DNAV_CONFIG_DIR/folders" || true
 
-  # Export search roots for dsearch if config set and env not already set
+  # Export search roots for dsearch (bg index worker inherits the environment).
   if [[ -n $DNAV_CFG_SEARCH_ROOTS && ! -v DNAV_SEARCH_ROOTS ]]; then
-    # expand $HOME in config value
-    DNAV_SEARCH_ROOTS="${DNAV_CFG_SEARCH_ROOTS//\$HOME/$HOME}"
+    export DNAV_SEARCH_ROOTS="${DNAV_CFG_SEARCH_ROOTS//\$HOME/$HOME}"
   fi
 }
 
@@ -604,6 +637,7 @@ _dnav_print_help() {
   print -r -- ""
   print -r -- "Options:"
   print -r -- "  -u, --update         update installed scripts and merge new config keys"
+  print -r -- "      --reindex        rebuild the directory search index and exit"
   print -r -- "  -h, --help           display this help and exit"
   print -r -- ""
   print -r -- "Related commands:"
@@ -629,6 +663,7 @@ dconfig() {
         print -r -- "  success_bar=${DNAV_CFG_SUCCESS_BAR}  dnav=${DNAV_CFG_SUCCESS_BAR_DNAV}  djump=${DNAV_CFG_SUCCESS_BAR_DJUMP}"
         print -r -- "  success_anim=${DNAV_CFG_SUCCESS_ANIM}  steps=${DNAV_CFG_SUCCESS_ANIM_STEPS}  ms=${DNAV_CFG_SUCCESS_ANIM_MS}  full_redraw=${DNAV_CFG_FULL_REDRAW}"
         print -r -- "  show_hidden=${DNAV_CFG_SHOW_HIDDEN}"
+        print -r -- "  index_auto=${DNAV_CFG_INDEX_AUTO}  when=${DNAV_CFG_INDEX_WHEN}  ttl_hours=${DNAV_CFG_INDEX_TTL_HOURS}"
         print -r -- "  folders ${#DNAV_FOLDER_NAMES}  jumps ${#_DJUMP_KEYS:-0}"
       fi
       ;;
@@ -1869,6 +1904,7 @@ _dnav_help_topic_body() {
       ;;
     Search)
       print -r -- "/, s                          open fuzzy search"
+      print -r -- "dnav --reindex                rebuild the directory index from the shell"
       print -r -- "words with spaces             extra words narrow; a miss still shows near matches"
       print -r -- "↑, ↓, Ctrl+N, Ctrl+P          move through results"
       print -r -- "←, →                          move the caret; → at the end focuses Help"
@@ -1911,6 +1947,7 @@ _dnav_help_topic_body() {
       print -r -- "About → Settings              edit from inside dnav"
       print -r -- "dconfig --reload, --edit      reload, or open in \$EDITOR"
       print -r -- "dnav --update                 refresh scripts; merge new config keys"
+      print -r -- "dnav --reindex                rebuild the search index"
       print -r -- "ls_after=1                    run ls after a successful jump"
       ;;
   esac
@@ -2561,6 +2598,16 @@ dnav() {
       _dnav_update "$@"
       return $?
       ;;
+    --reindex)
+      shift
+      _dnav_load_module dsearch
+      if (( $+functions[_dsearch_reindex] )); then
+        _dsearch_reindex "$@"
+        return $?
+      fi
+      print -u2 -- "dnav: search is not available"
+      return 1
+      ;;
     -h|--help)
       _dnav_print_help
       return 0
@@ -2601,7 +2648,9 @@ dnav() {
   _dnav_autowrap_off
 
   _dnav_load_module dsearch
-  (( $+functions[_dsearch_index_start_bg] )) && _dsearch_index_start_bg
+  if (( $+functions[_dsearch_index_wanted] )) && _dsearch_index_wanted open; then
+    _dsearch_index_start_bg
+  fi
 
   _dnav_sync_term_size
   _dnav_mark_size

@@ -90,6 +90,7 @@ source ~/.local/share/dnav/dnav
 | `dconfig` / `dconfig -r` | Show/reload config |
 | `dconfig -e` | Edit config files in `$EDITOR` |
 | `dnav --update` | Refresh scripts + merge new config keys |
+| `dnav --reindex` | Rebuild the directory search index |
 | `djump -l` | List jump aliases |
 | `dhome`, `dproj`, … | Jump without opening the TUI |
 | `djump add LABEL [PATH]` | Add a jump (default path: `$PWD`) |
@@ -119,7 +120,9 @@ After editing: `dconfig -r` (or About → Settings).
 
 `ls_after = 1` in `config` runs `ls -a` after a successful jump/select.
 
-Search indexes `$HOME` unless you set `search_roots` (or `DNAV_SEARCH_ROOTS`) to a space-separated list. First-run `folders` / `jumps` are generic (`Home` `Docs` `Down` `Config`); existing user files are never overwritten.
+Search indexes `$HOME` unless you set `search_roots` (or `DNAV_SEARCH_ROOTS`) to a space-separated list. Auto-rebuild is `index_auto = 1` (start with `dnav` by default; `index_when = search` waits until search opens). `index_ttl_hours = 24` marks the cache stale; `0` never auto-rebuilds an existing file. `index_auto = 0` means only `dnav --reindex` walks the tree.
+
+First-run `folders` / `jumps` are generic (`Home` `Docs` `Down` `Config`); existing user files are never overwritten.
 
 ## Requirements
 

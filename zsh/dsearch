@@ -7,7 +7,8 @@
 #   _dsearch_ensure_index – ensure on-disk directory path cache is fresh
 #
 # Strategy: load-once path list, awk scorer (soft-AND, component-bounded, not pure zsh).
-# Index: ${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx  (dirs only, rebuilt after 24h)
+# Index: ${XDG_CACHE_HOME:-$HOME/.cache}/dnav/dirs.idx  (dirs only)
+# Auto-rebuild: config index_auto / index_when / index_ttl_hours (dnav --reindex always rebuilds).
 # Scope: $HOME by default. Extra trees via DNAV_SEARCH_ROOTS or config search_roots.
 
 _dsearch_available() { return 0 }
@@ -42,13 +43,37 @@ _dsearch_file_mtime() {
   return 1
 }
 
+# Seconds until dirs.idx is stale. 0 = never (missing/empty still counts as stale).
+_dsearch_index_ttl_sec() {
+  local h="${DNAV_CFG_INDEX_TTL_HOURS:-24}"
+  [[ $h == <-> ]] || h=24
+  print -rn -- $(( h * 3600 ))
+}
+
+# 0 if auto-index should run in this context (open | search).
+_dsearch_index_wanted() {
+  local ctx="${1:-open}"
+  (( ${DNAV_CFG_INDEX_AUTO:-1} )) || return 1
+  local when="${(L)DNAV_CFG_INDEX_WHEN:-open}"
+  case $when in
+    search|s)
+      [[ $ctx == search ]]
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 _dsearch_index_stale() {
-  local idx="$1" now mtime age
+  local idx="$1" now mtime age ttl
   [[ ! -f $idx || ! -s $idx ]] && return 0
+  ttl="$(_dsearch_index_ttl_sec)"
+  (( ttl <= 0 )) && return 1
   now=$(date +%s 2>/dev/null) || return 0
   mtime="$(_dsearch_file_mtime "$idx")" || return 0
   age=$(( now - mtime ))
-  (( age > 86400 ))
+  (( age > ttl ))
 }
 
 _dsearch_index_count() {
@@ -197,6 +222,7 @@ _dsearch_build_index_with_count() {
 }
 
 # Start background reindex if stale. Worker is fully detached (no job table).
+# $1 = 1|--force → rebuild even when the on-disk index is still fresh.
 _dsearch_index_lock_dir() {
   print -r -- "$(_dsearch_index_dir)/index.lock"
 }
@@ -206,20 +232,28 @@ _dsearch_index_unlock() {
 }
 
 _dsearch_index_start_bg() {
-  local idx countfile pidfile lock tmp self=""
+  local force=0 idx countfile pidfile lock tmp self=""
+  case ${1:-} in
+    1|--force) force=1 ;;
+  esac
   idx="$(_dsearch_index_path)"
 
   if (( _DSEARCH_INDEX_PID > 0 )) && ! kill -0 $_DSEARCH_INDEX_PID 2>/dev/null; then
     _DSEARCH_INDEX_PID=0
   fi
 
-  if ! _dsearch_index_stale "$idx"; then
-    _DSEARCH_INDEX_STATE=done
-    return 0
-  fi
-
-  if _dsearch_index_running; then
-    return 0
+  if (( force )); then
+    if _dsearch_index_running; then
+      _dsearch_index_cancel
+    fi
+  else
+    if ! _dsearch_index_stale "$idx"; then
+      _DSEARCH_INDEX_STATE=done
+      return 0
+    fi
+    if _dsearch_index_running; then
+      return 0
+    fi
   fi
 
   mkdir -p "$(_dsearch_index_dir)" 2>/dev/null || return 1
@@ -373,6 +407,7 @@ _dsearch_index_wait_ui() {
 
 # Ensure index is ready (start bg if needed, wait with UI if still running).
 # Never hard-fails: search UI should still open.
+# Respects index_auto / index_when; dnav --reindex is the manual path.
 _dsearch_ensure_index() {
   local idx
   idx="$(_dsearch_index_path)"
@@ -381,8 +416,61 @@ _dsearch_ensure_index() {
     return 0
   fi
 
+  if ! _dsearch_index_wanted search; then
+    return 0
+  fi
+
   _dsearch_index_wait_ui
   return 0
+}
+
+# Rebuild dirs.idx from the shell (always; ignores index_auto / TTL).
+_dsearch_reindex() {
+  emulate -L zsh
+  local idx count n
+  case ${1:-} in
+    -h|--help)
+      print -r -- "Usage: dnav --reindex"
+      print -r -- "Rebuild the directory search index and exit."
+      print -r -- "Always walks search_roots (default: \$HOME). Does not open the TUI."
+      return 0
+      ;;
+  esac
+
+  idx="$(_dsearch_index_path)"
+  _dsearch_index_start_bg 1 || {
+    print -u2 -- "dnav: could not start indexing"
+    return 1
+  }
+
+  if _dsearch_index_running; then
+    printf "\e[?25l"
+    while _dsearch_index_running; do
+      count="$(_dsearch_index_count)"
+      printf "\rIndexing... %s\e[K" "$count"
+      sleep 0.15
+    done
+    count="$(_dsearch_index_count)"
+    printf "\rIndexing... %s\e[K" "$count"
+    sleep 0.05
+    printf "\r\e[2K\e[?25h"
+    _DSEARCH_INDEX_PID=0
+    [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
+    [[ -n $_DSEARCH_INDEX_PID_FILE ]] && rm -f -- "$_DSEARCH_INDEX_PID_FILE" 2>/dev/null
+    _DSEARCH_INDEX_COUNT_FILE=""
+    _DSEARCH_INDEX_PID_FILE=""
+    _DSEARCH_INDEX_TMP=""
+  fi
+
+  if [[ -f $idx && -s $idx ]]; then
+    n=$(wc -l < "$idx" 2>/dev/null | tr -cd '0-9')
+    print -r -- "dnav: indexed ${n:-0} directories  $idx"
+    _DSEARCH_INDEX_STATE=done
+    return 0
+  fi
+  print -u2 -- "dnav: index rebuild failed  $idx"
+  _DSEARCH_INDEX_STATE=failed
+  return 1
 }
 
 # ── Session state (search UI) ─────────────────────────────────────────────

@@ -192,6 +192,14 @@ full_redraw = 0
 # dsearch roots (space-separated). Empty = $HOME only.
 # search_roots = $HOME /opt /mnt
 
+# Directory index for search (dirs.idx under ~/.cache/dnav).
+# auto: 1 = rebuild when stale; 0 = only dnav --reindex
+index_auto = 1
+# when: open = start with dnav; search = wait until search opens
+index_when = open
+# Hours until the on-disk index is stale. 0 = never (still build if missing)
+index_ttl_hours = 24
+
 # Status message auto-clear (ms). 0 = keep until the next message
 status_timeout_ms = 3000
 # inaccessible_color = red

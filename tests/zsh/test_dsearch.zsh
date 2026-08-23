@@ -38,6 +38,78 @@ test_index_stale_when_missing() {
   fi
 }
 
+test_index_ttl_zero_fresh_not_stale() {
+  local idx save="${DNAV_CFG_INDEX_TTL_HOURS:-24}"
+  idx="$(_dsearch_index_path)"
+  dnav_test_write_index "$idx"
+  DNAV_CFG_INDEX_TTL_HOURS=0
+  if _dsearch_index_stale "$idx"; then
+    _dnav_test_fail "ttl 0 should not treat a present index as stale"
+  else
+    _dnav_test_pass "ttl 0 keeps a present index"
+  fi
+  rm -f -- "$DNAV_TEST_TMP/no-idx"
+  if _dsearch_index_stale "$DNAV_TEST_TMP/no-idx"; then
+    _dnav_test_pass "ttl 0 still treats missing as stale"
+  else
+    _dnav_test_fail "missing index should stay stale when ttl is 0"
+  fi
+  DNAV_CFG_INDEX_TTL_HOURS=$save
+}
+
+test_index_wanted_respects_auto_and_when() {
+  local save_auto="${DNAV_CFG_INDEX_AUTO:-1}" save_when="${DNAV_CFG_INDEX_WHEN:-open}"
+  DNAV_CFG_INDEX_AUTO=0
+  DNAV_CFG_INDEX_WHEN=open
+  if _dsearch_index_wanted open || _dsearch_index_wanted search; then
+    _dnav_test_fail "auto 0 should want neither context"
+  else
+    _dnav_test_pass "auto 0 wants no auto index"
+  fi
+  DNAV_CFG_INDEX_AUTO=1
+  DNAV_CFG_INDEX_WHEN=search
+  if _dsearch_index_wanted open; then
+    _dnav_test_fail "when=search should not index on open"
+  else
+    _dnav_test_pass "when=search skips open"
+  fi
+  assert_ok _dsearch_index_wanted search
+  DNAV_CFG_INDEX_WHEN=open
+  assert_ok _dsearch_index_wanted open
+  assert_ok _dsearch_index_wanted search
+  DNAV_CFG_INDEX_AUTO=$save_auto
+  DNAV_CFG_INDEX_WHEN=$save_when
+}
+
+test_ensure_index_auto_off_does_not_start() {
+  local idx save="${DNAV_CFG_INDEX_AUTO:-1}"
+  idx="$(_dsearch_index_path)"
+  rm -f -- "$idx"
+  DNAV_CFG_INDEX_AUTO=0
+  _DSEARCH_INDEX_STATE=idle
+  _DSEARCH_INDEX_PID=0
+  _dsearch_ensure_index
+  if _dsearch_index_running; then
+    _dsearch_index_cancel
+    _dnav_test_fail "auto 0 must not start a worker"
+  else
+    _dnav_test_pass "auto 0 ensure_index does not start"
+  fi
+  DNAV_CFG_INDEX_AUTO=$save
+  dnav_test_write_index "$idx"
+}
+
+test_reindex_help() {
+  local got
+  got="$(_dsearch_reindex --help)"
+  assert_contains "$got" "Usage: dnav --reindex" "reindex help usage"
+  if [[ $got == *$'\e'* ]]; then
+    _dnav_test_fail "reindex help should be plain text"
+  else
+    _dnav_test_pass "reindex help is pipe-friendly"
+  fi
+}
+
 test_apply_filter_returns_matches() {
   _dsearch_apply_filter "home" 10
   assert_gt "$#_dsearch_matches" 0 "filter 'home' returns matches"
@@ -506,6 +578,10 @@ run_test test_index_cancel_refuses_pid_1
 run_test test_index_path
 run_test test_index_not_stale_when_fresh
 run_test test_index_stale_when_missing
+run_test test_index_ttl_zero_fresh_not_stale
+run_test test_index_wanted_respects_auto_and_when
+run_test test_ensure_index_auto_off_does_not_start
+run_test test_reindex_help
 run_test test_apply_filter_returns_matches
 run_test test_apply_filter_one_char
 run_test test_apply_filter_fuzzy_doc
