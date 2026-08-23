@@ -1869,7 +1869,7 @@ _dnav_help_topic_body() {
       ;;
     Search)
       print -r -- "/, s                          open fuzzy search"
-      print -r -- "words with spaces             every word must match (any order)"
+      print -r -- "words with spaces             extra words narrow; a miss still shows near matches"
       print -r -- "↑, ↓, Ctrl+N, Ctrl+P          move through results"
       print -r -- "←, →                          move the caret; → at the end focuses Help"
       print -r -- "Enter                         jump to the selected path"

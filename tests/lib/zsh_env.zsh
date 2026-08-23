@@ -109,20 +109,38 @@ dnav_test_write_index() {
     print -r -- "$HOME/Apps/ChaTTY/docs"
     print -r -- "$HOME/Projects/dnav-demo"
     print -r -- "$HOME/Projects/dnav-demo/config"
+    print -r -- "$HOME/Projects/nvim-plugin"
     print -r -- "$HOME/.config"
     print -r -- "$HOME/.config/dnav"
+    print -r -- "$HOME/.config/nvim"
     print -r -- "$HOME/.config/cmus"
     print -r -- "$HOME/.config/cmus/playlists"
     print -r -- "$HOME/.config/chromium"
     print -r -- "$HOME/.config/chromium/SafetyTips"
+    print -r -- "$HOME/.config/chromium/Default"
+    print -r -- "$HOME/.config/chromium/Default/Extensions"
+    print -r -- "$HOME/.config/chromium/Default/Extensions/abc123"
     print -r -- "$HOME/.config/clock"
+    print -r -- "$HOME/.local"
+    print -r -- "$HOME/.local/share"
+    print -r -- "$HOME/.local/share/dnav"
+    print -r -- "$HOME/.local/share/app"
+    print -r -- "$HOME/.local/share/app/share"
+    print -r -- "$HOME/.local/bin"
+    print -r -- "$HOME/.cache"
+    print -r -- "$HOME/.cache/dnav"
     print -r -- "/usr/share/doc"
     print -r -- "/usr/share/doc/bash"
     print -r -- "/tmp/dnav-synthetic-only"
   } > "$idx"
   mkdir -p "$HOME/Apps/ChaTTY/docs" "$HOME/Projects/dnav-demo/config" \
-           "$HOME/.config/dnav" "$HOME/.config/cmus/playlists" \
-           "$HOME/.config/chromium/SafetyTips" "$HOME/.config/clock" 2>/dev/null || true
+           "$HOME/Projects/nvim-plugin" "$HOME/.config/dnav" "$HOME/.config/nvim" \
+           "$HOME/.config/cmus/playlists" \
+           "$HOME/.config/chromium/SafetyTips" \
+           "$HOME/.config/chromium/Default/Extensions/abc123" \
+           "$HOME/.config/clock" \
+           "$HOME/.local/share/dnav" "$HOME/.local/share/app/share" \
+           "$HOME/.local/bin" "$HOME/.cache/dnav" 2>/dev/null || true
   DNAV_TEST_INDEX="$idx"
 }
 
@@ -130,8 +148,6 @@ dnav_test_dsearch_session() {
   dnav_test_write_index
   mkdir -p -- "$DNAV_TEST_TMP"
   _dsearch_tmpdir="$(mktemp -d "$DNAV_TEST_TMP/dsearch-sess.XXXXXX")"
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_matches=()
   _dsearch_sel=0
   _dsearch_q=""

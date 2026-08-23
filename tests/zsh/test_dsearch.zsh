@@ -39,29 +39,23 @@ test_index_stale_when_missing() {
 }
 
 test_apply_filter_returns_matches() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "home" 10
   assert_gt "$#_dsearch_matches" 0 "filter 'home' returns matches"
 }
 
-test_apply_filter_prefix1() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
+test_apply_filter_one_char() {
   _dsearch_apply_filter "d" 10
-  assert_gt "$#_dsearch_matches" 0 "prefix1 'd' returns matches"
+  assert_gt "$#_dsearch_matches" 0 "one-char 'd' returns matches"
   local joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *Documents* || $joined == *Downloads* || $joined == *docs* || $joined == *dnav* ]]; then
-    _dnav_test_pass "prefix results include a d* path"
+    _dnav_test_pass "one-char results include a d* path"
   else
-    _dnav_test_fail "unexpected prefix1 set: $joined"
+    _dnav_test_fail "unexpected one-char set: $joined"
   fi
   assert_eq "${_dsearch_matches[1][1]}" "/" "match is absolute (zsh 1-based)"
 }
 
 test_apply_filter_fuzzy_doc() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "doc" 10
   assert_gt "$#_dsearch_matches" 0 "fuzzy 'doc'"
   local joined="${(j:\n:)_dsearch_matches}"
@@ -69,8 +63,6 @@ test_apply_filter_fuzzy_doc() {
 }
 
 test_apply_filter_proj() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "proj" 10
   assert_gt "$#_dsearch_matches" 0 "fuzzy 'proj'"
   local joined="${(j:\n:)_dsearch_matches}"
@@ -98,27 +90,70 @@ test_query_caret_edit() {
   assert_eq "$_dsearch_cur" "1"
 }
 
-test_apply_filter_and_tokens_any_order() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
-  _dsearch_apply_filter "dnav config" 10
-  assert_gt "$#_dsearch_matches" 0 "dnav config has hits"
-  local p bad=0
+# 0 if $1 contains both needles (case-insensitive).
+_dsearch_test_has_both() {
+  emulate -L zsh
+  local p="${(L)1}"
+  [[ $p == *${(L)2}* && $p == *${(L)3}* ]]
+}
+
+# Fail unless $1 appears in matches, and before $2 when $2 is also present.
+_dsearch_test_ranks_before() {
+  emulate -L zsh
+  local want="$1" other="$2" label="$3"
+  local p i=0 iw=0 io=0
   for p in "${_dsearch_matches[@]}"; do
-    if [[ ${(L)p} != *dnav* || ${(L)p} != *config* ]]; then
-      bad=1
-      _dnav_test_fail "AND leaked path missing a word: $p"
+    (( i++ ))
+    [[ $p == $want ]] && (( iw == 0 )) && iw=$i
+    [[ $p == $other ]] && (( io == 0 )) && io=$i
+  done
+  (( iw > 0 )) || {
+    _dnav_test_fail "$label: missing $want in ${(j:\n:)_dsearch_matches}"
+    return 1
+  }
+  if (( io > 0 && io < iw )); then
+    _dnav_test_fail "$label: $other ranked above $want"
+    return 1
+  fi
+  _dnav_test_pass "$label"
+  return 0
+}
+
+# Fail unless all-token hits (both needles) appear before any one-word near-miss.
+_dsearch_test_both_before_partial() {
+  emulate -L zsh
+  local a="$1" b="$2"
+  local p i=0 first_both=0 first_partial=0
+  for p in "${_dsearch_matches[@]}"; do
+    (( i++ ))
+    if _dsearch_test_has_both "$p" "$a" "$b"; then
+      (( first_both == 0 )) && first_both=$i
+    else
+      (( first_partial == 0 )) && first_partial=$i
     fi
   done
-  (( bad == 0 )) && _dnav_test_pass "every hit contains both words"
+  (( first_both > 0 )) || {
+    _dnav_test_fail "no both-word hit for $a+$b: ${(j:\n:)_dsearch_matches}"
+    return 1
+  }
+  if (( first_partial > 0 && first_partial < first_both )); then
+    _dnav_test_fail "near-miss ranked above both-word hit ($a $b): ${(j:\n:)_dsearch_matches}"
+    return 1
+  fi
+  _dnav_test_pass "both-word hits outrank near-misses ($a $b)"
+  return 0
+}
+
+test_apply_filter_and_tokens_any_order() {
+  _dsearch_apply_filter "dnav config" 10
+  assert_gt "$#_dsearch_matches" 0 "dnav config has hits"
   local joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *.config/dnav* || $joined == *dnav-demo/config* ]]; then
     _dnav_test_pass "hits a path that has both words"
   else
     _dnav_test_fail "missed both-word paths: $joined"
   fi
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
+  _dsearch_test_both_before_partial dnav config
   _dsearch_apply_filter "config dnav" 10
   assert_gt "$#_dsearch_matches" 0 "order does not matter"
   joined="${(j:\n:)_dsearch_matches}"
@@ -127,11 +162,10 @@ test_apply_filter_and_tokens_any_order() {
   else
     _dnav_test_fail "reversed tokens missed both-word paths: $joined"
   fi
+  _dsearch_test_both_before_partial config dnav
 }
 
 test_apply_filter_and_partial_tokens() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "dnav con" 10
   assert_gt "$#_dsearch_matches" 0 "partial con matches config"
   local joined="${(j:\n:)_dsearch_matches}"
@@ -140,16 +174,19 @@ test_apply_filter_and_partial_tokens() {
   else
     _dnav_test_fail "dnav con missed partial config: $joined"
   fi
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "dnav qzzz" 10
   if (( $#_dsearch_matches == 0 )); then
-    _dnav_test_pass "nonsense AND token has no hits"
+    _dnav_test_fail "dnav qzzz should keep dnav near-misses"
   else
-    _dnav_test_fail "dnav qzzz should miss: ${(j:\n:)_dsearch_matches}"
+    local p bad=0
+    for p in "${_dsearch_matches[@]}"; do
+      if [[ ${(L)p} != *dnav* ]]; then
+        bad=1
+        _dnav_test_fail "dnav qzzz near-miss without dnav: $p"
+      fi
+    done
+    (( bad == 0 )) && _dnav_test_pass "dnav qzzz keeps dnav near-misses"
   fi
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "dnav" 50
   _dsearch_apply_filter "dnav " 50
   assert_gt "$#_dsearch_matches" 0 "trailing space does not wipe hits"
@@ -158,27 +195,15 @@ test_apply_filter_and_partial_tokens() {
 }
 
 test_apply_filter_and_complete_strings() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "config cmus" 10
   assert_gt "$#_dsearch_matches" 0 "config cmus hits a real cmus path"
-  local p
-  for p in "${_dsearch_matches[@]}"; do
-    if [[ ${(L)p} == *chromium* ]]; then
-      _dnav_test_fail "config cmus leaked chromium: $p"
-    fi
-    if [[ ${(L)p} != *config* || ${(L)p} != *cmus* ]]; then
-      _dnav_test_fail "config cmus leaked a non-substring path: $p"
-    fi
-  done
   local joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *.config/cmus* ]]; then
     _dnav_test_pass "config cmus hits ~/.config/cmus"
   else
     _dnav_test_fail "missed ~/.config/cmus: $joined"
   fi
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
+  _dsearch_test_both_before_partial config cmus
   _dsearch_apply_filter "cmus" 10
   joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *chromium* ]]; then
@@ -194,8 +219,6 @@ test_apply_filter_and_complete_strings() {
 }
 
 test_apply_filter_typos_plurals_related() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "confgi" 10
   assert_gt "$#_dsearch_matches" 0 "typo confgi has hits"
   local joined="${(j:\n:)_dsearch_matches}"
@@ -209,8 +232,6 @@ test_apply_filter_typos_plurals_related() {
   else
     _dnav_test_pass "confgi does not match chromium"
   fi
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "configs" 10
   joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *.config* || $joined == */config ]]; then
@@ -218,20 +239,16 @@ test_apply_filter_typos_plurals_related() {
   else
     _dnav_test_fail "configs missed config: $joined"
   fi
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "time" 10
   joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *clock* ]]; then
-    _dnav_test_pass "time finds related clock"
+    _dnav_test_fail "time should not synonym-match clock: $joined"
   else
-    _dnav_test_fail "time missed clock: $joined"
+    _dnav_test_pass "time does not special-case clock"
   fi
 }
 
 test_apply_filter_confidence_trim() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "cmus" 10
   assert_gt "$#_dsearch_matches" 0 "cmus has hits"
   local first="${_dsearch_matches[1]}"
@@ -253,15 +270,108 @@ test_apply_filter_confidence_trim() {
   fi
 }
 
+test_apply_filter_typeahead() {
+  _dsearch_apply_filter "config nvi" 10
+  assert_gt "$#_dsearch_matches" 0 "typeahead config nvi has hits"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/nvim* ]]; then
+    _dnav_test_pass "config nvi typeahead hits ~/.config/nvim"
+  else
+    _dnav_test_fail "config nvi missed nvim: $joined"
+  fi
+  _dsearch_test_both_before_partial config nvi
+}
+
+test_apply_filter_soft_and_rank() {
+  _dsearch_apply_filter "config nvim" 10
+  assert_gt "$#_dsearch_matches" 0 "config nvim has hits"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/nvim* ]]; then
+    _dnav_test_pass "config nvim hits ~/.config/nvim"
+  else
+    _dnav_test_fail "missed ~/.config/nvim: $joined"
+  fi
+  _dsearch_test_both_before_partial config nvim
+  local first="${_dsearch_matches[1]}"
+  if [[ $first == *.config/nvim && $first != *.config/nvim/* ]]; then
+    _dnav_test_pass "exact ~/.config/nvim is first"
+  else
+    _dnav_test_fail "expected ~/.config/nvim first, got $first"
+  fi
+  if [[ $joined == *nvim-plugin* ]]; then
+    local p i=0 nvim_i=0 plugin_i=0
+    for p in "${_dsearch_matches[@]}"; do
+      (( i++ ))
+      [[ $p == *.config/nvim && $p != *.config/nvim/* ]] && (( nvim_i == 0 )) && nvim_i=$i
+      [[ $p == *nvim-plugin* ]] && (( plugin_i == 0 )) && plugin_i=$i
+    done
+    if (( plugin_i > 0 && nvim_i > 0 && plugin_i < nvim_i )); then
+      _dnav_test_fail "nvim-plugin outranked ~/.config/nvim"
+    else
+      _dnav_test_pass "nvim-only near-miss stays below both-word hit"
+    fi
+  else
+    _dnav_test_pass "nvim-only near-miss not needed in top 10"
+  fi
+}
+
+test_pref_home_beats_system() {
+  _dsearch_apply_filter "doc" 10
+  assert_gt "$#_dsearch_matches" 0 "doc has hits"
+  _dsearch_test_ranks_before "$HOME/Documents" "/usr/share/doc" "Documents outranks /usr/share/doc"
+}
+
+test_pref_config_root_beats_deep() {
+  _dsearch_apply_filter "config" 10
+  assert_gt "$#_dsearch_matches" 0 "config has hits"
+  local first="${_dsearch_matches[1]}"
+  if [[ $first == "$HOME/.config" ]]; then
+    _dnav_test_pass "~/.config is first for config"
+  else
+    _dnav_test_fail "expected ~/.config first, got $first"
+  fi
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *Default/Extensions* ]]; then
+    _dnav_test_fail "deep chromium still listed for config: $joined"
+  else
+    _dnav_test_pass "deep chromium not listed for config"
+  fi
+}
+
+test_pref_share_root_beats_deeper() {
+  _dsearch_apply_filter "share" 10
+  assert_gt "$#_dsearch_matches" 0 "share has hits"
+  _dsearch_test_ranks_before "$HOME/.local/share" "$HOME/.local/share/app/share" \
+    "~/.local/share outranks deeper share"
+}
+
+test_pref_leaf_intent_allows_deep() {
+  _dsearch_apply_filter "playlists" 10
+  assert_gt "$#_dsearch_matches" 0 "playlists has hits"
+  local joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.config/cmus/playlists* ]]; then
+    _dnav_test_pass "leaf intent still finds cmus/playlists"
+  else
+    _dnav_test_fail "playlists missed cmus/playlists: $joined"
+  fi
+}
+
+test_pref_cache_demoted() {
+  _dsearch_apply_filter "dnav" 10
+  assert_gt "$#_dsearch_matches" 0 "dnav has hits"
+  _dsearch_test_ranks_before "$HOME/.config/dnav" "$HOME/.cache/dnav" \
+    "~/.config/dnav outranks cache dnav"
+  _dsearch_test_ranks_before "$HOME/.local/share/dnav" "$HOME/.cache/dnav" \
+    "~/.local/share/dnav outranks cache dnav"
+}
+
 test_apply_filter_empty_query() {
   _dsearch_matches=(/tmp/leftover)
   _dsearch_apply_filter "" 10
   assert_eq "$#_dsearch_matches" "0" "empty query clears matches"
 }
 
-test_incremental_narrowing() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
+test_typing_still_hits() {
   _dsearch_apply_filter "d" 50
   local n1=$#_dsearch_matches
   _dsearch_apply_filter "do" 50
@@ -271,27 +381,16 @@ test_incremental_narrowing() {
   assert_gt "$n1" 0 "d has hits"
   assert_gt "$n2" 0 "do has hits"
   assert_gt "$n3" 0 "doc has hits"
-  if [[ -n ${_dsearch_cand_stack[1]:-} && -n ${_dsearch_cand_stack[3]:-} ]]; then
-    local c1 c3
-    c1=$(wc -l < "${_dsearch_cand_stack[1]}")
-    c3=$(wc -l < "${_dsearch_cand_stack[3]}")
-    c1=${c1// /}; c3=${c3// /}
-    assert_ge "$c1" "$c3" "survivors shrink or stay as query lengthens"
-  else
-    _dnav_test_pass "cand stack present (skipped size compare)"
-  fi
+  local joined="${(j:\n:)_dsearch_matches}"
+  assert_contains "$joined" "Documents" "doc still ranks Documents"
 }
 
 test_awk_filter_direct() {
-  local idx survivors
+  local idx
   local -a out
   idx="$(_dsearch_index_path)"
-  survivors="$DNAV_TEST_TMP/surv.out"
-  : > "$survivors"
-  out=("${(@f)$(_dsearch_awk_filter "home" "fuzzy" 5 "$idx" "$survivors")}")
+  out=("${(@f)$(_dsearch_awk_filter "home" 5 "$idx")}")
   assert_gt "$#out" 0 "awk filter stdout"
-  assert_file "$survivors"
-  assert_gt "$(wc -l < "$survivors" | tr -d ' ')" 0 "survivors written"
 }
 
 test_display_path_tilde() {
@@ -301,8 +400,6 @@ test_display_path_tilde() {
 }
 
 test_pin_jumps_prefers_jump() {
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_apply_filter "home" 10
   local first="${_dsearch_matches[1]}"
   if [[ $first == "$HOME" || ${first:A} == "${HOME:A}" ]]; then
@@ -410,7 +507,7 @@ run_test test_index_path
 run_test test_index_not_stale_when_fresh
 run_test test_index_stale_when_missing
 run_test test_apply_filter_returns_matches
-run_test test_apply_filter_prefix1
+run_test test_apply_filter_one_char
 run_test test_apply_filter_fuzzy_doc
 run_test test_apply_filter_proj
 run_test test_apply_filter_and_tokens_any_order
@@ -418,6 +515,13 @@ run_test test_apply_filter_and_partial_tokens
 run_test test_apply_filter_and_complete_strings
 run_test test_apply_filter_typos_plurals_related
 run_test test_apply_filter_confidence_trim
+run_test test_apply_filter_typeahead
+run_test test_apply_filter_soft_and_rank
+run_test test_pref_home_beats_system
+run_test test_pref_config_root_beats_deep
+run_test test_pref_share_root_beats_deeper
+run_test test_pref_leaf_intent_allows_deep
+run_test test_pref_cache_demoted
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 test_now_ms_is_integer() {
@@ -432,8 +536,6 @@ test_now_ms_is_integer() {
 
 test_worker_ranks_off_thread() {
   _dsearch_q="doc"
-  _dsearch_prev_query=""
-  _dsearch_cand_stack=()
   _dsearch_matches=()
   _DSEARCH_WORKER_PID=0
   _DSEARCH_GEN=0
@@ -458,7 +560,7 @@ test_worker_ranks_off_thread() {
   assert_eq "$_DSEARCH_SHOWN_Q" "doc" "poll records the query that was ranked"
 }
 
-run_test test_incremental_narrowing
+run_test test_typing_still_hits
 run_test test_now_ms_is_integer
 run_test test_worker_ranks_off_thread
 run_test test_awk_filter_direct
