@@ -1965,6 +1965,19 @@ _dnav_help_topic_body() {
   esac
 }
 
+_dnav_settings_onoff() {
+  (( ${(P)1} )) && print -rn -- on || print -rn -- off
+}
+_dnav_settings_cycle3() {
+  (( ${(P)1} < 0 )) && print -rn -- inherit || _dnav_settings_onoff "$1"
+}
+_dnav_settings_row() {
+  _DNAV_ABOUT_BODY+=("$3")
+  _DNAV_ABOUT_KIND+=("$1")
+  _DNAV_ABOUT_KEY+=("$2")
+  _DNAV_ABOUT_IDX+=(-1)
+}
+
 _dnav_settings_fill_body() {
   local tab="${_DNAV_SETTINGS_TABS[_DNAV_SETTINGS_SEL+1]}"
   local onoff i k path
@@ -1975,52 +1988,34 @@ _dnav_settings_fill_body() {
   _DNAV_ABOUT_NROWS=0
   case $tab in
     General)
-      (( DNAV_CFG_LS )) && onoff=on || onoff=off
-      _DNAV_ABOUT_BODY+=("ls_after          $onoff          Enter toggle (default)")
-      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(ls_after) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_LS_DNAV < 0 )) && onoff=inherit || { (( DNAV_CFG_LS_DNAV )) && onoff=on || onoff=off; }
-      _DNAV_ABOUT_BODY+=("ls_after_dnav     $onoff          Enter cycle inherit/on/off")
-      _DNAV_ABOUT_KIND+=(cycle3) _DNAV_ABOUT_KEY+=(ls_after_dnav) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_LS_DJUMP < 0 )) && onoff=inherit || { (( DNAV_CFG_LS_DJUMP )) && onoff=on || onoff=off; }
-      _DNAV_ABOUT_BODY+=("ls_after_djump    $onoff          Enter cycle inherit/on/off")
-      _DNAV_ABOUT_KIND+=(cycle3) _DNAV_ABOUT_KEY+=(ls_after_djump) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_SUCCESS_BAR )) && onoff=on || onoff=off
-      _DNAV_ABOUT_BODY+=("success_bar       $onoff          Enter toggle (default)")
-      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(success_bar) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_SUCCESS_BAR_DNAV < 0 )) && onoff=inherit || { (( DNAV_CFG_SUCCESS_BAR_DNAV )) && onoff=on || onoff=off; }
-      _DNAV_ABOUT_BODY+=("success_bar_dnav  $onoff          Enter cycle inherit/on/off")
-      _DNAV_ABOUT_KIND+=(cycle3) _DNAV_ABOUT_KEY+=(success_bar_dnav) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_SUCCESS_BAR_DJUMP < 0 )) && onoff=inherit || { (( DNAV_CFG_SUCCESS_BAR_DJUMP )) && onoff=on || onoff=off; }
-      _DNAV_ABOUT_BODY+=("success_bar_djump $onoff          Enter cycle inherit/on/off")
-      _DNAV_ABOUT_KIND+=(cycle3) _DNAV_ABOUT_KEY+=(success_bar_djump) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_SHOW_HIDDEN )) && onoff=on || onoff=off
-      _DNAV_ABOUT_BODY+=("show_hidden       $onoff          Enter toggle")
-      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(show_hidden) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("dfile_sort_dirs   ${DNAV_CFG_DFILE_SORT_DIRS}          Enter cycle alpha/hidden_first")
-      _DNAV_ABOUT_KIND+=(cycle_dirs) _DNAV_ABOUT_KEY+=(dfile_sort_dirs) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("dfile_sort_files  ${DNAV_CFG_DFILE_SORT_FILES}          Enter cycle alpha/ext/dot_first/dot_ext")
-      _DNAV_ABOUT_KIND+=(cycle_files) _DNAV_ABOUT_KEY+=(dfile_sort_files) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("dfile_jump_name_max ${DNAV_CFG_DFILE_JUMP_NAME_MAX}        Enter edit (Jump to: name max)")
-      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(dfile_jump_name_max) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_SUCCESS_ANIM )) && onoff=on || onoff=off
-      _DNAV_ABOUT_BODY+=("success_anim      $onoff          Enter toggle")
-      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(success_anim) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_FULL_REDRAW )) && onoff=on || onoff=off
-      _DNAV_ABOUT_BODY+=("full_redraw       $onoff          Enter toggle · full line vs partial")
-      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(full_redraw) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("color_fg          ${DNAV_CFG_COLOR_FG}          Enter edit number/name")
-      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(color_fg) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("color_bg          ${DNAV_CFG_COLOR_BG}          Enter edit number/name")
-      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(color_bg) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("brand             ${DNAV_CFG_BRAND}          Enter edit text")
-      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(brand) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("status_timeout_ms ${DNAV_CFG_STATUS_TIMEOUT_MS}        Enter edit (0 = keep)")
-      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(status_timeout_ms) _DNAV_ABOUT_IDX+=(-1)
-      _DNAV_ABOUT_BODY+=("inaccessible_color ${DNAV_CFG_INACC_COLOR}         Enter edit number/name")
-      _DNAV_ABOUT_KIND+=(value) _DNAV_ABOUT_KEY+=(inaccessible_color) _DNAV_ABOUT_IDX+=(-1)
-      (( DNAV_CFG_INACC_ICON )) && onoff=on || onoff=off
-      _DNAV_ABOUT_BODY+=("inaccessible_icon $onoff          Enter toggle lock glyph")
-      _DNAV_ABOUT_KIND+=(toggle) _DNAV_ABOUT_KEY+=(inaccessible_icon) _DNAV_ABOUT_IDX+=(-1)
+      onoff="$(_dnav_settings_onoff DNAV_CFG_LS)"
+      _dnav_settings_row toggle ls_after "ls_after          $onoff          Enter toggle (default)"
+      onoff="$(_dnav_settings_cycle3 DNAV_CFG_LS_DNAV)"
+      _dnav_settings_row cycle3 ls_after_dnav "ls_after_dnav     $onoff          Enter cycle inherit/on/off"
+      onoff="$(_dnav_settings_cycle3 DNAV_CFG_LS_DJUMP)"
+      _dnav_settings_row cycle3 ls_after_djump "ls_after_djump    $onoff          Enter cycle inherit/on/off"
+      onoff="$(_dnav_settings_onoff DNAV_CFG_SUCCESS_BAR)"
+      _dnav_settings_row toggle success_bar "success_bar       $onoff          Enter toggle (default)"
+      onoff="$(_dnav_settings_cycle3 DNAV_CFG_SUCCESS_BAR_DNAV)"
+      _dnav_settings_row cycle3 success_bar_dnav "success_bar_dnav  $onoff          Enter cycle inherit/on/off"
+      onoff="$(_dnav_settings_cycle3 DNAV_CFG_SUCCESS_BAR_DJUMP)"
+      _dnav_settings_row cycle3 success_bar_djump "success_bar_djump $onoff          Enter cycle inherit/on/off"
+      onoff="$(_dnav_settings_onoff DNAV_CFG_SHOW_HIDDEN)"
+      _dnav_settings_row toggle show_hidden "show_hidden       $onoff          Enter toggle"
+      _dnav_settings_row cycle_dirs dfile_sort_dirs "dfile_sort_dirs   ${DNAV_CFG_DFILE_SORT_DIRS}          Enter cycle alpha/hidden_first"
+      _dnav_settings_row cycle_files dfile_sort_files "dfile_sort_files  ${DNAV_CFG_DFILE_SORT_FILES}          Enter cycle alpha/ext/dot_first/dot_ext"
+      _dnav_settings_row value dfile_jump_name_max "dfile_jump_name_max ${DNAV_CFG_DFILE_JUMP_NAME_MAX}        Enter edit (Jump to: name max)"
+      onoff="$(_dnav_settings_onoff DNAV_CFG_SUCCESS_ANIM)"
+      _dnav_settings_row toggle success_anim "success_anim      $onoff          Enter toggle"
+      onoff="$(_dnav_settings_onoff DNAV_CFG_FULL_REDRAW)"
+      _dnav_settings_row toggle full_redraw "full_redraw       $onoff          Enter toggle · full line vs partial"
+      _dnav_settings_row value color_fg "color_fg          ${DNAV_CFG_COLOR_FG}          Enter edit number/name"
+      _dnav_settings_row value color_bg "color_bg          ${DNAV_CFG_COLOR_BG}          Enter edit number/name"
+      _dnav_settings_row value brand "brand             ${DNAV_CFG_BRAND}          Enter edit text"
+      _dnav_settings_row value status_timeout_ms "status_timeout_ms ${DNAV_CFG_STATUS_TIMEOUT_MS}        Enter edit (0 = keep)"
+      _dnav_settings_row value inaccessible_color "inaccessible_color ${DNAV_CFG_INACC_COLOR}         Enter edit number/name"
+      onoff="$(_dnav_settings_onoff DNAV_CFG_INACC_ICON)"
+      _dnav_settings_row toggle inaccessible_icon "inaccessible_icon $onoff          Enter toggle lock glyph"
       _DNAV_ABOUT_NROWS=$#_DNAV_ABOUT_BODY
       ;;
     Folders)

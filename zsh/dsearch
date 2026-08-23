@@ -302,9 +302,14 @@ _dsearch_build_index_with_count() {
       first=0
       print -r -- "r $r" >> "$meta"
       sig="$(_dsearch_top_children "$r")"
-      print -r -- "$sig" | while IFS= read -r line; do
-        [[ -n $line ]] && print -r -- "c $line" >> "$meta"
-      done
+      typeset -A old_set sig_set
+      old_set=()
+      sig_set=()
+      while IFS= read -r line; do
+        [[ -z $line ]] && continue
+        sig_set[$line]=1
+        print -r -- "c $line" >> "$meta"
+      done <<< "$sig"
       oldsig="$(_dsearch_meta_children_for "$(_dsearch_meta_path)" "$r")"
       if (( ! full )) && [[ -n $old && -n $sig && $sig == "$oldsig" ]]; then
         _dsearch_emit_under "$old" "$r"
@@ -314,17 +319,18 @@ _dsearch_build_index_with_count() {
         _dsearch_walk_tree "$r"
         continue
       fi
+      while IFS= read -r line; do
+        [[ -n $line ]] && old_set[$line]=1
+      done <<< "$oldsig"
       print -r -- "$r"
-      print -r -- "$oldsig" | while IFS= read -r line; do
-        [[ -z $line ]] && continue
+      for line in ${(k)old_set}; do
+        [[ -n ${sig_set[$line]:-} ]] || continue
         name="${line#* }"
         [[ -n $name ]] || continue
-        print -r -- "$sig" | grep -Fx -- "$line" >/dev/null || continue
         _dsearch_emit_under "$old" "$r/$name"
       done
-      print -r -- "$sig" | while IFS= read -r line; do
-        [[ -z $line ]] && continue
-        print -r -- "$oldsig" | grep -Fx -- "$line" >/dev/null && continue
+      for line in ${(k)sig_set}; do
+        [[ -n ${old_set[$line]:-} ]] && continue
         name="${line#* }"
         [[ -n $name && -d $r/$name ]] || continue
         _dsearch_walk_tree "$r/$name"
@@ -460,30 +466,22 @@ _dsearch_index_start_bg() {
   # setsid so cancel can kill that group only (never the interactive shell).
   # nice/ionice so a due rebuild yields to interactive work.
   if [[ -n $self ]]; then
+    local body='
+      command -v ionice >/dev/null 2>&1 && ionice -c3 -t -p $$ 2>/dev/null || true
+      command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true
+      emulate -L zsh
+      setopt nomonitor nonotify
+      source "$1"
+      _dsearch_build_index_with_count "$2" "$3" "$4"
+      rm -f -- "$5"
+      rmdir -- "${2:h}/index.lock" 2>/dev/null || true
+    '
     if command -v setsid >/dev/null 2>&1; then
-      nohup setsid zsh -fc '
-        command -v ionice >/dev/null 2>&1 && ionice -c3 -t -p $$ 2>/dev/null || true
-        command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true
-        emulate -L zsh
-        setopt nomonitor nonotify
-        source "$1"
-        _dsearch_build_index_with_count "$2" "$3" "$4"
-        rm -f -- "$5"
-        rmdir -- "${2:h}/index.lock" 2>/dev/null || true
-      ' dnav-index-worker "$self" "$idx" "$countfile" "$tmp" "$pidfile" \
+      nohup setsid zsh -fc "$body" dnav-index-worker "$self" "$idx" "$countfile" "$tmp" "$pidfile" \
         </dev/null >/dev/null 2>&1 &!
       _DSEARCH_INDEX_HAS_SID=1
     else
-      nohup zsh -fc '
-        command -v ionice >/dev/null 2>&1 && ionice -c3 -t -p $$ 2>/dev/null || true
-        command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true
-        emulate -L zsh
-        setopt nomonitor nonotify
-        source "$1"
-        _dsearch_build_index_with_count "$2" "$3" "$4"
-        rm -f -- "$5"
-        rmdir -- "${2:h}/index.lock" 2>/dev/null || true
-      ' dnav-index-worker "$self" "$idx" "$countfile" "$tmp" "$pidfile" \
+      nohup zsh -fc "$body" dnav-index-worker "$self" "$idx" "$countfile" "$tmp" "$pidfile" \
         </dev/null >/dev/null 2>&1 &!
     fi
     _DSEARCH_INDEX_PID=$!
@@ -531,15 +529,48 @@ _dsearch_index_cancel() {
 # Paint "Indexing... N" on one line; clear with \r\e[2K when done (no newlines).
 _dsearch_index_paint_status() {
   local count="$1"
-  local hl="${DNAV_HIGHLIGHT:-${HIGHLIGHT:-\e[30;46m}}"
-  local rst="${DNAV_RESET:-${RESET:-\e[0m}}"
+  local hl rst
+  hl="$(_dnav_hl)"
+  rst="$(_dnav_rst)"
   printf "\r${hl} Indexing...${rst} %s\e[K" "$count"
+}
+
+# Poll a running worker. $1=tui (chip, leave cursor hidden) or cli (plain, show cursor).
+_dsearch_index_finish_wait() {
+  local how="${1:-tui}" count
+  _dsearch_index_running || return 0
+  printf "\e[?25l"
+  while _dsearch_index_running; do
+    count="$(_dsearch_index_count)"
+    if [[ $how == cli ]]; then
+      printf "\rIndexing... %s\e[K" "$count"
+    else
+      _dsearch_index_paint_status "$count"
+    fi
+    sleep 0.15
+  done
+  count="$(_dsearch_index_count)"
+  if [[ $how == cli ]]; then
+    printf "\rIndexing... %s\e[K" "$count"
+    sleep 0.05
+    printf "\r\e[2K\e[?25h"
+  else
+    _dsearch_index_paint_status "$count"
+    sleep 0.05
+    printf "\r\e[2K"
+  fi
+  _DSEARCH_INDEX_PID=0
+  [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
+  [[ -n $_DSEARCH_INDEX_PID_FILE ]] && rm -f -- "$_DSEARCH_INDEX_PID_FILE" 2>/dev/null
+  _DSEARCH_INDEX_COUNT_FILE=""
+  _DSEARCH_INDEX_PID_FILE=""
+  _DSEARCH_INDEX_TMP=""
 }
 
 # Wait for background index if needed. Always leaves the cursor line clean.
 # Returns 0 if a usable index exists OR after creating an empty fallback.
 _dsearch_index_wait_ui() {
-  local idx count
+  local idx
   idx="$(_dsearch_index_path)"
 
   _dsearch_index_start_bg
@@ -549,24 +580,7 @@ _dsearch_index_wait_ui() {
     return 0
   fi
 
-  if _dsearch_index_running; then
-    printf "\e[?25l"
-    while _dsearch_index_running; do
-      count="$(_dsearch_index_count)"
-      _dsearch_index_paint_status "$count"
-      sleep 0.15
-    done
-    count="$(_dsearch_index_count)"
-    _dsearch_index_paint_status "$count"
-    sleep 0.05
-    printf "\r\e[2K"
-    _DSEARCH_INDEX_PID=0
-    [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
-    [[ -n $_DSEARCH_INDEX_PID_FILE ]] && rm -f -- "$_DSEARCH_INDEX_PID_FILE" 2>/dev/null
-    _DSEARCH_INDEX_COUNT_FILE=""
-    _DSEARCH_INDEX_PID_FILE=""
-    _DSEARCH_INDEX_TMP=""
-  fi
+  _dsearch_index_finish_wait tui
 
   if [[ -f $idx && -s $idx ]]; then
     _DSEARCH_INDEX_STATE=done
@@ -604,7 +618,7 @@ _dsearch_ensure_index() {
 # Rebuild dirs.idx from the shell (always; ignores index_auto / TTL).
 _dsearch_reindex() {
   emulate -L zsh
-  local idx count n src
+  local idx n src
   case ${1:-} in
     -h|--help)
       print -r -- "Usage: dnav --reindex [--from FILE]"
@@ -638,24 +652,7 @@ _dsearch_reindex() {
     return 1
   }
 
-  if _dsearch_index_running; then
-    printf "\e[?25l"
-    while _dsearch_index_running; do
-      count="$(_dsearch_index_count)"
-      printf "\rIndexing... %s\e[K" "$count"
-      sleep 0.15
-    done
-    count="$(_dsearch_index_count)"
-    printf "\rIndexing... %s\e[K" "$count"
-    sleep 0.05
-    printf "\r\e[2K\e[?25h"
-    _DSEARCH_INDEX_PID=0
-    [[ -n $_DSEARCH_INDEX_COUNT_FILE ]] && rm -f -- "$_DSEARCH_INDEX_COUNT_FILE" 2>/dev/null
-    [[ -n $_DSEARCH_INDEX_PID_FILE ]] && rm -f -- "$_DSEARCH_INDEX_PID_FILE" 2>/dev/null
-    _DSEARCH_INDEX_COUNT_FILE=""
-    _DSEARCH_INDEX_PID_FILE=""
-    _DSEARCH_INDEX_TMP=""
-  fi
+  _dsearch_index_finish_wait cli
 
   if [[ -f $idx && -s $idx ]]; then
     n=$(wc -l < "$idx" 2>/dev/null | tr -cd '0-9')
@@ -1082,8 +1079,9 @@ _dsearch_pin_jumps() {
   local query="$1" maxn="${2:-10}"
   (( $+functions[_djump_available] )) && _djump_available || return 0
   local -a keys pinned out
-  local k p m found
+  local k p m
   keys=("${(@f)$(_djump_match_query "$query")}")
+  typeset -A seen
   pinned=()
   for k in "${keys[@]}"; do
     p="$(_djump_resolve "$k" 2>/dev/null)" || continue
@@ -1094,20 +1092,15 @@ _dsearch_pin_jumps() {
     else
       p="${p:a}"
     fi
-    found=0
-    for m in "${pinned[@]}"; do
-      [[ $m == $p ]] && { found=1; break }
-    done
-    (( found )) || pinned+=("$p")
+    [[ -n ${seen[$p]:-} ]] && continue
+    seen[$p]=1
+    pinned+=("$p")
   done
   (( $#pinned == 0 )) && return 0
   out=("${pinned[@]}")
   for m in "${_dsearch_matches[@]}"; do
-    found=0
-    for p in "${pinned[@]}"; do
-      [[ $m == $p ]] && { found=1; break }
-    done
-    (( found )) || out+=("$m")
+    [[ -n ${seen[$m]:-} ]] && continue
+    out+=("$m")
   done
   _dsearch_matches=("${out[@]:0:$maxn}")
 }
