@@ -687,6 +687,16 @@ run_test test_pref_leaf_intent_allows_deep
 run_test test_pref_cache_demoted
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
+test_wait_key_idle_ticks() {
+  _DSEARCH_PUSHBACK=""
+  DNAV_ABORT=0
+  if _dsearch_wait_key </dev/null; then
+    _dnav_test_fail "idle wait_key should tick (no key)"
+  else
+    _dnav_test_pass "idle wait_key is a tick"
+  fi
+}
+
 test_now_ms_is_integer() {
   local n
   n="$(_dsearch_now_ms)"
@@ -798,6 +808,7 @@ test_commit_target_clamps_sel() {
 }
 
 run_test test_typing_still_hits
+run_test test_wait_key_idle_ticks
 run_test test_now_ms_is_integer
 run_test test_worker_ranks_off_thread
 run_test test_worker_reap_on_poll

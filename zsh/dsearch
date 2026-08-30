@@ -804,6 +804,14 @@ _dsearch_worker_start() {
     /bin/mv -f -- "$tmp/hits.$gen.tmp" "$tmp/hits.$gen"
   ) </dev/null >/dev/null 2>&1 &!
   _DSEARCH_WORKER_PID=$!
+  if (( _DSEARCH_WORKER_PID <= 1 )); then
+    _DSEARCH_WORKER_PID=0
+    _dsearch_apply_filter "$q" 10
+    _DSEARCH_SHOWN_Q="$q"
+    _DSEARCH_WORK_Q="$q"
+    _DSEARCH_DIRTY=0
+    _dsearch_draw "$q"
+  fi
 }
 
 # 0 if this generation has a hits file (caller draws).
@@ -881,11 +889,7 @@ _dsearch_flush_filter() {
         fi
         break
       fi
-      if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
-        zselect -t 3
-      else
-        /bin/sleep 0.03 2>/dev/null || true
-      fi
+      _dsearch_yield
     done
   fi
   _dsearch_worker_stop
@@ -894,6 +898,15 @@ _dsearch_flush_filter() {
   _DSEARCH_WORK_Q="$_dsearch_q"
   _DSEARCH_DIRTY=0
   _dsearch_draw "$_dsearch_q"
+}
+
+# Yield ~30ms so the ranker can run. `read -t` often never times out on iSH.
+_dsearch_yield() {
+  if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+    zselect -t 3
+    return 0
+  fi
+  /bin/sleep 0.03 2>/dev/null || true
 }
 
 # 0 = REPLY is a key; 1 = 30ms tick. Waiting keys never wait.
@@ -909,15 +922,26 @@ _dsearch_wait_key() {
   if (( $+functions[_dnav_try_read_token] )) && _dnav_try_read_token; then
     return 0
   fi
-  if read -t 0.03 -k 1 k 2>/dev/null; then
-    (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
-    [[ -n $k ]] || return 1
-    if (( $+functions[_dnav_classify_key] )); then
-      _dnav_classify_key "$k"
-    else
-      REPLY="$k"
+  # Idle wait must yield: read -t often never times out on iSH, so the
+  # ranker never runs until another key. Same awk worker as everywhere else.
+  if [[ -t 0 ]] && zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+    if zselect -t 3 -r 0 2>/dev/null; then
+      if read -k 1 k 2>/dev/null; then
+        (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
+        [[ -n $k ]] || return 1
+        if (( $+functions[_dnav_classify_key] )); then
+          _dnav_classify_key "$k"
+        else
+          REPLY="$k"
+        fi
+        return 0
+      fi
     fi
-    return 0
+  else
+    _dsearch_yield
+    if (( $+functions[_dnav_try_read_token] )) && _dnav_try_read_token; then
+      return 0
+    fi
   fi
   (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
   if (( ! ${_DNAV_RESIZE_MODE:-0} )) && (( $+functions[_dnav_status_tick] )) && _dnav_status_tick; then
