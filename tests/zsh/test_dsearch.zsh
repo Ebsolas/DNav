@@ -687,6 +687,18 @@ run_test test_pref_leaf_intent_allows_deep
 run_test test_pref_cache_demoted
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
+test_preview_narrows_prefix() {
+  _dsearch_q="doc"
+  _DSEARCH_SHOWN_Q="do"
+  _dsearch_matches=("$HOME/Documents" "$HOME/Downloads" "$HOME/Projects")
+  if _dsearch_preview_if_prefix; then
+    local joined="${(j:\n:)_dsearch_matches}"
+    assert_contains "$joined" "Documents" "prefix preview keeps Documents"
+  else
+    _dnav_test_fail "prefix preview should run for doc after do"
+  fi
+}
+
 test_wait_key_idle_ticks() {
   _DSEARCH_PUSHBACK=""
   DNAV_ABORT=0
@@ -808,6 +820,7 @@ test_commit_target_clamps_sel() {
 }
 
 run_test test_typing_still_hits
+run_test test_preview_narrows_prefix
 run_test test_wait_key_idle_ticks
 run_test test_now_ms_is_integer
 run_test test_worker_ranks_off_thread

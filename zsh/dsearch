@@ -35,6 +35,7 @@ _dsearch_session_cleanup() {
   _DSEARCH_WORKER_PID=0
   _DSEARCH_GEN=0
   _DSEARCH_LAST_TICK=0
+  _DSEARCH_IDLE_TICKS=0
   _DSEARCH_WORK_Q=""
   _DSEARCH_SHOWN_Q=""
 }
@@ -705,6 +706,7 @@ typeset -gi _DSEARCH_DIRTY=0
 typeset -gi _DSEARCH_WORKER_PID=0
 typeset -gi _DSEARCH_GEN=0
 typeset -gi _DSEARCH_LAST_TICK=0
+typeset -gi _DSEARCH_IDLE_TICKS=0
 typeset -g  _DSEARCH_WORK_Q=""
 typeset -g  _DSEARCH_SHOWN_Q=""
 
@@ -791,10 +793,12 @@ _dsearch_worker_start() {
   (( ++_DSEARCH_GEN ))
   gen=$_DSEARCH_GEN
   _DSEARCH_WORK_Q="$q"
+  _DSEARCH_IDLE_TICKS=0
   setopt localoptions nomonitor nonotify
   (
     emulate -L zsh
     setopt nomonitor nonotify
+    : > "$tmp/run.$gen"
     _dsearch_apply_filter "$q" 10
     if (( $#_dsearch_matches )); then
       print -l -- "${_dsearch_matches[@]}" > "$tmp/hits.$gen.tmp"
@@ -822,16 +826,34 @@ _dsearch_worker_poll() {
   [[ -f $f ]] || return 1
   _dsearch_worker_reap
   _dsearch_take_top "${(@f)$(<"$f")}"
-  /bin/rm -f -- "$f"
+  /bin/rm -f -- "$f" "$tmp/run.$gen"
   _DSEARCH_SHOWN_Q="$_DSEARCH_WORK_Q"
   _DSEARCH_DIRTY=0
   _dsearch_sel=0
   return 0
 }
 
+# If the query only grew, re-score the current hits with the same awk (tiny src).
+_dsearch_preview_if_prefix() {
+  emulate -L zsh
+  local tmp top
+  local -a prev
+  [[ -n $_dsearch_q && -n $_DSEARCH_SHOWN_Q ]] || return 1
+  [[ $_dsearch_q == ${_DSEARCH_SHOWN_Q}* ]] || return 1
+  (( $#_dsearch_matches )) || return 1
+  tmp="$_dsearch_tmpdir"
+  [[ -n $tmp && -d $tmp ]] || return 1
+  prev=("${_dsearch_matches[@]}")
+  print -l -- "${prev[@]}" > "$tmp/narrow"
+  top=("${(@f)$(_dsearch_awk_filter "$_dsearch_q" 10 "$tmp/narrow")}")
+  _dsearch_take_top "${top[@]}"
+  _dsearch_pin_jumps "$_dsearch_q" 10
+  return 0
+}
+
 # ~30ms: reap a finished job; start one for the live query if idle. Do not cancel in-flight.
 _dsearch_maybe_tick() {
-  local now
+  local now f
   now="$(_dsearch_now_ms)"
   if (( now > 0 && _DSEARCH_LAST_TICK > 0 && now - _DSEARCH_LAST_TICK < 30 )); then
     return 0
@@ -841,7 +863,23 @@ _dsearch_maybe_tick() {
     _dsearch_worker_reap
   fi
   if _dsearch_worker_poll; then
+    _DSEARCH_IDLE_TICKS=0
     _dsearch_draw "$_dsearch_q"
+  elif (( _DSEARCH_WORKER_PID > 1 )) && [[ $_dsearch_q == "$_DSEARCH_WORK_Q" ]]; then
+    # Child not producing hits — iSH often never schedules it. Same awk, in-process.
+    (( _DSEARCH_IDLE_TICKS++ ))
+    f="$_dsearch_tmpdir/hits.$_DSEARCH_GEN"
+    if (( _DSEARCH_IDLE_TICKS >= 8 )) && [[ ! -f $f && ! -f $_dsearch_tmpdir/run.$_DSEARCH_GEN ]]; then
+      _dsearch_worker_stop
+      _dsearch_apply_filter "$_dsearch_q" 10
+      _DSEARCH_SHOWN_Q="$_dsearch_q"
+      _DSEARCH_WORK_Q="$_dsearch_q"
+      _DSEARCH_DIRTY=0
+      _DSEARCH_IDLE_TICKS=0
+      _dsearch_draw "$_dsearch_q"
+    fi
+  else
+    _DSEARCH_IDLE_TICKS=0
   fi
   if [[ -z $_dsearch_q ]]; then
     if (( _DSEARCH_WORKER_PID > 1 )) || [[ -n $_DSEARCH_SHOWN_Q ]]; then
@@ -865,6 +903,9 @@ _dsearch_note_query() {
   _DSEARCH_DIRTY=1
   _dsearch_paint_row bar "$_dsearch_q"
   _dsearch_place_cursor
+  if _dsearch_preview_if_prefix; then
+    _dsearch_draw "$_dsearch_q"
+  fi
   _dsearch_maybe_tick
 }
 
@@ -910,8 +951,9 @@ _dsearch_yield() {
 }
 
 # 0 = REPLY is a key; 1 = 30ms tick. Waiting keys never wait.
+# Never block on read/select-for-stdin: on iSH those can wait forever
+# (tty looks readable, or read -t never times out) and the ranker starves.
 _dsearch_wait_key() {
-  local k
   REPLY=""
   (( ${DNAV_ABORT:-0} )) && return 1
   if [[ -n ${_DSEARCH_PUSHBACK:-} ]]; then
@@ -922,26 +964,9 @@ _dsearch_wait_key() {
   if (( $+functions[_dnav_try_read_token] )) && _dnav_try_read_token; then
     return 0
   fi
-  # Idle wait must yield: read -t often never times out on iSH, so the
-  # ranker never runs until another key. Same awk worker as everywhere else.
-  if [[ -t 0 ]] && zmodload -F zsh/zselect b:zselect 2>/dev/null; then
-    if zselect -t 3 -r 0 2>/dev/null; then
-      if read -k 1 k 2>/dev/null; then
-        (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
-        [[ -n $k ]] || return 1
-        if (( $+functions[_dnav_classify_key] )); then
-          _dnav_classify_key "$k"
-        else
-          REPLY="$k"
-        fi
-        return 0
-      fi
-    fi
-  else
-    _dsearch_yield
-    if (( $+functions[_dnav_try_read_token] )) && _dnav_try_read_token; then
-      return 0
-    fi
+  _dsearch_yield
+  if (( $+functions[_dnav_try_read_token] )) && _dnav_try_read_token; then
+    return 0
   fi
   (( $+functions[_dnav_maybe_resize] )) && _dnav_maybe_resize
   if (( ! ${_DNAV_RESIZE_MODE:-0} )) && (( $+functions[_dnav_status_tick] )) && _dnav_status_tick; then
@@ -1018,6 +1043,7 @@ _dsearch_start() {
   _DSEARCH_WORKER_PID=0
   _DSEARCH_GEN=0
   _DSEARCH_LAST_TICK=0
+  _DSEARCH_IDLE_TICKS=0
   _DSEARCH_WORK_Q=""
   _DSEARCH_SHOWN_Q=""
   _DSEARCH_DIRTY=0
