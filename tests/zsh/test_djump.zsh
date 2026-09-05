@@ -8,6 +8,7 @@ ROOT="${0:A:h:h:h}"
 source "$ROOT/tests/lib/zsh_assert.zsh"
 source "$ROOT/tests/lib/zsh_env.zsh"
 dnav_test_setup_zsh
+_dnav_load_module djump
 
 test_load_jumps() {
   _DJUMP_LOADED=0

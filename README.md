@@ -39,8 +39,8 @@ If the repo is not next to the install: `DNAV_UPDATE_FROM=/path/to/DNav dnav --u
 | `djump -l` / `dhelp` | list jumps |
 | `dconfig -r` | reload config |
 | `dconfig -e` | edit config in `$EDITOR` |
-| `dnav --reindex` | rebuild the search index |
-| `dnav --reindex --from FILE` | install a path list as the index |
+| `dnav --reindex` | crawl and rebuild the search index (needs `dindexer`) |
+| `dnav --reindex --from FILE` | install a path list as the index (no crawl) |
 
 TUI: `h`/`l` or arrows move, Enter opens, `/` or `s` search, `f` files. The About chip has Help and Settings.
 
@@ -54,7 +54,7 @@ TUI: `h`/`l` or arrows move, Enter opens, `/` or `s` search, `f` files. The Abou
 
 `dconfig -r` after edits, or About → Settings.
 
-Search indexes `$HOME` unless `search_roots` / `DNAV_SEARCH_ROOTS` is set. `index_auto`, `index_when`, and `index_ttl_hours` control rebuilds; `index_auto = 0` means only `dnav --reindex`.
+Search reads `dirs.idx`. Auto-crawl (`index_auto` / `index_when` / `index_ttl_hours`) needs the `dindexer` plugin; omit that file to disable walking the disk. `index_file` or `dnav --reindex --from FILE` installs a path list with no crawl. `search_roots` / `DNAV_SEARCH_ROOTS` apply to the crawler.
 
 ## Tests
 

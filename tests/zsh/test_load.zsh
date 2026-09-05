@@ -9,6 +9,29 @@ source "$ROOT/tests/lib/zsh_assert.zsh"
 source "$ROOT/tests/lib/zsh_env.zsh"
 dnav_test_setup_zsh
 
+test_djump_lazy_until_available() {
+  if (( $+functions[_djump_goto] )); then
+    _dnav_test_fail "sourcing dnav should not load djump"
+  else
+    _dnav_test_pass "djump is not sourced with dnav"
+  fi
+  assert_ok _djump_available
+  assert_fn _djump_goto
+}
+
+test_crawler_not_sourced_with_dnav() {
+  if (( $+functions[_dsearch_find_dirs] )); then
+    _dnav_test_fail "dnav source should not load the crawler"
+  else
+    _dnav_test_pass "crawler is not sourced with dnav"
+  fi
+  if (( $+functions[_dindexer_available] )); then
+    _dnav_test_fail "dindexer should stay lazy"
+  else
+    _dnav_test_pass "dindexer is not sourced with dnav"
+  fi
+}
+
 test_modules_available() {
   assert_ok _dnav_config_dir
   assert_ok _djump_available
@@ -453,7 +476,7 @@ test_sleep_ms_survives_sigchld() {
 
 test_syntax_zsh_scripts() {
   local f
-  for f in dnav dfile djump dsearch; do
+  for f in dnav dfile djump dsearch dsearch-index dindexer; do
     if zsh -n "$DNAV_ZSH_DIR/$f" 2>/dev/null; then
       _dnav_test_pass "zsh -n $f"
     else
@@ -462,6 +485,8 @@ test_syntax_zsh_scripts() {
   done
 }
 
+run_test test_djump_lazy_until_available
+run_test test_crawler_not_sourced_with_dnav
 run_test test_modules_available
 run_test test_winch_helpers_exist
 run_test test_resize_waits_for_steady_stty

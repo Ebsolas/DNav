@@ -27,7 +27,7 @@ UNINSTALL=0
 UPDATE=0
 
 # Files shipped with the package (relative to PACKAGE_DIR)
-PACKAGE_FILES=(dnav dfile djump dsearch dsearch-index jumps)
+PACKAGE_FILES=(dnav dfile djump dsearch dsearch-index dindexer jumps)
 
 # Markers for idempotent .zshrc edits
 RC_BEGIN="# >>> dnav >>>"
@@ -155,7 +155,7 @@ zcompile_zsh() {
   zsh -f -c '
     emulate -L zsh
     local f
-    for f in dnav djump dfile dsearch dsearch-index; do
+    for f in dnav djump dfile dsearch dsearch-index dindexer; do
       [[ -f $1/$f ]] || continue
       zcompile -U -- "$1/$f" 2>/dev/null || true
     done

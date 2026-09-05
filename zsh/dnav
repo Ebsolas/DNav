@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # dnav — folder bar TUI
 #
-# Optional siblings in this directory: dfile, dsearch, dsearch-index, djump
+# Optional siblings in this directory: dfile, dsearch, dsearch-index, dindexer, djump
 # Config: ~/.config/dnav/{config,folders,jumps}
 # Env: DNAV_CONFIG_DIR, DNAV_JUMPS, DNAV_SEARCH_ROOTS
 
@@ -740,7 +740,7 @@ _dnav_update() {
   dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
   if [[ ${dest:A} != ${repo:A}/zsh ]]; then
     print -r -- "dnav: $repo  →  $dest"
-    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch dsearch-index jumps || {
+    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch dsearch-index dindexer jumps || {
       print -u2 -- "dnav: failed to copy zsh scripts"
       return 1
     }
@@ -748,7 +748,7 @@ _dnav_update() {
       command mkdir -p -- "$dest/shell"
       command cp -f -- "$repo/shell"/dnav.sh "$repo/shell"/dnav.zsh "$repo/shell"/dnav.fish "$repo/shell"/dnav.ps1 "$dest/shell/" 2>/dev/null || true
     fi
-    zsh -f -c 'emulate -L zsh; local f; for f in dnav djump dfile dsearch dsearch-index; do
+    zsh -f -c 'emulate -L zsh; local f; for f in dnav djump dfile dsearch dsearch-index dindexer; do
       [[ -f $1/$f ]] && zcompile -U -- $1/$f 2>/dev/null || true
     done' zsh "$dest" || true
     if [[ -f $repo/install.sh ]]; then
@@ -983,7 +983,7 @@ _dnav_paint_strip() {
   reply=($win)
 }
 
-# djump is eager. dfile/dsearch load on first use; dsearch-index for auto-index/--reindex.
+# dfile/dsearch/dindexer/djump load on first use. dsearch-index is the idx library.
 _dnav_load_module() {
   local name="$1" f
   f="$DNAV_DIR/$name"
@@ -994,6 +994,11 @@ _dnav_load_module() {
       ;;
     dsearch-index)
       (( $+functions[_dsearch_reindex] )) && return 0
+      [[ -f $f ]] && source "$f"
+      ;;
+    dindexer)
+      (( $+functions[_dindexer_available] )) && return 0
+      _dnav_load_module dsearch-index
       [[ -f $f ]] && source "$f"
       ;;
     dsearch)
@@ -1008,8 +1013,6 @@ _dnav_load_module() {
   esac
 }
 
-[[ -f "$DNAV_DIR/djump" ]] && source "$DNAV_DIR/djump"
-
 _dfile_available() {
   _dnav_load_module dfile
   (( $+functions[_dfile_enter] ))
@@ -1018,7 +1021,12 @@ _dsearch_available() {
   _dnav_load_module dsearch
   (( $+functions[_dsearch_start] ))
 }
-(( $+functions[_djump_available] )) || _djump_available() { return 1 }
+if (( ! $+functions[_djump_available] )); then
+  _djump_available() {
+    _dnav_load_module djump
+    (( $+functions[_djump_goto] ))
+  }
+fi
 # Re-source plugins already in this shell (lazy load would keep the old copy).
 if (( $+functions[_dfile_enter] )); then
   [[ -f $DNAV_DIR/dfile ]] && source "$DNAV_DIR/dfile"
@@ -1026,9 +1034,27 @@ fi
 if (( $+functions[_dsearch_reindex] )); then
   [[ -f $DNAV_DIR/dsearch-index ]] && source "$DNAV_DIR/dsearch-index"
 fi
+if (( $+functions[_dindexer_available] )); then
+  [[ -f $DNAV_DIR/dindexer ]] && source "$DNAV_DIR/dindexer"
+fi
 if (( $+functions[_dsearch_start] )); then
   [[ -f $DNAV_DIR/dsearch ]] && source "$DNAV_DIR/dsearch"
 fi
+if (( $+functions[_djump_goto] )); then
+  [[ -f $DNAV_DIR/djump ]] && source "$DNAV_DIR/djump"
+fi
+
+# After the first bar paint: import index_file (no find) and/or start dindexer.
+_dnav_maybe_autoindex() {
+  if [[ -n ${DNAV_CFG_INDEX_FILE:-} ]]; then
+    _dnav_load_module dsearch-index
+    (( $+functions[_dsearch_index_apply_file] )) && _dsearch_index_apply_file
+  fi
+  if [[ -f $DNAV_DIR/dindexer ]]; then
+    _dnav_load_module dindexer
+    (( $+functions[_dindexer_on_open] )) && _dindexer_on_open
+  fi
+}
 
 # $1 = dnav | djump (inherit ls_after when the specific flag is -1)
 _dnav_want_ls() {
@@ -2626,11 +2652,6 @@ dnav() {
   printf "\e[?25l"
   _dnav_autowrap_off
 
-  _dnav_load_module dsearch-index
-  if (( $+functions[_dsearch_index_wanted] )) && _dsearch_index_wanted open; then
-    _dsearch_index_start_bg
-  fi
-
   _dnav_sync_term_size
   _dnav_mark_size
 
@@ -2667,6 +2688,7 @@ dnav() {
 
   _dnav_compute_positions
   _dnav_draw
+  _dnav_maybe_autoindex
 
   while true; do
     _dnav_aborted && return 130

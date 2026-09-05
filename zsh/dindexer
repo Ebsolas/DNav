@@ -1,0 +1,317 @@
+#!/usr/bin/env zsh
+# dindexer — optional filesystem crawler for dirs.idx
+# Depends on dsearch-index. Omit this file to disable walking the disk.
+
+if (( ! $+functions[_dsearch_index_path] )); then
+  _dindexer_lib="${DNAV_DIR:-${${(%):-%x}:A:h}}/dsearch-index"
+  [[ -f $_dindexer_lib ]] && source "$_dindexer_lib"
+  unset _dindexer_lib
+fi
+
+_dindexer_available() { return 0 }
+
+# 1 if the path is virtual or not useful to navigate.
+_dsearch_skip_root() {
+  case $1 in
+    /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/user/*|/run/systemd/*) return 0 ;;
+    /boot|/boot/*|/tmp|/var/tmp|/var/log|/var/cache|/var/lib/docker/*) return 0 ;;
+    /snap|/var/lib/snapd/snap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Roots to index.
+_dsearch_collect_roots() {
+  local -a roots
+  local -A seen
+  local r m
+
+  _dsearch_add_root() {
+    local p="$1"
+    [[ -n $p && -d $p && -r $p ]] || return
+    _dsearch_skip_root "$p" && return
+    if (( $+functions[_dnav_logical_path] )); then
+      p="$(_dnav_logical_path "$p")"
+    else
+      p="${p:a}"
+    fi
+    [[ -n ${seen[$p]:-} ]] && return
+    seen[$p]=1
+    roots+=("$p")
+  }
+
+  if [[ -n ${DNAV_SEARCH_ROOTS:-} ]]; then
+    for r in ${=DNAV_SEARCH_ROOTS}; do
+      _dsearch_add_root "$r"
+    done
+    print -l -- "${roots[@]}"
+    return 0
+  fi
+
+  # Default: $HOME only. Add more with DNAV_SEARCH_ROOTS or search_roots=.
+  _dsearch_add_root "$HOME"
+  print -l -- "${roots[@]}"
+}
+
+# Dirs under $1, prune noisy trees. Extra find flags follow. No -readable.
+_dsearch_find_dirs() {
+  local root="$1"
+  shift
+  find "$root" "$@" \
+    \( \
+      -name .git -o -name node_modules -o -name target -o \
+      -name __pycache__ -o -name .npm -o -name .cargo -o \
+      -name .cache -o -path '*/.cache/*' -o \
+      -path '*/.local/share/Trash' -o -path '*/.local/share/Trash/*' -o \
+      -name Trash -o -name .Trash -o -name Caches -o \
+      -name .gradle -o -name .m2 -o -name vendor -o \
+      -name .tox -o -name .venv -o -name venv -o -name '.Trash-*' \
+    \) -prune -o -type d -print 2>/dev/null
+}
+
+_dsearch_walk_tree() {
+  local r="$1"
+  if find "$r" -xdev -maxdepth 0 >/dev/null 2>&1; then
+    _dsearch_find_dirs "$r" -xdev
+  else
+    _dsearch_find_dirs "$r"
+  fi
+}
+
+# Immediate subdirs of $1 as "mtime name", sorted.
+_dsearch_top_children() {
+  local root="$1" p m
+  [[ -d $root ]] || return 0
+  find "$root" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | while IFS= read -r p; do
+    [[ -n $p ]] || continue
+    m="$(_dsearch_file_mtime "$p")" || m=0
+    print -r -- "$m ${p##*/}"
+  done | sort
+}
+
+_dsearch_meta_children_for() {
+  local meta="$1" root="$2"
+  [[ -f $meta ]] || return 0
+  awk -v root="$root" '
+    $1 == "r" {
+      inroot = ($0 == "r " root)
+      next
+    }
+    inroot && $1 == "c" { print substr($0, 3) }
+  ' "$meta"
+}
+
+# Lines from $1 that are $2 or $2/*.
+_dsearch_emit_under() {
+  local src="$1" prefix="$2"
+  [[ -f $src && -n $prefix ]] || return 0
+  awk -v p="$prefix" '
+    $0 == p || index($0, p "/") == 1 { print }
+  ' "$src"
+}
+
+# Walk into $idx. $2 = running count file. $3 = tmp (default $idx.building).
+# DNAV_INDEX_FULL=1 ignores the sidecar and walks every root.
+_dsearch_build_index_with_count() {
+  local idx="$1" countfile="$2"
+  local tmp="${3:-${idx}.building}"
+  local meta old="" full=0
+  local -a roots
+  local r n=0 line first=1 sig oldsig name pause=0
+
+  mkdir -p "${idx:h}" 2>/dev/null || return 1
+  roots=("${(@f)$(_dsearch_collect_roots)}")
+  (( $#roots )) || roots=("$HOME")
+  (( ${DNAV_INDEX_FULL:-0} )) && full=1
+  pause=0
+  if (( $#roots > 1 )) && ! _dsearch_constrained_env; then
+    pause=1
+  fi
+
+  print -rn -- 0 > "$countfile"
+  : > "$tmp"
+  meta="$(_dsearch_meta_path).building"
+  print -r -- "v 1" > "$meta"
+  [[ -f $idx && -s $idx && full -eq 0 ]] && old="$idx"
+
+  {
+    for r in "${roots[@]}"; do
+      [[ -d $r ]] || continue
+      if (( pause && ! first )); then
+        sleep 0.25 2>/dev/null || true
+      fi
+      first=0
+      print -r -- "r $r" >> "$meta"
+      sig="$(_dsearch_top_children "$r")"
+      typeset -A old_set sig_set
+      old_set=()
+      sig_set=()
+      while IFS= read -r line; do
+        [[ -z $line ]] && continue
+        sig_set[$line]=1
+        print -r -- "c $line" >> "$meta"
+      done <<< "$sig"
+      oldsig="$(_dsearch_meta_children_for "$(_dsearch_meta_path)" "$r")"
+      if (( ! full )) && [[ -n $old && -n $sig && $sig == "$oldsig" ]]; then
+        _dsearch_emit_under "$old" "$r"
+        continue
+      fi
+      if (( full )) || [[ -z $old || -z $oldsig ]]; then
+        _dsearch_walk_tree "$r"
+        continue
+      fi
+      while IFS= read -r line; do
+        [[ -n $line ]] && old_set[$line]=1
+      done <<< "$oldsig"
+      print -r -- "$r"
+      for line in ${(k)old_set}; do
+        [[ -n ${sig_set[$line]:-} ]] || continue
+        name="${line#* }"
+        [[ -n $name ]] || continue
+        _dsearch_emit_under "$old" "$r/$name"
+      done
+      for line in ${(k)sig_set}; do
+        [[ -n ${old_set[$line]:-} ]] && continue
+        name="${line#* }"
+        [[ -n $name && -d $r/$name ]] || continue
+        _dsearch_walk_tree "$r/$name"
+      done
+    done
+  } | {
+    n=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -z $line ]] && continue
+      print -r -- "$line"
+      (( n++ ))
+      if (( n % 10 == 0 )); then
+        print -rn -- $n > "$countfile"
+      fi
+    done
+    print -rn -- $n > "$countfile"
+  } >> "$tmp"
+
+  if [[ -f $tmp ]]; then
+    n=$(wc -l < "$tmp" 2>/dev/null | tr -cd '0-9')
+    print -rn -- ${n:-0} > "$countfile"
+  fi
+
+  if command -v sort >/dev/null 2>&1; then
+    sort -u "$tmp" -o "$tmp" 2>/dev/null || true
+  fi
+
+  mv -f "$tmp" "$idx" 2>/dev/null || return 1
+  mv -f "$meta" "$(_dsearch_meta_path)" 2>/dev/null || true
+  _dsearch_write_hot "$idx"
+  return 0
+}
+
+# Detached find-walk. $1=1|--force ignores TTL. Does not import index_file.
+_dindexer_start_bg() {
+  local force=0 idx countfile pidfile lock tmp self=""
+  case ${1:-} in
+    1|--force) force=1 ;;
+  esac
+  idx="$(_dsearch_index_path)"
+
+  if (( _DSEARCH_INDEX_PID > 0 )) && ! kill -0 $_DSEARCH_INDEX_PID 2>/dev/null; then
+    _DSEARCH_INDEX_PID=0
+  fi
+
+  if (( force )); then
+    if _dsearch_index_running; then
+      _dsearch_index_cancel
+    fi
+  else
+    if ! _dsearch_index_stale "$idx"; then
+      _DSEARCH_INDEX_STATE=done
+      return 0
+    fi
+    if _dsearch_index_running; then
+      return 0
+    fi
+  fi
+
+  mkdir -p "$(_dsearch_index_dir)" 2>/dev/null || return 1
+  lock="$(_dsearch_index_lock_dir)"
+  if ! mkdir -- "$lock" 2>/dev/null; then
+    if _dsearch_index_running; then
+      return 0
+    fi
+    rmdir -- "$lock" 2>/dev/null || true
+    mkdir -- "$lock" 2>/dev/null || return 0
+  fi
+
+  countfile="$(_dsearch_index_dir)/index.count"
+  pidfile="$(_dsearch_index_dir)/index.pid"
+  tmp="${idx}.building"
+  _DSEARCH_INDEX_COUNT_FILE="$countfile"
+  _DSEARCH_INDEX_PID_FILE="$pidfile"
+  _DSEARCH_INDEX_TMP="$tmp"
+  print -rn -- 0 > "$countfile"
+  _DSEARCH_INDEX_STATE=running
+  _DSEARCH_INDEX_HAS_SID=0
+
+  if _dsearch_constrained_env; then
+    export DNAV_SEARCH_LIGHT=1
+  fi
+  if (( force )); then
+    export DNAV_INDEX_FULL=1
+  else
+    export DNAV_INDEX_FULL=0
+  fi
+
+  if [[ -n ${DNAV_DIR:-} && -f $DNAV_DIR/dindexer ]]; then
+    self="$DNAV_DIR/dindexer"
+  elif [[ -n ${(%):-%x} ]]; then
+    self="${${(%):-%x}:A}"
+  fi
+  [[ -f $self ]] || self=""
+
+  # Detached external zsh — not a job of the interactive shell.
+  # setsid so cancel can kill that group only (never the interactive shell).
+  # nice/ionice so a due rebuild yields to interactive work.
+  if [[ -n $self ]]; then
+    local body='
+      command -v ionice >/dev/null 2>&1 && ionice -c3 -t -p $$ 2>/dev/null || true
+      command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true
+      emulate -L zsh
+      setopt nomonitor nonotify
+      source "$1"
+      _dsearch_build_index_with_count "$2" "$3" "$4"
+      rm -f -- "$5"
+      rmdir -- "${2:h}/index.lock" 2>/dev/null || true
+    '
+    if command -v setsid >/dev/null 2>&1; then
+      nohup setsid zsh -fc "$body" dnav-index-worker "$self" "$idx" "$countfile" "$tmp" "$pidfile" \
+        </dev/null >/dev/null 2>&1 &!
+      _DSEARCH_INDEX_HAS_SID=1
+    else
+      nohup zsh -fc "$body" dnav-index-worker "$self" "$idx" "$countfile" "$tmp" "$pidfile" \
+        </dev/null >/dev/null 2>&1 &!
+    fi
+    _DSEARCH_INDEX_PID=$!
+  else
+    setopt localoptions nomonitor nonotify
+    (
+      command -v ionice >/dev/null 2>&1 && ionice -c3 -t -p $$ 2>/dev/null || true
+      command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true
+      _dsearch_build_index_with_count "$idx" "$countfile" "$tmp"
+      rm -f -- "$pidfile"
+      _dsearch_index_unlock
+    ) </dev/null >/dev/null 2>&1 &!
+    _DSEARCH_INDEX_PID=$!
+  fi
+  print -rn -- $_DSEARCH_INDEX_PID > "$pidfile"
+  return 0
+}
+
+# After the main bar is up. Honors index_when=open.
+_dindexer_on_open() {
+  _dsearch_index_wanted open || return 0
+  _dsearch_index_start_bg
+}
+
+# Search overlay: start a walk if needed and wait (empty idx is ok).
+_dindexer_ensure() {
+  _dsearch_index_wait_ui
+}

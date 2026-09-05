@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # dsearch — fuzzy directory search overlay
-# Indexer: dsearch-index
+# Index library: dsearch-index. Disk crawl: optional dindexer.
 
 if (( ! $+functions[_dsearch_reindex] )); then
   _dsearch_idx="${DNAV_DIR:-${${(%):-%x}:A:h}}/dsearch-index"

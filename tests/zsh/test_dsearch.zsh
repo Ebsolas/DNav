@@ -142,6 +142,7 @@ test_import_index_from_file() {
 
 test_sidecar_skips_unchanged_root() {
   local idx count meta
+  _dnav_load_module dindexer
   idx="$(_dsearch_index_path)"
   dnav_test_write_index "$idx"
   print -r -- "$HOME/.sidecar-sentinel" >> "$idx"
@@ -642,6 +643,7 @@ test_constrained_env_light_flag() {
 test_collect_roots_space_in_home() {
   local oldhome="$HOME" dir roots_out
   local -a roots
+  _dnav_load_module dindexer
   dir="$DNAV_TEST_TMP/My Docs"
   mkdir -p -- "$dir"
   HOME="$dir"
@@ -660,6 +662,7 @@ test_collect_roots_space_in_home() {
 test_collect_roots_default_is_home() {
   local oldhome="$HOME"
   local -a roots
+  _dnav_load_module dindexer
   unset DNAV_SEARCH_ROOTS DNAV_SEARCH_LIGHT
   HOME="$DNAV_TEST_HOME"
   roots=("${(@f)$(_dsearch_collect_roots)}")
@@ -674,6 +677,7 @@ test_collect_roots_default_is_home() {
 test_collect_roots_env_override() {
   local extra="$DNAV_TEST_TMP/extra-root"
   local -a roots
+  _dnav_load_module dindexer
   mkdir -p -- "$extra"
   DNAV_SEARCH_ROOTS="$HOME $extra"
   roots=("${(@f)$(_dsearch_collect_roots)}")
@@ -699,6 +703,7 @@ test_index_module_standalone() {
     source "'"$ROOT"'/zsh/dsearch-index"
     (( $+functions[_dsearch_reindex] )) || exit 1
     (( $+functions[_dsearch_start] )) && exit 2
+    (( $+functions[_dsearch_find_dirs] )) && exit 3
     _dsearch_reindex --help
   ')" || {
     _dnav_test_fail "dsearch-index alone failed (exit $?)"
@@ -716,7 +721,58 @@ test_search_plugin_loads_index() {
   assert_fn _dsearch_apply_filter
 }
 
+test_reindex_walk_without_dindexer() {
+  local dir="$DNAV_TEST_TMP/no-crawl" st out
+  mkdir -p -- "$dir"
+  cp -- "$ROOT/zsh/dsearch-index" "$dir/dsearch-index"
+  out="$(
+    zsh -fc '
+      emulate -L zsh
+      DNAV_DIR="$1"
+      source "$1/dsearch-index"
+      _dsearch_reindex
+    ' zsh "$dir" 2>&1
+  )"
+  st=$?
+  if (( st != 0 )); then
+    _dnav_test_pass "bare --reindex fails without dindexer"
+  else
+    _dnav_test_fail "bare --reindex should fail without dindexer: $out"
+  fi
+  assert_contains "$out" "--from" "error points at --from"
+}
+
+test_reindex_from_without_dindexer() {
+  local dir="$DNAV_TEST_TMP/no-crawl-from" src n
+  mkdir -p -- "$dir" "$HOME/Documents"
+  cp -- "$ROOT/zsh/dsearch-index" "$dir/dsearch-index"
+  src="$dir/list"
+  print -r -- "$HOME/Documents" > "$src"
+  n="$(
+    XDG_CACHE_HOME="$DNAV_TEST_TMP/no-crawl-cache" HOME="$HOME" zsh -fc '
+      emulate -L zsh
+      DNAV_DIR="$1"
+      source "$1/dsearch-index"
+      _dsearch_reindex --from "$2"
+    ' zsh "$dir" "$src"
+  )"
+  assert_contains "$n" "indexed" "import works without dindexer"
+}
+
+test_dindexer_plugin_has_crawler() {
+  _dnav_load_module dindexer
+  assert_fn _dindexer_available
+  assert_fn _dindexer_start_bg
+  assert_fn _dsearch_find_dirs
+  assert_fn _dsearch_build_index_with_count
+}
+
+test_maybe_autoindex_exists() {
+  assert_fn _dnav_maybe_autoindex
+}
+
 test_find_dirs_exists_dead_hooks_gone() {
+  _dnav_load_module dindexer
   assert_fn _dsearch_find_dirs
   if (( $+functions[_dsearch_in_dfile] )); then
     _dnav_test_fail "_dsearch_in_dfile should be gone"
@@ -738,6 +794,10 @@ run_test test_collect_roots_env_override
 run_test test_index_cancel_refuses_pid_1
 run_test test_index_module_standalone
 run_test test_search_plugin_loads_index
+run_test test_reindex_walk_without_dindexer
+run_test test_reindex_from_without_dindexer
+run_test test_dindexer_plugin_has_crawler
+run_test test_maybe_autoindex_exists
 run_test test_index_path
 run_test test_hot_path
 run_test test_index_not_stale_when_fresh
