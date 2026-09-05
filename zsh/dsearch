@@ -35,9 +35,12 @@ _dsearch_session_cleanup() {
   _DSEARCH_WORKER_PID=0
   _DSEARCH_GEN=0
   _DSEARCH_LAST_TICK=0
+  _DSEARCH_LAST_KEY_MS=0
   _DSEARCH_IDLE_TICKS=0
   _DSEARCH_WORK_Q=""
   _DSEARCH_SHOWN_Q=""
+  _DSEARCH_PHASE=""
+  _DSEARCH_USED_FULL=0
 }
 
 _dsearch_cur_clamp() {
@@ -87,9 +90,10 @@ _dsearch_place_cursor() {
   printf "\r\e[6 q\e[%dG\e[?25h" $col
 }
 
-# query, maxn, src_file → top paths. Soft-AND; all-token hits beat near-misses.
+# query, maxn, src_file [, fuzzy] → top paths. Soft-AND; all-token hits beat near-misses.
+# fuzzy=0 skips edit_dist (hot pass). Order is a within-band weight, not a filter.
 _dsearch_awk_filter() {
-  local query="$1" maxn="$2" src="$3"
+  local query="$1" maxn="$2" src="$3" fuzzy="${4:-1}"
   local home_p config_p data_p state_p cache_p
   [[ -n $src ]] || src="$(_dsearch_index_path)"
   [[ -f $src ]] || return 0
@@ -104,7 +108,7 @@ _dsearch_awk_filter() {
   state_p="${state_p%/}"
   cache_p="${cache_p%/}"
 
-  awk -v query="$query" -v maxn="$maxn" \
+  awk -v query="$query" -v maxn="$maxn" -v fuzzy="$fuzzy" \
       -v home="$home_p" \
       -v xdg_config="$config_p" -v xdg_data="$data_p" \
       -v xdg_state="$state_p" -v xdg_cache="$cache_p" '
@@ -127,8 +131,8 @@ _dsearch_awk_filter() {
     tpath[i] = path
   }
 
-  function norm(s) {
-    if (substr(s, 1, 1) == ".") s = substr(s, 2)
+  function strip_dot(s) {
+    if (substr(s, 1, 1) == ".") return substr(s, 2)
     return s
   }
   function stem_s(s) {
@@ -178,29 +182,45 @@ _dsearch_awk_filter() {
   }
 
   # Score tok against one path component. 100 = last-component exact.
+  # Dots are kept: .cache ≠ cache (bare cache still matches .cache, weaker).
   # Prefix of a component is enough (typeahead). No letter-skip across the path.
-  function token_hit(tok, seg, islast,   t, s, idx, extra, d, maxd) {
-    t = norm(tolower(tok))
-    s = norm(tolower(seg))
+  function token_hit(tok, seg, islast,   t, s, tnd, snd, tok_dot, seg_dot, idx, extra, d, maxd) {
+    t = tolower(tok)
+    s = tolower(seg)
     if (t == "" || s == "") return -1
+    tok_dot = (substr(t, 1, 1) == ".")
+    seg_dot = (substr(s, 1, 1) == ".")
+    tnd = strip_dot(t)
+    snd = strip_dot(s)
+    if (tnd == "" || snd == "") return -1
     if (t == s) return islast ? 100 : 86
-    if (t != s && stem_s(t) == stem_s(s)) return islast ? 92 : 80
-    if (length(t) == 1) {
+    if (tnd == snd) {
+      if (!tok_dot && seg_dot) return islast ? 94 : 80
+      if (tok_dot && !seg_dot) return islast ? 90 : 76
+      return islast ? 100 : 86
+    }
+    if (stem_s(tnd) == stem_s(snd) && stem_s(tnd) != tnd) {
+      if (!tok_dot && seg_dot) return islast ? 88 : 76
+      return islast ? 92 : 80
+    }
+    if (length(tnd) == 1) {
       if (substr(s, 1, 1) == t) return islast ? 48 : 36
+      if (substr(snd, 1, 1) == tnd) return islast ? 44 : 32
       return -1
     }
     idx = index(s, t)
+    if (idx != 1) idx = index(snd, tnd)
     if (idx == 1) {
-      extra = length(s) - length(t)
+      extra = length(snd) - length(tnd)
       if (extra < 0) extra = 0
       if (extra > 8) extra = 8
       return (islast ? 88 : 74) - 2 * extra
     }
     if (idx > 1) return islast ? 68 : 58
-    if (length(t) >= 4) {
-      if (is_transpose(t, s) || first_two_swap(t, s)) return islast ? 78 : 66
-      maxd = (length(t) < 6) ? 1 : 2
-      d = edit_dist(t, s, maxd)
+    if (fuzzy && length(tnd) >= 4) {
+      if (is_transpose(tnd, snd) || first_two_swap(tnd, snd)) return islast ? 78 : 66
+      maxd = (length(tnd) < 6) ? 1 : 2
+      d = edit_dist(tnd, snd, maxd)
       if (d == 1) return islast ? 78 : 66
       if (d == 2) return islast ? 62 : 52
     }
@@ -219,31 +239,42 @@ _dsearch_awk_filter() {
     n = tolower(name)
     return (n == "documents" || n == "downloads" || n == "desktop" || n == "pictures" || n == "music" || n == "videos" || n == "projects")
   }
-  function first_home_seg(path,   rest, n, segs) {
-    if (!under(path, home) || path == home) return ""
-    rest = substr(path, length(home) + 2)
-    n = split(rest, segs, "/")
-    return (n > 0) ? segs[1] : ""
+  function is_scope_tok(tok,   n) {
+    n = tolower(tok)
+    n = strip_dot(n)
+    return (n == "etc" || n == "usr" || n == "var" || n == "opt" || n == "tmp" || n == "home" || n == "root" || n == "cache" || n == "config" || n == "local" || n == "desktop" || n == "documents" || n == "downloads" || n == "pictures" || n == "music" || n == "videos" || n == "projects" || n == "bin" || n == "lib" || n == "share" || n == "include")
   }
-  function rel_depth(path,   rest, n, segs, i, d) {
+  function fill_segs(path,   n, raw, i) {
+    n = split(path, raw, "/")
+    nseg = 0
+    for (i = 1; i <= n; i++) {
+      if (raw[i] == "") continue
+      nseg++
+      segs[nseg] = raw[i]
+    }
+  }
+  function first_home_seg(path) {
+    if (!under(path, home) || path == home) return ""
+    if (home_ncomp + 1 <= nseg) return segs[home_ncomp + 1]
+    return ""
+  }
+  function rel_depth(path,   rest, n, rs, i, d) {
     if (under(path, home)) {
       if (path == home) return 0
       rest = substr(path, length(home) + 2)
-      n = split(rest, segs, "/")
+      n = split(rest, rs, "/")
       d = 0
-      for (i = 1; i <= n; i++) if (segs[i] != "") d++
+      for (i = 1; i <= n; i++) if (rs[i] != "") d++
       return d
     }
-    n = split(path, segs, "/")
+    n = split(path, rs, "/")
     d = 0
-    for (i = 1; i <= n; i++) if (segs[i] != "") d++
+    for (i = 1; i <= n; i++) if (rs[i] != "") d++
     if (d > 0) d--
     return d
   }
-  function path_leaf(path,   n, segs) {
-    n = split(path, segs, "/")
-    while (n > 0 && segs[n] == "") n--
-    return (n > 0) ? segs[n] : ""
+  function path_leaf() {
+    return (nseg > 0) ? segs[nseg] : ""
   }
   function in_cache(path) {
     return (under(path, xdg_cache) || under(path, home "/.cache"))
@@ -265,19 +296,36 @@ _dsearch_awk_filter() {
     return -12
   }
   function cache_penalty(path) {
-    return in_cache(path) ? -18 : 0
+    if (!in_cache(path)) return 0
+    if (cache_intent) return 0
+    return -18
   }
   function depth_penalty(path,   d, p, leaf, h) {
-    leaf = path_leaf(path)
-    if (last_qtok != "" && leaf != "") {
+    leaf = path_leaf()
+    if (last_qtok != "" && leaf != "" && !is_scope_tok(last_qtok)) {
       h = token_hit(last_qtok, leaf, 1)
       if (h >= 88) return 0
     }
     d = rel_depth(path)
     if (d <= 2) return 0
     p = (d - 2) * 6
+    if (is_scope_tok(last_qtok)) p = (d - 2) * 12
     if (p > 24) p = 24
     return -p
+  }
+  function scope_boost(path,   i, j, d, hit, b) {
+    b = 0
+    for (j = 1; j <= nseg; j++) {
+      if (under(path, home) && home != "") d = j - home_ncomp
+      else d = j
+      if (d < 1 || d > 2) continue
+      for (i = 1; i <= ntok; i++) {
+        hit = token_hit(qtok[i], segs[j], 0)
+        if (hit >= 74) { b += 16; break }
+      }
+    }
+    if (b > 24) b = 24
+    return b
   }
   function pref_of(path,   p) {
     p = location_boost(path) + home_boost(path) + cache_penalty(path) + depth_penalty(path)
@@ -285,23 +333,45 @@ _dsearch_awk_filter() {
     if (p < -30) p = -30
     return p
   }
+  function order_weight(   i, mono, rev) {
+    if (nhit < 2) return 0
+    mono = 1
+    rev = 1
+    for (i = 2; i <= nhit; i++) {
+      if (hitj[i] < hitj[i - 1]) mono = 0
+      if (hitj[i] > hitj[i - 1]) rev = 0
+    }
+    if (mono) return 14
+    if (rev) return -8
+    return 0
+  }
 
-  # Whitespace splits tokens (any order; trailing space ignored).
+  # Whitespace splits tokens (trailing space ignored). Each token matches independently.
   # Soft AND: missed tokens score 0. All-token band is 200+avg; partials stay < 200.
-  function query_score(path,   i, j, nseg, hit, best, total, hits, avg) {
+  # Chosen segment indices add a within-band order bonus (or a smaller reverse penalty).
+  function query_score(path,   i, j, hit, best, bestj, total, hits, avg, prev) {
     if (ntok == 0) return -1
-    nseg = split(path, segs, "/")
     total = 0
     hits = 0
+    nhit = 0
+    prev = 0
     for (i = 1; i <= ntok; i++) {
       best = -1
+      bestj = 0
       for (j = 1; j <= nseg; j++) {
-        if (segs[j] == "") continue
         hit = token_hit(qtok[i], segs[j], (j == nseg))
-        if (hit > best) best = hit
+        if (hit > best) { best = hit; bestj = j }
+        else if (hit == best && best > 0 && prev > 0) {
+          if (j >= prev && bestj < prev) bestj = j
+        }
       }
       if (best < 0) best = 0
-      else hits++
+      else {
+        hits++
+        nhit++
+        hitj[nhit] = bestj
+        prev = bestj
+      }
       total += best
     }
     if (hits == 0) return -1
@@ -312,9 +382,10 @@ _dsearch_awk_filter() {
 
   function ingest(path,   base, sc) {
     if (path == "" || path in seen) return
+    fill_segs(path)
     base = query_score(path)
     if (base < 0) return
-    sc = base + pref_of(path)
+    sc = base + pref_of(path) + order_weight() + scope_boost(path)
     if (base >= 200 && sc < 200) sc = 200
     if (base < 200 && sc >= 200) sc = 199
     seen[path] = 1
@@ -322,13 +393,21 @@ _dsearch_awk_filter() {
   }
 
   BEGIN {
+    if (fuzzy == "") fuzzy = 1
     ntok = 0
     last_qtok = ""
+    cache_intent = 0
+    home_ncomp = 0
+    if (home != "") {
+      n = split(home, hs, "/")
+      for (i = 1; i <= n; i++) if (hs[i] != "") home_ncomp++
+    }
     n = split(query, tok, /[ \t]+/)
     for (i = 1; i <= n; i++) {
       if (tok[i] == "") continue
       ntok++
       qtok[ntok] = tok[i]
+      if (tolower(tok[i]) == ".cache") cache_intent = 1
     }
     if (ntok > 0) last_qtok = qtok[ntok]
     tn = 0
@@ -370,24 +449,176 @@ _dsearch_awk_filter() {
   ' "$src"
 }
 
+# 0 if $1 contains every whitespace token from $2 (substring, any order).
+_dsearch_tokens_in_path() {
+  emulate -L zsh
+  local p="${(L)1}" q="$2" tok
+  local -a toks
+  toks=(${=q})
+  (( $#toks )) || return 1
+  for tok in "${toks[@]}"; do
+    [[ -z $tok ]] && continue
+    [[ $p == *${(L)tok}* ]] || return 1
+  done
+  return 0
+}
+
+_dsearch_all_token_n() {
+  emulate -L zsh
+  local q="$1" p n=0
+  for p in "${_dsearch_matches[@]}"; do
+    _dsearch_tokens_in_path "$p" "$q" && (( n++ ))
+  done
+  print -rn -- $n
+}
+
+# 0 if hot-list leaf $1 is a strong match for token $2 (prefix/exact, optional dot).
+_dsearch_leaf_matches_token() {
+  emulate -L zsh
+  local leaf="${(L)1}" tok="${(L)2}"
+  local leaf_nd="${leaf#.}" tok_nd="${tok#.}"
+  [[ -z $tok_nd ]] && return 1
+  [[ $leaf == $tok || $leaf == $tok* || $leaf_nd == $tok_nd || $leaf_nd == $tok_nd* ]]
+}
+
+# Hot paths whose leaf a query token matches, excluding $HOME / /.
+_dsearch_scope_prefixes() {
+  emulate -L zsh
+  local query="$1" hot p leaf tok
+  local -a toks
+  local -A seen
+  hot="$(_dsearch_hot_path)"
+  [[ -f $hot && -s $hot ]] || return 0
+  toks=(${=query})
+  (( $#toks )) || return 0
+  while IFS= read -r p; do
+    [[ -n $p ]] || continue
+    [[ $p == "$HOME" || $p == / ]] && continue
+    leaf="${p:t}"
+    [[ -n $leaf ]] || continue
+    for tok in "${toks[@]}"; do
+      [[ -z $tok ]] && continue
+      if _dsearch_leaf_matches_token "$leaf" "$tok"; then
+        [[ -n ${seen[$p]:-} ]] && continue
+        seen[$p]=1
+        print -r -- "$p"
+        break
+      fi
+    done
+  done < "$hot"
+}
+
+# Idx lines under any scope prefix → $2. 0 if the file was written.
+_dsearch_write_scope_src() {
+  emulate -L zsh
+  local query="$1" dest="$2" idx
+  local -a prefs
+  idx="$(_dsearch_index_path)"
+  [[ -f $idx && -n $dest ]] || return 1
+  prefs=("${(@f)$(_dsearch_scope_prefixes "$query")}")
+  (( $#prefs )) || return 1
+  awk -v prefs="${(j:\n:)prefs}" '
+    BEGIN { n = split(prefs, a, "\n") }
+    {
+      for (i = 1; i <= n; i++) {
+        if (a[i] == "") continue
+        if ($0 == a[i] || index($0, a[i] "/") == 1) { print; next }
+      }
+    }
+  ' "$idx" > "$dest"
+  [[ -s $dest ]]
+}
+
+# Hot → named subtree → full idx. Writes $3 after each phase that has hits.
+# Full idx only if a cheaper phase still has fewer than maxn all-token hits.
+_dsearch_rank_phases() {
+  emulate -L zsh
+  local query="$1"
+  local maxn="${2:-10}"
+  local out="${3:-}"
+  local idx hot sub=""
+  local -a top
+  local n=0
+
+  _dsearch_matches=()
+  _DSEARCH_PHASE=""
+  _DSEARCH_USED_FULL=0
+  [[ -n $query ]] || return 0
+
+  idx="$(_dsearch_index_path)"
+  hot="$(_dsearch_hot_path)"
+
+  _dsearch_emit_phase() {
+    local -a hits
+    local p
+    hits=()
+    for p in "$@"; do
+      [[ -n $p ]] && hits+=("$p")
+    done
+    (( $#hits )) || return 1
+    _dsearch_take_top "${hits[@]}"
+    _dsearch_pin_jumps "$query" "$maxn"
+    if [[ -n $out ]]; then
+      if (( $#_dsearch_matches )); then
+        print -l -- "${_dsearch_matches[@]}" > "$out.tmp"
+      else
+        : > "$out.tmp"
+      fi
+      /bin/mv -f -- "$out.tmp" "$out" 2>/dev/null || true
+    fi
+    return 0
+  }
+
+  if [[ -f $hot && -s $hot ]]; then
+    top=("${(@f)$(_dsearch_awk_filter "$query" "$maxn" "$hot" 0)}")
+    if _dsearch_emit_phase "${top[@]}"; then
+      _DSEARCH_PHASE=hot
+      n="$(_dsearch_all_token_n "$query")"
+      (( n >= maxn )) && return 0
+    fi
+  fi
+
+  if [[ -n ${_dsearch_tmpdir:-} && -d ${_dsearch_tmpdir:-} ]]; then
+    sub="$_dsearch_tmpdir/scope.src"
+  else
+    sub="${TMPDIR:-/tmp}/dnav-scope.$$"
+  fi
+  if _dsearch_write_scope_src "$query" "$sub"; then
+    top=("${(@f)$(_dsearch_awk_filter "$query" "$maxn" "$sub" 1)}")
+    if _dsearch_emit_phase "${top[@]}"; then
+      _DSEARCH_PHASE=sub
+      n="$(_dsearch_all_token_n "$query")"
+      (( n >= maxn )) && return 0
+    fi
+  fi
+  [[ $sub == "${TMPDIR:-/tmp}/dnav-scope.$$" ]] && rm -f -- "$sub" 2>/dev/null
+
+  [[ -f $idx ]] || return 0
+  top=("${(@f)$(_dsearch_awk_filter "$query" "$maxn" "$idx" 1)}")
+  if _dsearch_emit_phase "${top[@]}"; then
+    _DSEARCH_PHASE=full
+    _DSEARCH_USED_FULL=1
+  elif [[ -z $_DSEARCH_PHASE ]]; then
+    _DSEARCH_PHASE=full
+    _DSEARCH_USED_FULL=1
+  fi
+  return 0
+}
+
 # Fill _dsearch_matches (top maxn). Pins jump aliases that contain every token.
 _dsearch_apply_filter() {
   local query="$1"
   local maxn="${2:-10}"
-  local idx
-  local -a top
+  local out=""
 
   _dsearch_matches=()
-  idx="$(_dsearch_index_path)"
-
   if [[ -z $query ]]; then
     return 0
   fi
-  [[ -f $idx ]] || return 0
-
-  top=("${(@f)$(_dsearch_awk_filter "$query" "$maxn" "$idx")}")
-  _dsearch_take_top "${top[@]}"
-  _dsearch_pin_jumps "$query" "$maxn"
+  if [[ -n ${_dsearch_tmpdir:-} && -d ${_dsearch_tmpdir:-} ]]; then
+    out="$_dsearch_tmpdir/apply.hits"
+  fi
+  _dsearch_rank_phases "$query" "$maxn" "$out"
 }
 
 # Drop the empty element zsh leaves when awk prints nothing.
@@ -706,9 +937,13 @@ typeset -gi _DSEARCH_DIRTY=0
 typeset -gi _DSEARCH_WORKER_PID=0
 typeset -gi _DSEARCH_GEN=0
 typeset -gi _DSEARCH_LAST_TICK=0
+typeset -gi _DSEARCH_LAST_KEY_MS=0
+typeset -gi _DSEARCH_DEBOUNCE_MS=40
 typeset -gi _DSEARCH_IDLE_TICKS=0
+typeset -gi _DSEARCH_USED_FULL=0
 typeset -g  _DSEARCH_WORK_Q=""
 typeset -g  _DSEARCH_SHOWN_Q=""
+typeset -g  _DSEARCH_PHASE=""
 
 zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null || true
 
@@ -776,7 +1011,7 @@ _dsearch_commit_target() {
   REPLY="${_dsearch_matches[_dsearch_sel+1]}"
 }
 
-# Rank $_dsearch_q off-thread → $tmpdir/hits.$gen. Cancel only on empty query or flush.
+# Rank $_dsearch_q off-thread → $tmpdir/hits.$gen (phased awk, not nested apply_filter).
 _dsearch_worker_start() {
   local q="$_dsearch_q" gen tmp
   tmp="$_dsearch_tmpdir"
@@ -799,18 +1034,13 @@ _dsearch_worker_start() {
     emulate -L zsh
     setopt nomonitor nonotify
     : > "$tmp/run.$gen"
-    _dsearch_apply_filter "$q" 10
-    if (( $#_dsearch_matches )); then
-      print -l -- "${_dsearch_matches[@]}" > "$tmp/hits.$gen.tmp"
-    else
-      : > "$tmp/hits.$gen.tmp"
-    fi
-    /bin/mv -f -- "$tmp/hits.$gen.tmp" "$tmp/hits.$gen"
+    _dsearch_rank_phases "$q" 10 "$tmp/hits.$gen"
   ) </dev/null >/dev/null 2>&1 &!
   _DSEARCH_WORKER_PID=$!
   if (( _DSEARCH_WORKER_PID <= 1 )); then
     _DSEARCH_WORKER_PID=0
-    _dsearch_apply_filter "$q" 10
+    _dsearch_rank_phases "$q" 10 "$tmp/hits.$gen"
+    _dsearch_take_top "${(@f)$(<"$tmp/hits.$gen")}" 2>/dev/null || _dsearch_apply_filter "$q" 10
     _DSEARCH_SHOWN_Q="$q"
     _DSEARCH_WORK_Q="$q"
     _DSEARCH_DIRTY=0
@@ -818,19 +1048,30 @@ _dsearch_worker_start() {
   fi
 }
 
-# 0 if this generation has a hits file (caller draws).
+# 0 if this generation has a hits file (caller draws). Later phases may rewrite it.
 _dsearch_worker_poll() {
-  local gen=$_DSEARCH_GEN tmp="$_dsearch_tmpdir" f
+  local gen=$_DSEARCH_GEN tmp="$_dsearch_tmpdir" f pid=$_DSEARCH_WORKER_PID
   [[ -n $tmp && $gen -gt 0 ]] || return 1
   f="$tmp/hits.$gen"
   [[ -f $f ]] || return 1
-  _dsearch_worker_reap
   _dsearch_take_top "${(@f)$(<"$f")}"
-  /bin/rm -f -- "$f" "$tmp/run.$gen"
+  /bin/rm -f -- "$f"
+  if (( pid > 1 )) && ! kill -0 $pid 2>/dev/null; then
+    _dsearch_worker_reap
+    /bin/rm -f -- "$tmp/run.$gen"
+  fi
   _DSEARCH_SHOWN_Q="$_DSEARCH_WORK_Q"
   _DSEARCH_DIRTY=0
   _dsearch_sel=0
   return 0
+}
+
+_dsearch_debounce_ready() {
+  emulate -L zsh
+  local now
+  now="$(_dsearch_now_ms)"
+  (( now <= 0 || _DSEARCH_LAST_KEY_MS <= 0 )) && return 0
+  (( now - _DSEARCH_LAST_KEY_MS >= _DSEARCH_DEBOUNCE_MS ))
 }
 
 # If the query only grew, re-score the current hits with the same awk (tiny src).
@@ -851,7 +1092,7 @@ _dsearch_preview_if_prefix() {
   return 0
 }
 
-# ~30ms: reap a finished job; start one for the live query if idle. Do not cancel in-flight.
+# ~30ms: reap a finished job; cancel stale work; start after debounce for the live query.
 _dsearch_maybe_tick() {
   local now f
   now="$(_dsearch_now_ms)"
@@ -859,6 +1100,9 @@ _dsearch_maybe_tick() {
     return 0
   fi
   _DSEARCH_LAST_TICK=$now
+  if (( _DSEARCH_WORKER_PID > 1 )) && [[ $_dsearch_q != "$_DSEARCH_WORK_Q" ]]; then
+    _dsearch_worker_stop
+  fi
   if (( _DSEARCH_WORKER_PID > 1 )) && ! kill -0 $_DSEARCH_WORKER_PID 2>/dev/null; then
     _dsearch_worker_reap
   fi
@@ -871,7 +1115,9 @@ _dsearch_maybe_tick() {
     f="$_dsearch_tmpdir/hits.$_DSEARCH_GEN"
     if (( _DSEARCH_IDLE_TICKS >= 8 )) && [[ ! -f $f && ! -f $_dsearch_tmpdir/run.$_DSEARCH_GEN ]]; then
       _dsearch_worker_stop
-      _dsearch_apply_filter "$_dsearch_q" 10
+      _dsearch_rank_phases "$_dsearch_q" 10 "$_dsearch_tmpdir/hits.$_DSEARCH_GEN"
+      _dsearch_take_top "${(@f)$(<"$_dsearch_tmpdir/hits.$_DSEARCH_GEN")}" 2>/dev/null || \
+        _dsearch_apply_filter "$_dsearch_q" 10
       _DSEARCH_SHOWN_Q="$_dsearch_q"
       _DSEARCH_WORK_Q="$_dsearch_q"
       _DSEARCH_DIRTY=0
@@ -888,11 +1134,12 @@ _dsearch_maybe_tick() {
     return 0
   fi
   if (( _DSEARCH_WORKER_PID == 0 )) && [[ $_dsearch_q != "$_DSEARCH_SHOWN_Q" ]]; then
+    _dsearch_debounce_ready || return 0
     _dsearch_worker_start
   fi
 }
 
-# Paint the query. Does not rank.
+# Paint the query. Does not rank. While keys land, only re-score on-screen hits.
 _dsearch_note_query() {
   _dsearch_drain_query
   _dsearch_sel=0
@@ -901,6 +1148,7 @@ _dsearch_note_query() {
     _dsearch_view=search
   fi
   _DSEARCH_DIRTY=1
+  _DSEARCH_LAST_KEY_MS="$(_dsearch_now_ms)"
   _dsearch_paint_row bar "$_dsearch_q"
   _dsearch_place_cursor
   if _dsearch_preview_if_prefix; then
@@ -1043,9 +1291,12 @@ _dsearch_start() {
   _DSEARCH_WORKER_PID=0
   _DSEARCH_GEN=0
   _DSEARCH_LAST_TICK=0
+  _DSEARCH_LAST_KEY_MS=0
   _DSEARCH_IDLE_TICKS=0
   _DSEARCH_WORK_Q=""
   _DSEARCH_SHOWN_Q=""
+  _DSEARCH_PHASE=""
+  _DSEARCH_USED_FULL=0
   _DSEARCH_DIRTY=0
   _DSEARCH_PUSHBACK=""
 

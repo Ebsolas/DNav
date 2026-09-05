@@ -32,7 +32,7 @@ typeset -g DNAV_TEST_INDEX=""
 
 dnav_test_mktemp() {
   if [[ -z ${DNAV_TEST_TMP:-} || ! -d ${DNAV_TEST_TMP:-} ]]; then
-    DNAV_TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dnav-zsh-test.XXXXXX")"
+    DNAV_TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nav-zsh-test.XXXXXX")"
     # shellcheck disable=SC2064
     trap 'rm -rf -- "${DNAV_TEST_TMP:-}"' EXIT
   fi
@@ -129,6 +129,13 @@ dnav_test_write_index() {
     print -r -- "$HOME/.local/bin"
     print -r -- "$HOME/.cache"
     print -r -- "$HOME/.cache/dnav"
+    print -r -- "$HOME/Desktop"
+    print -r -- "$HOME/Desktop/etc"
+    print -r -- "$HOME/etc"
+    print -r -- "$HOME/etc/Desktop"
+    print -r -- "$HOME/Projects/deep/nested/etc"
+    print -r -- "/etc"
+    print -r -- "/etc/dnav-scope"
     print -r -- "/usr/share/doc"
     print -r -- "/usr/share/doc/bash"
     print -r -- "/tmp/dnav-synthetic-only"
@@ -140,8 +147,13 @@ dnav_test_write_index() {
            "$HOME/.config/chromium/Default/Extensions/abc123" \
            "$HOME/.config/clock" \
            "$HOME/.local/share/dnav" "$HOME/.local/share/app/share" \
-           "$HOME/.local/bin" "$HOME/.cache/dnav" 2>/dev/null || true
+           "$HOME/.local/bin" "$HOME/.cache/dnav" \
+           "$HOME/Desktop/etc" "$HOME/etc/Desktop" \
+           "$HOME/Projects/deep/nested/etc" 2>/dev/null || true
   DNAV_TEST_INDEX="$idx"
+  if (( $+functions[_dsearch_write_hot] )); then
+    _dsearch_write_hot "$idx"
+  fi
 }
 
 dnav_test_dsearch_session() {

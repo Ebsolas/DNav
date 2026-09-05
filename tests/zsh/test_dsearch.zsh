@@ -16,6 +16,12 @@ test_index_path() {
   assert_eq "$p" "$XDG_CACHE_HOME/dnav/dirs.idx"
 }
 
+test_hot_path() {
+  local p
+  p="$(_dsearch_hot_path)"
+  assert_eq "$p" "$XDG_CACHE_HOME/dnav/dirs.hot"
+}
+
 test_index_not_stale_when_fresh() {
   local idx
   idx="$(_dsearch_index_path)"
@@ -286,7 +292,7 @@ test_apply_filter_and_tokens_any_order() {
   fi
   _dsearch_test_both_before_partial dnav config
   _dsearch_apply_filter "config dnav" 10
-  assert_gt "$#_dsearch_matches" 0 "order does not matter"
+  assert_gt "$#_dsearch_matches" 0 "reversed tokens still hit"
   joined="${(j:\n:)_dsearch_matches}"
   if [[ $joined == *.config/dnav* || $joined == *dnav-demo/config* ]]; then
     _dnav_test_pass "config dnav still hits both-word paths"
@@ -294,6 +300,24 @@ test_apply_filter_and_tokens_any_order() {
     _dnav_test_fail "reversed tokens missed both-word paths: $joined"
   fi
   _dsearch_test_both_before_partial config dnav
+  _dsearch_apply_filter "dnav share" 10
+  joined="${(j:\n:)_dsearch_matches}"
+  if [[ $joined == *.local/share/dnav* ]]; then
+    _dnav_test_pass "dnav share still finds ~/.local/share/dnav"
+  else
+    _dnav_test_fail "dnav share missed share/dnav: $joined"
+  fi
+}
+
+test_apply_filter_token_order_ranks() {
+  _dsearch_apply_filter "Desktop etc" 10
+  assert_gt "$#_dsearch_matches" 0 "Desktop etc has hits"
+  _dsearch_test_ranks_before "$HOME/Desktop/etc" "$HOME/etc/Desktop" \
+    "Desktop etc prefers Desktop/etc"
+  _dsearch_apply_filter "etc Desktop" 10
+  assert_gt "$#_dsearch_matches" 0 "etc Desktop has hits"
+  _dsearch_test_ranks_before "$HOME/etc/Desktop" "$HOME/Desktop/etc" \
+    "etc Desktop prefers etc/Desktop"
 }
 
 test_apply_filter_and_partial_tokens() {
@@ -496,6 +520,60 @@ test_pref_cache_demoted() {
     "~/.local/share/dnav outranks cache dnav"
 }
 
+test_pref_dot_cache_intent() {
+  _dsearch_apply_filter ".cache" 10
+  assert_gt "$#_dsearch_matches" 0 ".cache has hits"
+  local first="${_dsearch_matches[1]}"
+  if [[ $first == "$HOME/.cache" || $first == "$HOME/.cache/"* ]]; then
+    _dnav_test_pass ".cache ranks a cache path first ($first)"
+  else
+    _dnav_test_fail "expected ~/.cache first for .cache, got $first"
+  fi
+}
+
+test_pref_etc_shallow_scope() {
+  _dsearch_apply_filter "etc" 10
+  assert_gt "$#_dsearch_matches" 0 "etc has hits"
+  _dsearch_test_ranks_before "$HOME/etc" "$HOME/Projects/deep/nested/etc" \
+    "shallow ~/etc outranks deep nested etc"
+  _dsearch_test_ranks_before "/etc" "$HOME/Projects/deep/nested/etc" \
+    "shallow /etc outranks deep nested etc"
+}
+
+test_write_hot_shallow_only() {
+  local idx hot txt
+  idx="$(_dsearch_index_path)"
+  hot="$(_dsearch_hot_path)"
+  dnav_test_write_index "$idx"
+  assert_file "$hot"
+  txt="$(<"$hot")"
+  assert_contains "$txt" "$HOME/Documents" "hot keeps Documents"
+  assert_contains "$txt" "$HOME/.config/dnav" "hot keeps depth-2 .config/dnav"
+  assert_contains "$txt" "$HOME/Desktop" "hot keeps Desktop"
+  assert_contains "$txt" "/etc" "hot keeps /etc"
+  if [[ $txt == *Default/Extensions* ]]; then
+    _dnav_test_fail "hot listed deep chromium: $txt"
+  else
+    _dnav_test_pass "hot omits deep chromium"
+  fi
+  if [[ $txt == *deep/nested/etc* ]]; then
+    _dnav_test_fail "hot listed deep nested etc: $txt"
+  else
+    _dnav_test_pass "hot omits deep nested etc"
+  fi
+}
+
+test_hot_list_scores_doc() {
+  local hot
+  local -a out
+  hot="$(_dsearch_hot_path)"
+  assert_file "$hot"
+  out=("${(@f)$(_dsearch_awk_filter "doc" 10 "$hot" 0)}")
+  assert_gt "$#out" 0 "hot-list awk for doc"
+  local joined="${(j:\n:)out}"
+  assert_contains "$joined" "Documents" "doc on hot list finds Documents"
+}
+
 test_apply_filter_empty_query() {
   _dsearch_matches=(/tmp/leftover)
   _dsearch_apply_filter "" 10
@@ -661,6 +739,7 @@ run_test test_index_cancel_refuses_pid_1
 run_test test_index_module_standalone
 run_test test_search_plugin_loads_index
 run_test test_index_path
+run_test test_hot_path
 run_test test_index_not_stale_when_fresh
 run_test test_index_stale_when_missing
 run_test test_index_ttl_zero_fresh_not_stale
@@ -674,6 +753,7 @@ run_test test_apply_filter_one_char
 run_test test_apply_filter_fuzzy_doc
 run_test test_apply_filter_proj
 run_test test_apply_filter_and_tokens_any_order
+run_test test_apply_filter_token_order_ranks
 run_test test_apply_filter_and_partial_tokens
 run_test test_apply_filter_and_complete_strings
 run_test test_apply_filter_typos_plurals_related
@@ -685,6 +765,10 @@ run_test test_pref_config_root_beats_deep
 run_test test_pref_share_root_beats_deeper
 run_test test_pref_leaf_intent_allows_deep
 run_test test_pref_cache_demoted
+run_test test_pref_dot_cache_intent
+run_test test_pref_etc_shallow_scope
+run_test test_write_hot_shallow_only
+run_test test_hot_list_scores_doc
 run_test test_query_caret_edit
 run_test test_apply_filter_empty_query
 test_preview_narrows_prefix() {
@@ -804,6 +888,46 @@ test_commit_target_flushes_when_empty() {
   assert_eq "$REPLY" "$HOME/Documents" "empty list flushes then takes the top hit"
 }
 
+test_debounce_holds_while_typing() {
+  _dsearch_q="d"
+  _dsearch_matches=()
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_GEN=0
+  _DSEARCH_SHOWN_Q=""
+  _DSEARCH_WORK_Q=""
+  _DSEARCH_LAST_TICK=0
+  _DSEARCH_LAST_KEY_MS="$(_dsearch_now_ms)"
+  _dsearch_maybe_tick
+  assert_eq "$_DSEARCH_WORKER_PID" "0" "debounce does not start a worker on the key"
+  assert_eq "$_DSEARCH_WORK_Q" "" "debounce leaves WORK_Q empty"
+}
+
+test_worker_cancel_stale_query() {
+  _dsearch_q="d"
+  _dsearch_matches=()
+  _DSEARCH_WORKER_PID=0
+  _DSEARCH_GEN=0
+  _DSEARCH_SHOWN_Q=""
+  _DSEARCH_WORK_Q=""
+  _DSEARCH_LAST_TICK=0
+  _DSEARCH_LAST_KEY_MS=0
+  _dsearch_worker_start
+  assert_gt "$_DSEARCH_WORKER_PID" 1 "worker started for d"
+  assert_eq "$_DSEARCH_WORK_Q" "d" "WORK_Q is d"
+  local old=$_DSEARCH_WORKER_PID
+  _dsearch_q="dnav"
+  _DSEARCH_LAST_KEY_MS=0
+  _DSEARCH_LAST_TICK=0
+  _dsearch_maybe_tick
+  assert_eq "$_DSEARCH_WORK_Q" "dnav" "stale d worker is replaced by dnav"
+  if (( old > 1 )) && kill -0 $old 2>/dev/null && (( _DSEARCH_WORKER_PID != old )); then
+    _dnav_test_fail "old worker pid $old still running after cancel"
+  else
+    _dnav_test_pass "stale worker for d was stopped"
+  fi
+  _dsearch_worker_stop
+}
+
 test_commit_target_clamps_sel() {
   functions -c _dsearch_flush_filter _dsearch_flush_filter_orig
   _dsearch_matches=("$HOME/Documents" "$HOME/Downloads")
@@ -825,6 +949,8 @@ run_test test_wait_key_idle_ticks
 run_test test_now_ms_is_integer
 run_test test_worker_ranks_off_thread
 run_test test_worker_reap_on_poll
+run_test test_debounce_holds_while_typing
+run_test test_worker_cancel_stale_query
 run_test test_commit_target_uses_visible_sel
 run_test test_commit_target_flushes_when_empty
 run_test test_commit_target_clamps_sel
