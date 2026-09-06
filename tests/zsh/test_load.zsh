@@ -32,6 +32,46 @@ test_crawler_not_sourced_with_dnav() {
   fi
 }
 
+test_about_lazy_until_ensure() {
+  if (( $+functions[_dnav_show_about] )); then
+    _dnav_test_fail "sourcing dnav should not load About"
+  else
+    _dnav_test_pass "About is not sourced with dnav"
+  fi
+  assert_ok _dnav_ensure_about
+  assert_fn _dnav_show_about
+  assert_fn _dnav_draw_about
+}
+
+test_update_lazy_until_load() {
+  if (( $+functions[_dnav_update] )); then
+    _dnav_test_fail "sourcing dnav should not load --update"
+  else
+    _dnav_test_pass "--update is not sourced with dnav"
+  fi
+  _dnav_load_module dnav-update
+  assert_fn _dnav_update
+  assert_fn _dnav_update_repo
+}
+
+test_zsh_stub_does_not_source_djump() {
+  local out
+  out="$(
+    DNAV_DIR="$DNAV_ZSH_DIR" DNAV_CONFIG_DIR="$DNAV_TEST_CONFIG" HOME="$HOME" zsh -f -c '
+      emulate -L zsh
+      source "$1/shell/dnav.zsh"
+      (( $+functions[_djump_goto] )) && exit 1
+      (( $+functions[dnav] )) || exit 2
+      (( $+functions[djump] )) || exit 3
+      print -r -- ok
+    ' zsh "$DNAV_REPO_ROOT"
+  )" || {
+    _dnav_test_fail "stub source failed"
+    return
+  }
+  assert_eq "$out" "ok" "stub does not source djump"
+}
+
 test_modules_available() {
   assert_ok _dnav_config_dir
   assert_ok _djump_available
@@ -67,6 +107,8 @@ test_winch_helpers_exist() {
   assert_fn _dnav_cleanup
   assert_fn _dnav_abort
   assert_fn _dnav_draw
+  assert_fn _dnav_ensure_about
+  _dnav_ensure_about
   assert_fn _dnav_draw_about
   assert_fn _dnav_session_reset
   assert_fn _dnav_aborted
@@ -293,6 +335,7 @@ test_public_commands_defined() {
   assert_fn dnav
   assert_fn dhelp
   assert_fn dconfig
+  _dnav_load_module dnav-update
   assert_fn _dnav_update
   assert_fn djump
   assert_fn _djump_add
@@ -334,6 +377,7 @@ test_config_dir_isolated() {
 
 test_update_repo_finds_source() {
   local got
+  _dnav_load_module dnav-update
   got="$(_dnav_update_repo)"
   assert_file "$got/zsh/dnav" "dnav --update locates repo with zsh/dnav"
   got="$(DNAV_UPDATE_FROM="$DNAV_REPO_ROOT" _dnav_update_repo)"
@@ -476,7 +520,7 @@ test_sleep_ms_survives_sigchld() {
 
 test_syntax_zsh_scripts() {
   local f
-  for f in dnav dfile djump dsearch dsearch-index dindexer; do
+  for f in dnav dfile djump dsearch dsearch-index dindexer dnav-about dnav-update; do
     if zsh -n "$DNAV_ZSH_DIR/$f" 2>/dev/null; then
       _dnav_test_pass "zsh -n $f"
     else
@@ -487,6 +531,9 @@ test_syntax_zsh_scripts() {
 
 run_test test_djump_lazy_until_available
 run_test test_crawler_not_sourced_with_dnav
+run_test test_about_lazy_until_ensure
+run_test test_update_lazy_until_load
+run_test test_zsh_stub_does_not_source_djump
 run_test test_modules_available
 run_test test_winch_helpers_exist
 run_test test_resize_waits_for_steady_stty

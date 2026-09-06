@@ -1,0 +1,109 @@
+#!/usr/bin/env zsh
+# dnav-update — dnav --update (lazy)
+
+_dnav_update_repo() {
+  local c line
+  local -a cands
+  cands=()
+  [[ -n ${DNAV_UPDATE_FROM:-} ]] && cands+=("$DNAV_UPDATE_FROM")
+  if [[ -n ${DNAV_DIR:-} && -f $DNAV_DIR/.source ]]; then
+    IFS= read -r line < "$DNAV_DIR/.source" || line=""
+    [[ -n $line ]] && cands+=("$line")
+  fi
+  [[ -n ${DNAV_DIR:-} ]] && cands+=("${DNAV_DIR:h}/DNav" "${DNAV_DIR:h:h}/DNav")
+  cands+=("${XDG_DATA_HOME:-$HOME/.local/share}/DNav")
+  cands+=("$HOME/.local/share/DNav")
+  [[ -n ${DNAV_DIR:-} ]] && cands+=("$DNAV_DIR")
+  for c in "${cands[@]}"; do
+    [[ -n $c ]] || continue
+    if [[ -f $c/zsh/dnav ]]; then
+      print -r -- "${c:A}"
+      return 0
+    fi
+    # Candidate is the zsh/ package inside the repo
+    if [[ -f $c/dnav && -f $c/dfile && -f ${c:h}/zsh/dnav ]]; then
+      print -r -- "${c:h:A}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_dnav_update_copy() {
+  local src="$1" dest="$2"
+  shift 2
+  local f
+  command mkdir -p -- "$dest" || return 1
+  for f in "$@"; do
+    [[ -f $src/$f ]] || continue
+    command cp -f -- "$src/$f" "$dest/$f" || return 1
+    [[ -x $src/$f ]] && command chmod 0755 -- "$dest/$f"
+  done
+  return 0
+}
+
+# Copy repo scripts onto the install; merge new config keys only.
+_dnav_update() {
+  emulate -L zsh
+  setopt localoptions no_multios
+  case ${1:-} in
+    -h|--help)
+      print -r -- "Usage: dnav --update"
+      print -r -- "Copy scripts from the local DNav repository onto this install."
+      print -r -- "New config keys are added; existing values are kept."
+      print -r -- ""
+      print -r -- "Set DNAV_UPDATE_FROM to choose the source tree."
+      return 0
+      ;;
+  esac
+
+  local repo dest bash_dest added copied=0
+  repo="$(_dnav_update_repo)" || {
+    print -u2 -- "dnav: cannot find the DNav repo (expected zsh/dnav)."
+    print -u2 -- "  Clone it, or:  DNAV_UPDATE_FROM=/path/to/DNav dnav --update"
+    return 1
+  }
+
+  dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
+  if [[ ${dest:A} != ${repo:A}/zsh ]]; then
+    print -r -- "dnav: $repo  →  $dest"
+    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch dsearch-index dindexer dnav-about dnav-update jumps || {
+      print -u2 -- "dnav: failed to copy zsh scripts"
+      return 1
+    }
+    if [[ -d $repo/shell ]]; then
+      command mkdir -p -- "$dest/shell"
+      command cp -f -- "$repo/shell"/dnav.sh "$repo/shell"/dnav.zsh "$repo/shell"/dnav.fish "$repo/shell"/dnav.ps1 "$dest/shell/" 2>/dev/null || true
+    fi
+    zsh -f -c 'emulate -L zsh; local f; for f in dnav djump dfile dsearch dsearch-index dindexer dnav-about dnav-update; do
+      [[ -f $1/$f ]] && zcompile -U -- $1/$f 2>/dev/null || true
+    done' zsh "$dest" || true
+    if [[ -f $repo/install.sh ]]; then
+      command cp -f -- "$repo/install.sh" "$dest/install.sh"
+      command chmod 0755 -- "$dest/install.sh"
+    fi
+    print -r -- "$repo" > "$dest/.source"
+
+    bash_dest="${XDG_DATA_HOME:-$HOME/.local/share}/dnav-bash"
+    if [[ -d $bash_dest && -d $repo/bash ]]; then
+      _dnav_update_copy "$repo/bash" "$bash_dest" dnav dfile djump dsearch jumps || {
+        print -u2 -- "dnav: failed to copy bash scripts"
+        return 1
+      }
+      print -r -- "dnav: bash  →  $bash_dest"
+    fi
+    copied=1
+  else
+    print -r -- "dnav: already running from $repo/zsh"
+  fi
+
+  added="$(_dnav_config_merge_defaults)"
+  # Reload this file so already-loaded plugins pick up disk changes.
+  source "$dest/dnav"
+  if [[ $added == <-> && added -gt 0 ]]; then
+    print -r -- "dnav: config +$added new keys (previous values kept)  ${DNAV_CONFIG_DIR}/config"
+  else
+    print -r -- "dnav: config already current (previous values kept)  ${DNAV_CONFIG_DIR}/config"
+  fi
+}
+

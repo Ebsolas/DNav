@@ -1,0 +1,626 @@
+#!/usr/bin/env zsh
+# dnav-about — Help / Settings overlay (lazy)
+
+_dnav_about_init() {
+  _DNAV_HELP_TOPICS=(Move)
+  _dsearch_available && _DNAV_HELP_TOPICS+=(Search)
+  _dfile_available && _DNAV_HELP_TOPICS+=(Files)
+  _djump_available && _DNAV_HELP_TOPICS+=(DJump DKEY)
+  _DNAV_HELP_TOPICS+=(DHelp DConfig)
+  _DNAV_HELP_SEL=0
+  _DNAV_HELP_WIN=0
+  _DNAV_SETTINGS_TABS=(General Folders Jumps)
+  _DNAV_SETTINGS_SEL=0
+  _DNAV_SETTINGS_WIN=0
+  _DNAV_SETTINGS_ROW=0
+  _DNAV_ABOUT_TAB=help
+}
+
+# Help-tab topic bodies.
+_dnav_help_topic_body() {
+  case $1 in
+    Move)
+      print -r -- "h, l, ←, →                    move on the main bar"
+      print -r -- "Enter                         open the selected folder"
+      print -r -- "Enter on About                open this help"
+      print -r -- "Esc                           leave dnav, or leave About"
+      print -r -- "After a jump                  a path bar is shown (ls if ls_after=1)"
+      print -r -- "The brand chip is not selectable"
+      ;;
+    Search)
+      print -r -- "/, s                          open fuzzy search"
+      print -r -- "dnav --reindex                rebuild the directory index from the shell"
+      print -r -- "words with spaces             extra words narrow; a miss still shows near matches"
+      print -r -- "↑, ↓, Ctrl+N, Ctrl+P          move through results"
+      print -r -- "←, →                          move the caret; → at the end focuses Help"
+      print -r -- "Enter                         jump to the selected path"
+      ;;
+    Files)
+      print -r -- "f                             open the file explorer"
+      print -r -- "h, l, ←, →                    move; j / ↓ drill in; k / ↑ go up"
+      print -r -- "Tab, f                        toggle directories and files"
+      print -r -- "Enter                         leave at this folder, or open a file"
+      print -r -- "s, /                          search    d    jump    .    hidden"
+      print -r -- "o, O                          cycle dir / file order (this visit only)"
+      print -r -- "Esc                           leave and restore the starting folder"
+      ;;
+    DJump)
+      print -r -- "d (in the explorer)           type a dKEY to jump"
+      print -r -- "djump KEY                     jump without opening dnav"
+      print -r -- "djump --list, dhelp           list saved jumps"
+      print -r -- "djump --help                  full djump usage"
+      print -r -- "jumps file                    ~/.config/dnav/jumps"
+      ;;
+    DKEY)
+      print -r -- "Each jump key installs dKEY   home → dhome"
+      print -r -- "dhome, ddoc, …                jump from the shell"
+      print -r -- "djump add LABEL [PATH]        save a jump (default: current directory)"
+      print -r -- "djump edit|remove LABEL       change or drop a jump"
+      print -r -- "After hand-edits              djump --reload  or  dconfig --reload"
+      ;;
+    DHelp)
+      print -r -- "dhelp                         list saved jumps (same as djump --list)"
+      print -r -- "dnav --help                   command-line usage"
+      print -r -- "djump --help                  jump command usage"
+      print -r -- "dnav f, dnav s                open the explorer or search directly"
+      ;;
+    DConfig)
+      print -r -- "Config directory              ~/.config/dnav/"
+      print -r -- "  config                      colors, brand, ls_after, hidden, …"
+      print -r -- "  folders                     main bar labels and paths"
+      print -r -- "  jumps                       dKEY aliases"
+      print -r -- "About → Settings              edit from inside dnav"
+      print -r -- "dconfig --reload, --edit      reload, or open in \$EDITOR"
+      print -r -- "dnav --update                 refresh scripts; merge new config keys"
+      print -r -- "other shells                 source shell/dnav.sh (or .fish / .ps1)"
+      print -r -- "dnav --reindex                rebuild the search index"
+      print -r -- "ls_after=1                    run ls after a successful jump"
+      print -r -- "ls_after_ms=N                 wait N ms after the path bar before ls"
+      ;;
+  esac
+}
+
+_dnav_settings_onoff() {
+  (( ${(P)1} )) && print -rn -- on || print -rn -- off
+}
+_dnav_settings_cycle3() {
+  (( ${(P)1} < 0 )) && print -rn -- inherit || _dnav_settings_onoff "$1"
+}
+_dnav_settings_row() {
+  _DNAV_ABOUT_BODY+=("$3")
+  _DNAV_ABOUT_KIND+=("$1")
+  _DNAV_ABOUT_KEY+=("$2")
+  _DNAV_ABOUT_IDX+=(-1)
+}
+
+_dnav_settings_fill_body() {
+  local tab="${_DNAV_SETTINGS_TABS[_DNAV_SETTINGS_SEL+1]}"
+  local onoff i k path key ui var disp hint
+  _DNAV_ABOUT_BODY=()
+  _DNAV_ABOUT_KIND=()
+  _DNAV_ABOUT_KEY=()
+  _DNAV_ABOUT_IDX=()
+  _DNAV_ABOUT_NROWS=0
+  case $tab in
+    General)
+      _dnav_config_schema_init
+      for key in "${_DNAV_CFG_KEYS[@]}"; do
+        ui="${_DNAV_CFG_UI[$key]}"
+        [[ -n $ui ]] || continue
+        var="${_DNAV_CFG_VAR[$key]}"
+        hint="${_DNAV_CFG_HINT[$key]}"
+        case $ui in
+          toggle) disp="$(_dnav_settings_onoff "$var")" ;;
+          cycle3) disp="$(_dnav_settings_cycle3 "$var")" ;;
+          *) disp="${(P)var}" ;;
+        esac
+        _dnav_settings_row "$ui" "$key" "${(r:18:)key} ${(r:10:)disp} $hint"
+      done
+      _DNAV_ABOUT_NROWS=$#_DNAV_ABOUT_BODY
+      ;;
+    Folders)
+      if (( ${#DNAV_FOLDER_NAMES} )); then
+        for (( i=1; i <= $#DNAV_FOLDER_NAMES; i++ )); do
+          path="${DNAV_FOLDER_PATHS[i]}"
+          _DNAV_ABOUT_BODY+=("${(r:14:)DNAV_FOLDER_NAMES[i]}  $path")
+          _DNAV_ABOUT_KIND+=(folder)
+          _DNAV_ABOUT_KEY+=("${DNAV_FOLDER_NAMES[i]}")
+          _DNAV_ABOUT_IDX+=($i)
+        done
+      fi
+      _DNAV_ABOUT_BODY+=("+ Add folder     Enter add · x delete selected")
+      _DNAV_ABOUT_KIND+=(folder_add) _DNAV_ABOUT_KEY+=("") _DNAV_ABOUT_IDX+=(-1)
+      _DNAV_ABOUT_NROWS=$#_DNAV_ABOUT_BODY
+      ;;
+    Jumps)
+      if (( $+functions[_djump_ensure] )) && _djump_ensure 2>/dev/null && (( $#_DJUMP_KEYS )); then
+        for (( i=1; i <= $#_DJUMP_KEYS; i++ )); do
+          k="${_DJUMP_KEYS[i]}"
+          _DNAV_ABOUT_BODY+=("d${(r:12:)k}  ${_DJUMP_MAP[$k]}")
+          _DNAV_ABOUT_KIND+=(jump)
+          _DNAV_ABOUT_KEY+=("$k")
+          _DNAV_ABOUT_IDX+=($i)
+        done
+      fi
+      _DNAV_ABOUT_BODY+=("+ Add jump       Enter add · x delete selected")
+      _DNAV_ABOUT_KIND+=(jump_add) _DNAV_ABOUT_KEY+=("") _DNAV_ABOUT_IDX+=(-1)
+      _DNAV_ABOUT_NROWS=$#_DNAV_ABOUT_BODY
+      ;;
+  esac
+}
+
+# Raw-mode line editor. 0+REPLY on Enter; 1 on Esc.
+_dnav_inline_edit() {
+  local prompt="$1" buf="${2:-}" k
+  local edit_row=$(( _DNAV_HELP_EXTRA > 0 ? _DNAV_HELP_EXTRA : 0 ))
+  _DNAV_INLINE_EDIT=1
+  {
+    printf "\e[%dB" $edit_row
+    printf "\e[?25h"
+    stty -echo -icanon isig 2>/dev/null
+    while true; do
+      printf "\r\e[2K%s%s" "$prompt" "$buf"
+      if (( $+functions[_dnav_read_token] )); then
+        _dnav_read_token || { k=esc; }
+        k="${REPLY:-esc}"
+      else
+        read -k 1 k || k=esc
+      fi
+      case $k in
+        enter)
+          REPLY="$buf"
+          printf "\e[?25l\r\e[2K"
+          (( edit_row > 0 )) && printf "\e[%dA" $edit_row
+          return 0
+          ;;
+        esc|ctrl-c)
+          REPLY=""
+          printf "\e[?25l\r\e[2K"
+          (( edit_row > 0 )) && printf "\e[%dA" $edit_row
+          return 1
+          ;;
+        delete|backspace)
+          (( ${#buf} > 0 )) && buf="${buf[1,-2]}"
+          ;;
+        [[:print:]])
+          buf+="$k"
+          ;;
+      esac
+    done
+  } always {
+    _DNAV_INLINE_EDIT=0
+  }
+}
+
+# Wrap text to display width.
+_dnav_wrap_lines() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local width="$1"
+  shift
+  local text rest acc ch cut
+  integer i
+  (( width < 8 )) && width=8
+  for text in "$@"; do
+    rest="$text"
+    while (( ${(m)#rest} > width )); do
+      acc=""
+      for (( i=1; i <= ${#rest}; i++ )); do
+        ch="${rest[i]}"
+        if (( ${(m)#acc} + ${(m)#ch} > width )); then
+          break
+        fi
+        acc+="$ch"
+      done
+      if [[ $acc == *' '* ]]; then
+        cut="${acc% *}"
+        if (( ${#cut} > 0 && ${(m)#cut} < width )); then
+          print -r -- "$cut"
+          rest="${rest[$(( ${#cut} + 2 )),-1]}"
+          continue
+        fi
+      fi
+      print -r -- "$acc"
+      rest="${rest[$(( ${#acc} + 1 )),-1]}"
+    done
+    print -r -- "$rest"
+  done
+}
+
+# One terminal row of width maxw; never soft-wrap.
+_dnav_paint_row() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local style="$1" text="$2" maxw="$3"
+  local pad
+  if (( ${(m)#text} > maxw )); then
+    text="$(_dnav_fit_start "$text" $maxw)"
+  fi
+  pad=$(( maxw - ${(m)#text} ))
+  (( pad < 0 )) && pad=0
+  case $style in
+    hl)  printf "${DNAV_HIGHLIGHT}%s%*s${DNAV_RESET}" "$text" $pad "" ;;
+    dim) printf "\e[2m%s%*s\e[22m" "$text" $pad "" ;;
+    *)   printf "%s%*s" "$text" $pad "" ;;
+  esac
+}
+
+# Named chip strip; reply=(new_win).
+_dnav_about_paint_strip() {
+  _dnav_paint_strip "$1" $2 $3 1 $4
+}
+
+_dnav_about_refresh_style() {
+  _dnav_apply_colors
+  _DNAV_BRAND="${DNAV_CFG_BRAND:-DNav}"
+}
+
+# Leave raw mode, $EDITOR a file, restore TUI.
+_dnav_about_edit_file() {
+  local file="$1"
+  local ed="${EDITOR:-${VISUAL:-vi}}"
+  [[ -n $file ]] || return 1
+  # Clear about UI to a clean line
+  printf "\r\e[2K"
+  local i
+  for (( i=0; i < _DNAV_HELP_EXTRA; i++ )); do
+    printf "\n\e[2K"
+  done
+  if (( _DNAV_HELP_EXTRA > 0 )); then
+    printf "\e[%dA" $_DNAV_HELP_EXTRA
+  fi
+  _DNAV_HELP_EXTRA=0
+  printf "\r\e[2K\e[?25h"
+  stty "$_DNAV_STTY_ORIG" 2>/dev/null
+  ${=ed} -- "$file"
+  stty -echo -icanon isig 2>/dev/null
+  printf "\e[?25l"
+  _dnav_autowrap_off
+  _dnav_config_load
+  _dnav_about_refresh_style
+  if [[ $file == */jumps ]] && (( $+functions[_djump_load] )); then
+    _DJUMP_LOADED=0
+    _djump_load 2>/dev/null || true
+  fi
+  _dnav_draw_about
+}
+
+_dnav_settings_apply_key() {
+  emulate -L zsh
+  _dnav_config_schema_init
+  local kind="$1" key="$2" var type val i n cur
+  local -a opts
+  var="${_DNAV_CFG_VAR[$key]:-}"
+  type="${_DNAV_CFG_TYPE[$key]:-}"
+  [[ -n $var ]] || return 1
+  eval "cur=\${$var}"
+  case $kind in
+    toggle)
+      cur=$(( 1 - cur ))
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$cur"
+      ;;
+    cycle3)
+      case $cur in
+        -1) cur=1 ;;
+        1)  cur=0 ;;
+        *)  cur=-1 ;;
+      esac
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$(_dnav_cfg_cycle3_store "$cur")"
+      ;;
+    enum)
+      opts=("${(@s:,:)${type#enum:}}")
+      n=$#opts
+      (( n )) || return 1
+      i=1
+      while (( i <= n )); do
+        [[ ${opts[i]} == "$cur" ]] && break
+        (( i++ ))
+      done
+      if (( i >= n )); then
+        cur="${opts[1]}"
+      else
+        cur="${opts[i+1]}"
+      fi
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$cur"
+      ;;
+    value)
+      _dnav_inline_edit "$key (Esc cancel): " "$cur" || return 1
+      val="${REPLY//[$'\r\n']/}"
+      [[ -z $val ]] && return 1
+      case $type in
+        int)
+          [[ $val == <-> ]] || return 1
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$val"
+          ;;
+        int1)
+          [[ $val == <-> ]] && (( val >= 1 )) || return 1
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$val"
+          ;;
+        color:fg)
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$(_dnav_color_num fg "$val")"
+          _dnav_apply_colors
+          _dnav_about_refresh_style
+          ;;
+        color:bg)
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$(_dnav_color_num bg "$val")"
+          _dnav_apply_colors
+          _dnav_about_refresh_style
+          ;;
+        *)
+          _dnav_config_set "$key" "$val"
+          _dnav_config_var_set "$var" "$val"
+          [[ $key == brand ]] && _DNAV_BRAND="$val"
+          ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+_dnav_settings_apply_edit() {
+  local kind="${_DNAV_ABOUT_KIND[_DNAV_SETTINGS_ROW+1]}"
+  local rkey="${_DNAV_ABOUT_KEY[_DNAV_SETTINGS_ROW+1]}"
+  local ridx="${_DNAV_ABOUT_IDX[_DNAV_SETTINGS_ROW+1]}"
+  local val label dest k
+  case $kind in
+    toggle|cycle3|enum|value)
+      _dnav_settings_apply_key "$kind" "$rkey" || return 1
+      ;;
+    folder)
+      (( ridx > 0 )) || return 1
+      _dnav_inline_edit "label (Esc cancel): " "${DNAV_FOLDER_NAMES[ridx]}" || return 1
+      label="${REPLY//[$'\r\n']/}"
+      [[ -z $label ]] && return 1
+      _dnav_inline_edit "path (Esc cancel): " "${DNAV_FOLDER_PATHS[ridx]}" || return 1
+      val="${REPLY//[$'\r\n']/}"
+      [[ -z $val ]] && return 1
+      DNAV_FOLDER_NAMES[ridx]="$label"
+      DNAV_FOLDER_PATHS[ridx]="$(_dnav_expand_path "$val")"
+      _dnav_folders_save
+      ;;
+    folder_add)
+      _dnav_inline_edit "new label (Esc cancel): " "" || return 1
+      label="${REPLY//[$'\r\n']/}"
+      [[ -z $label ]] && return 1
+      _dnav_inline_edit "path for $label (Esc cancel): " "~" || return 1
+      dest="${REPLY//[$'\r\n']/}"
+      [[ -z $dest ]] && return 1
+      DNAV_FOLDER_NAMES+=("$label")
+      DNAV_FOLDER_PATHS+=("$(_dnav_expand_path "$dest")")
+      _dnav_folders_save
+      ;;
+    jump)
+      [[ -n $rkey ]] || return 1
+      _dnav_inline_edit "path d$rkey (Esc cancel): " "${_DJUMP_MAP[$rkey]}" || return 1
+      val="${REPLY//[$'\r\n']/}"
+      [[ -z $val ]] && return 1
+      (( $+functions[_djump_edit] )) || return 1
+      _djump_edit "$rkey" "$val" || return 1
+      ;;
+    jump_add)
+      _dnav_inline_edit "jump key e.g. home (Esc cancel): " "" || return 1
+      k="${REPLY//[$'\r\n']/}"
+      [[ -z $k ]] && return 1
+      _dnav_inline_edit "path for d$k (Esc cancel): " "~" || return 1
+      dest="${REPLY//[$'\r\n']/}"
+      [[ -z $dest ]] && return 1
+      (( $+functions[_djump_add] )) || return 1
+      _djump_add "$k" "$dest" || return 1
+      ;;
+  esac
+  return 0
+}
+
+# Delete the selected folder/jump row.
+_dnav_settings_delete_row() {
+  local kind="${_DNAV_ABOUT_KIND[_DNAV_SETTINGS_ROW+1]}"
+  local rkey="${_DNAV_ABOUT_KEY[_DNAV_SETTINGS_ROW+1]}"
+  local ridx="${_DNAV_ABOUT_IDX[_DNAV_SETTINGS_ROW+1]}"
+  local -a nkeys
+  local i k
+  case $kind in
+    folder)
+      (( ridx > 0 )) || return
+      local -a nn np
+      nn=() np=()
+      for (( i=1; i <= $#DNAV_FOLDER_NAMES; i++ )); do
+        (( i == ridx )) && continue
+        nn+=("${DNAV_FOLDER_NAMES[i]}")
+        np+=("${DNAV_FOLDER_PATHS[i]}")
+      done
+      DNAV_FOLDER_NAMES=("${nn[@]}")
+      DNAV_FOLDER_PATHS=("${np[@]}")
+      _dnav_folders_save
+      (( _DNAV_SETTINGS_ROW > 0 )) && (( _DNAV_SETTINGS_ROW-- ))
+      ;;
+    jump)
+      [[ -n $rkey ]] || return
+      if (( $+functions[_djump_remove] )); then
+        _djump_remove "$rkey" || return
+      else
+        unset "_DJUMP_MAP[$rkey]"
+        nkeys=()
+        for k in "${_DJUMP_KEYS[@]}"; do
+          [[ $k == "$rkey" ]] && continue
+          nkeys+=("$k")
+        done
+        _DJUMP_KEYS=("${nkeys[@]}")
+        _dnav_jumps_save
+      fi
+      (( _DNAV_SETTINGS_ROW > 0 )) && (( _DNAV_SETTINGS_ROW-- ))
+      ;;
+    *) return ;;
+  esac
+}
+
+_dnav_about_body_max() {
+  local lim=$(( ${LINES:-24} - 5 ))
+  (( lim < 4 )) && lim=4
+  (( lim > 20 )) && lim=20
+  print -rn -- $lim
+}
+
+_dnav_draw_about() {
+  local -a blines raw
+  local line n=0 i leftover old_extra=$_DNAV_HELP_EXTRA
+  local maxw=$_DNAV_COLS topic body_max style
+  local -a display
+  _DNAV_MODE=about
+  _DNAV_COLS="$(_dnav_usable_cols)"
+  maxw=$_DNAV_COLS
+  body_max="$(_dnav_about_body_max)"
+  (( maxw < 20 )) && maxw=20
+  printf "\e[?25l\r"
+
+  # About header: Help | Settings
+  printf "${DNAV_HIGHLIGHT} DNav About:${DNAV_RESET} "
+  if [[ $_DNAV_ABOUT_TAB == help ]]; then
+    printf "${DNAV_HIGHLIGHT} Help ${DNAV_RESET} "
+    printf " Settings  "
+  else
+    printf " Help  "
+    printf "${DNAV_HIGHLIGHT} Settings ${DNAV_RESET} "
+  fi
+  printf "\e[2mTab to switch\e[22m\e[K"
+
+  # Section strip
+  printf "\n\r"
+  if [[ $_DNAV_ABOUT_TAB == help ]]; then
+    _dnav_about_paint_strip _DNAV_HELP_TOPICS $_DNAV_HELP_SEL $_DNAV_HELP_WIN $maxw
+    _DNAV_HELP_WIN=$reply[1]
+  else
+    _dnav_about_paint_strip _DNAV_SETTINGS_TABS $_DNAV_SETTINGS_SEL $_DNAV_SETTINGS_WIN $maxw
+    _DNAV_SETTINGS_WIN=$reply[1]
+  fi
+
+  # Wrapped display rows (each ≤ maxw)
+  display=()
+  if [[ $_DNAV_ABOUT_TAB == help ]]; then
+    topic="${_DNAV_HELP_TOPICS[_DNAV_HELP_SEL+1]}"
+    raw=("${(@f)$(_dnav_help_topic_body "$topic")}")
+    blines=("${(@f)$(_dnav_wrap_lines $(( maxw - 2 )) "${raw[@]}")}")
+    for line in "${blines[@]}"; do
+      display+=(" $line")
+    done
+    # Scroll window for long help
+    (( _DNAV_HELP_SCROLL < 0 )) && _DNAV_HELP_SCROLL=0
+    if (( $#display > body_max )); then
+      (( _DNAV_HELP_SCROLL > $#display - body_max )) && _DNAV_HELP_SCROLL=$(( $#display - body_max ))
+      display=("${display[$(( _DNAV_HELP_SCROLL + 1 )),$(( _DNAV_HELP_SCROLL + body_max ))]}")
+    else
+      _DNAV_HELP_SCROLL=0
+    fi
+    for line in "${display[@]}"; do
+      printf "\n\r"
+      _dnav_paint_row dim "$line" $maxw
+      (( n++ ))
+    done
+  else
+    _dnav_settings_fill_body
+    raw=("${_DNAV_ABOUT_BODY[@]}")
+    # Settings: 1 logical row = 1 interactive row (truncate)
+    for (( i=1; i <= $#raw; i++ )); do
+      line=" ${raw[i]}"
+      if (( ${#line} > maxw )); then
+        line="${line[1,maxw-1]}…"
+      fi
+      display+=("$line")
+    done
+    for (( i=1; i <= $#display; i++ )); do
+      printf "\n\r"
+      if (( (i - 1) == _DNAV_SETTINGS_ROW )); then
+        _dnav_paint_row hl "${display[i]}" $maxw
+      else
+        _dnav_paint_row dim "${display[i]}" $maxw
+      fi
+      (( n++ ))
+    done
+  fi
+
+  leftover=$(( old_extra - 1 - n ))
+  if (( !_DNAV_RESIZING )); then
+    for (( i=0; i < leftover; i++ )); do
+      printf "\n\r\e[2K"
+    done
+    if (( leftover > 0 )); then
+      printf "\e[%dA" $leftover
+    fi
+  fi
+
+  _DNAV_HELP_EXTRA=$(( 1 + n ))
+  printf "\e[J"
+  if (( _DNAV_HELP_EXTRA > 0 )); then
+    printf "\e[%dA" $_DNAV_HELP_EXTRA
+  fi
+  printf "\r"
+}
+
+_dnav_show_about() {
+  _dnav_about_init
+  _DNAV_HELP_EXTRA=0
+  _dnav_draw_about
+}
+
+_dnav_about_move_h() {
+  local dir="$1"
+  if [[ $_DNAV_ABOUT_TAB == help ]]; then
+    local n=$#_DNAV_HELP_TOPICS
+    (( n == 0 )) && return
+    (( _DNAV_HELP_SEL += dir ))
+    (( _DNAV_HELP_SEL < 0 )) && _DNAV_HELP_SEL=0
+    (( _DNAV_HELP_SEL >= n )) && _DNAV_HELP_SEL=$(( n - 1 ))
+    _DNAV_HELP_SCROLL=0
+  else
+    local n=$#_DNAV_SETTINGS_TABS
+    (( n == 0 )) && return
+    (( _DNAV_SETTINGS_SEL += dir ))
+    (( _DNAV_SETTINGS_SEL < 0 )) && _DNAV_SETTINGS_SEL=0
+    (( _DNAV_SETTINGS_SEL >= n )) && _DNAV_SETTINGS_SEL=$(( n - 1 ))
+    _DNAV_SETTINGS_ROW=0
+  fi
+  _dnav_draw_about
+}
+
+_dnav_about_move_v() {
+  local dir="$1" maxr=0
+  if [[ $_DNAV_ABOUT_TAB == help ]]; then
+    # Scroll wrapped help body
+    (( _DNAV_HELP_SCROLL += dir ))
+    (( _DNAV_HELP_SCROLL < 0 )) && _DNAV_HELP_SCROLL=0
+    _dnav_draw_about
+    return
+  fi
+  [[ $_DNAV_ABOUT_TAB == settings ]] || return
+  (( _DNAV_ABOUT_NROWS <= 0 )) && _dnav_settings_fill_body
+  maxr=$(( _DNAV_ABOUT_NROWS > 0 ? _DNAV_ABOUT_NROWS - 1 : 0 ))
+  (( _DNAV_SETTINGS_ROW += dir ))
+  (( _DNAV_SETTINGS_ROW < 0 )) && _DNAV_SETTINGS_ROW=0
+  (( _DNAV_SETTINGS_ROW > maxr )) && _DNAV_SETTINGS_ROW=$maxr
+  _dnav_draw_about
+}
+
+_dnav_leave_about() {
+  local i
+  _DNAV_MODE=main
+  printf "\r\e[2K"
+  for (( i=0; i < _DNAV_HELP_EXTRA; i++ )); do
+    printf "\n\e[2K"
+  done
+  if (( _DNAV_HELP_EXTRA > 0 )); then
+    printf "\e[%dA" $_DNAV_HELP_EXTRA
+  fi
+  _DNAV_HELP_EXTRA=0
+  printf "\r"
+  _dnav_about_refresh_style
+  _dnav_reload_main_bar
+  _dnav_draw
+}
+
