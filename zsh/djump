@@ -11,6 +11,12 @@ typeset -ga _DJUMP_KEYS
 typeset -ga _DJUMP_SHELL_CMDS
 typeset -ga _DJUMP_SKIPPED
 typeset -g  _DJUMP_LOADED=0
+# Directory of this file, so a jump can find dnav when DNAV_DIR is unset.
+if [[ -n ${(%):-%x} && ${(%):-%x} != '%x' ]]; then
+  typeset -g _DJUMP_SELF=${${(%):-%x}:A:h}
+else
+  typeset -g _DJUMP_SELF=${0:A:h}
+fi
 
 _djump_data_path() {
   local cfg="${DNAV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dnav}"
@@ -293,6 +299,47 @@ _djump_existing_label() {
   return 1
 }
 
+# Path bar and listing live in dnav. A dKEY jump loads them on first use,
+# then re-reads the config file so an already-open shell picks up edits.
+_djump_ensure_dnav() {
+  emulate -L zsh
+  local dir loaded=0
+  if (( ! $+functions[_dnav_success_bar] || ! $+functions[_dnav_maybe_ls] )); then
+    dir="${DNAV_DIR:-}"
+    if [[ -z $dir || ! -r $dir/dnav ]]; then
+      dir="${_DJUMP_SELF:-}"
+    fi
+    [[ -n $dir && -r $dir/dnav ]] || return 1
+    typeset -g DNAV_DIR="$dir"
+    source "$dir/dnav" || return 1
+    loaded=1
+  fi
+  if (( ! loaded && $+functions[_dnav_config_load] )); then
+    _dnav_config_load || true
+  fi
+  return 0
+}
+
+# Listing when dnav itself is missing. dls opens the grid; any other on-value lists.
+_djump_fallback_ls() {
+  emulate -L zsh
+  local spec="${DNAV_CFG_LS_DJUMP:--1}"
+  if [[ $spec == -1 || -z $spec || ${(L)spec} == inherit ]]; then
+    spec="${DNAV_CFG_LS:-0}"
+  fi
+  case ${(L)spec} in
+    0|off|false|no|none) ;;
+    dls)
+      if (( $+functions[dls] )); then
+        dls
+      else
+        command ls -a --color=auto
+      fi
+      ;;
+    *) command ls -a --color=auto ;;
+  esac
+}
+
 # cd to a jump target (dKEY / djump KEY).
 _djump_goto() {
   local key="$1" dest
@@ -310,6 +357,7 @@ _djump_goto() {
     return 1
   }
   dest="${dest:a}"
+  _djump_ensure_dnav || true
   (( $+functions[_dnav_record_dest] )) && _dnav_record_dest "$dest"
   # Same bar as dnav. Not _dnav_finish (that restores TUI tty).
   if (( $+functions[_dnav_success_bar] )); then
@@ -318,17 +366,9 @@ _djump_goto() {
     print -r -- "$dest"
   fi
   if (( $+functions[_dnav_maybe_ls] )); then
-    _dnav_maybe_ls djump
+    _dnav_maybe_ls djump "$dest"
   else
-    case ${DNAV_CFG_LS_DJUMP:--1} in
-      1) command ls -a --color=auto ;;
-      0) ;;
-      *)
-        case ${DNAV_CFG_LS:-0} in
-          1|true|yes|on|TRUE|YES|ON) command ls -a --color=auto ;;
-        esac
-        ;;
-    esac
+    _djump_fallback_ls
   fi
   return 0
 }

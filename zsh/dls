@@ -1,0 +1,3303 @@
+#!/usr/bin/env zsh
+# dls — ls as a grid. Enter opens a folder and stays. Shift+Enter cds in and leaves.
+# / filters. Escape leaves you in the folder on screen.
+# auto_cls can clear the visible page on the way out. Default is off.
+# shift_enter_ls lists the folder after Shift+Enter leaves. Default is off.
+# Standalone: does not source dnav. Config is ~/.config/dls/rc (set/highlight/map).
+# Draw and keys use /dev/tty.
+
+typeset -g  _DLS_CWD=""
+typeset -g  _DLS_ORIGIN=""
+typeset -g  _DLS_ERR=""
+typeset -g  _DLS_STTY=""
+typeset -gi _DLS_SHOW_HIDDEN=0
+typeset -gi _DLS_SEL=0
+typeset -gi _DLS_SCROLL=0
+# Query survives a config reload. Opening a directory clears it.
+# _DLS_VIS holds 1-based indexes into _DLS_NAMES. _DLS_SEL indexes _DLS_VIS.
+typeset -g  _DLS_FILTER=""
+typeset -gi _DLS_FILTERING=0
+typeset -ga _DLS_VIS
+typeset -gi _DLS_COLW=1
+typeset -gi _DLS_NCOLS=1
+typeset -gi _DLS_ROWS=24
+typeset -gi _DLS_COLS=80
+typeset -gi _DLS_DRAWN=0
+typeset -gi _DLS_DRAW_ROW=0
+typeset -gi _DLS_LIST_ID=0
+typeset -gi _DLS_TERM_OK=0
+typeset -g  _DLS_SIG=""
+typeset -ga _DLS_TEXT
+typeset -ga _DLS_META
+typeset -gA _DLS_SGR
+typeset -gA _DLS_SGR_SEL
+typeset -gi _DLS_WINCH=0
+typeset -gi _DLS_INT=0
+typeset -gi _DLS_SCRIPT=0
+typeset -g  _DLS_TTY=""
+typeset -g  _DLS_BYTE=""
+typeset -ga _DLS_NAMES
+typeset -ga _DLS_ISDIR
+typeset -ga _DLS_LINK
+typeset -ga _DLS_EXEC
+typeset -ga _DLS_SIZE
+typeset -ga _DLS_MTIME
+typeset -ga _DLS_KIND
+typeset -gA _DLS_STYLE
+typeset -gA _DLS_EXT
+typeset -gA _DLS_MAP
+typeset -gA _DLS_RC_SEEN
+typeset -ga _DLS_RC_WARN
+typeset -g  _DLS_SORT=name
+typeset -g  _DLS_SORT_DIRS=mixed
+typeset -g  _DLS_SORT_DOTS=mixed
+typeset -gi _DLS_SORT_REVERSE=0
+typeset -g  _DLS_SORT_CASE=ignore
+typeset -g  _DLS_COLORSCHEME=default
+typeset -g  _DLS_TIME=mtime
+typeset -g  _DLS_TIME_STYLE=locale
+typeset -g  _DLS_INDICATOR=slash
+typeset -gi _DLS_LONG=0
+typeset -gi _DLS_HUMAN=0
+typeset -gi _DLS_SI=0
+typeset -gi _DLS_INODE=0
+typeset -gi _DLS_BLOCKS=0
+typeset -gi _DLS_NUMERIC=0
+typeset -gi _DLS_NO_OWNER=0
+typeset -gi _DLS_NO_GROUP=0
+typeset -gi _DLS_DEREF=0
+typeset -gi _DLS_DIRECTORY=0
+typeset -gi _DLS_SHOW_DOTDOT=0
+typeset -gi _DLS_BACKUPS=0
+typeset -gi _DLS_WIDTH_SET=0
+typeset -gi _DLS_WIDTH=0
+typeset -g  _DLS_VIEW=dir
+typeset -g  _DLS_CLI_DOTS=""
+typeset -g  _DLS_CLI_SORT=""
+typeset -g  _DLS_CLI_TIME=""
+typeset -g  _DLS_CLI_TIME_FROM=""
+typeset -g  _DLS_CLI_INDICATOR=""
+typeset -g  _DLS_CLI_COLOR=""
+typeset -g  _DLS_CLI_STYLE=""
+typeset -gi _DLS_CLI_BACKUPS=0
+typeset -gi _DLS_CLI_DIRECTORY=0
+typeset -gi _DLS_CLI_LONG=0
+typeset -gi _DLS_CLI_HUMAN=0
+typeset -gi _DLS_CLI_SI=0
+typeset -gi _DLS_CLI_INODE=0
+typeset -gi _DLS_CLI_BLOCKS=0
+typeset -gi _DLS_CLI_NUMERIC=0
+typeset -gi _DLS_CLI_NO_OWNER=0
+typeset -gi _DLS_CLI_NO_GROUP=0
+typeset -gi _DLS_CLI_DEREF=0
+typeset -gi _DLS_CLI_DEREF_CMD=0
+typeset -gi _DLS_CLI_REVERSE=0
+typeset -gi _DLS_CLI_GROUP_DIRS=0
+typeset -gi _DLS_CLI_WIDTH_SET=0
+typeset -gi _DLS_CLI_WIDTH=0
+typeset -gi _DLS_CLI_MISS=0
+typeset -ga _DLS_CLI_IGNORE
+typeset -ga _DLS_CLI_HIDE
+typeset -ga _DLS_PATHS
+typeset -ga _DLS_OPERANDS
+typeset -ga _DLS_IGNORE
+typeset -ga _DLS_HIDE
+typeset -ga _DLS_FULL
+typeset -ga _DLS_MODE
+typeset -ga _DLS_NLINK
+typeset -ga _DLS_UID
+typeset -ga _DLS_GID
+typeset -ga _DLS_ATIME
+typeset -ga _DLS_CTIME
+typeset -ga _DLS_BIRTH
+typeset -ga _DLS_INODE_N
+typeset -ga _DLS_BLOCKS_N
+typeset -ga _DLS_TARGET
+typeset -gA _DLS_IDCACHE
+typeset -g  _DLS_RC_PATH=""
+typeset -g  _DLS_CONFIG_ARG=""
+typeset -gi _DLS_RC_EXPLICIT=0
+typeset -gi _DLS_HELP=0
+typeset -g  _DLS_START="."
+typeset -gi _DLS_DONE=0
+typeset -gi _DLS_RC=0
+typeset -gi _DLS_KB_PROTO=0
+typeset -g  _DLS_STYLE_CODE=""
+# Clear the visible page on leave. One expression: | is or, & is and.
+typeset -g  _DLS_AUTO_CLS=off
+# Listing after Shift+Enter leaves: off, ls, or dls.
+typeset -g  _DLS_SHIFT_LS=off
+typeset -g  _DLS_EXIT_KEY=""
+typeset -g  _DLS_EXIT_ACTION=""
+typeset -gi _DLS_LEFT=0
+typeset -g  _DLS_TERM_KIND=""
+typeset -g  _DLS_TERM_OP=""
+typeset -gi _DLS_TERM_N=0
+
+_dls_disp_w() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  print -rn -- ${(m)#1}
+}
+
+# Shorten $1 to at most $2 display columns. Sets REPLY.
+_dls_cut_set() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local s="$1" max="${2:-0}"
+  [[ $max == <-> ]] || max=0
+  (( max < 0 )) && max=0
+  while (( ${(m)#s} > max && ${#s} > 0 )); do
+    s="${s[1,-2]}"
+  done
+  REPLY=$s
+}
+
+_dls_cut() {
+  emulate -L zsh
+  _dls_cut_set "$@"
+  print -rn -- "$REPLY"
+}
+
+# Visible cell text. $2 is the indicator suffix, kept inside the width.
+_dls_fit_set() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local name="$1" slash="${2:-}" maxw="${3:-1}" nw budget ell="…" ew
+  [[ $maxw == <-> ]] || maxw=1
+  (( maxw < 1 )) && { REPLY=""; return }
+  nw=${(m)#name}
+  if (( nw + ${#slash} <= maxw )); then
+    REPLY="${name}${slash}"
+    return
+  fi
+  ew=${(m)#ell}
+  (( ew < 1 )) && ew=1
+  budget=$(( maxw - ${#slash} - ew ))
+  if (( budget < 1 )); then
+    _dls_cut_set "${name}${slash}" "$maxw"
+    return
+  fi
+  _dls_cut_set "$name" "$budget"
+  REPLY="${REPLY}${ell}${slash}"
+}
+
+_dls_fit() {
+  emulate -L zsh
+  _dls_fit_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_pad_set() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local s="$1" w="${2:-0}" n pad
+  [[ $w == <-> ]] || w=0
+  n=${(m)#s}
+  if (( n < w )); then
+    printf -v pad '%*s' $(( w - n )) ''
+    s+="$pad"
+  fi
+  REPLY=$s
+}
+
+_dls_pad() {
+  emulate -L zsh
+  _dls_pad_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_show_path() {
+  emulate -L zsh
+  local p="$1" home="${HOME%/}"
+  if [[ -n $home && $p == "$home" ]]; then
+    print -rn -- "~"
+  elif [[ -n $home && $p == "$home"/* ]]; then
+    print -rn -- "~${p#$home}"
+  else
+    print -rn -- "$p"
+  fi
+}
+
+_dls_visible_set() {
+  REPLY="${1//$'\e'/?}"
+  REPLY="${REPLY//[^[:print:]]/?}"
+}
+
+_dls_visible_name() {
+  emulate -L zsh
+  _dls_visible_set "$1"
+  print -rn -- "$REPLY"
+}
+
+_dls_config_warn() {
+  local n="$1" msg="$2" text
+  text="dls: rc:${n}: ${msg}"
+  _DLS_RC_WARN+=("$text")
+  print -u2 -- "$text"
+}
+
+_dls_style_defaults() {
+  _DLS_STYLE=()
+  _DLS_STYLE[dir]=1
+  _DLS_STYLE[link]=""
+  _DLS_STYLE[exec]=""
+  _DLS_STYLE[file]=""
+  _DLS_STYLE[image]=""
+  _DLS_STYLE[archive]=""
+  _DLS_STYLE[media]=""
+  _DLS_STYLE[selected]=7
+  _DLS_STYLE[status]=2
+}
+
+_dls_map_defaults() {
+  _DLS_MAP=()
+  _DLS_MAP[h]=move-left
+  _DLS_MAP[l]=move-right
+  _DLS_MAP[j]=move-down
+  _DLS_MAP[k]=move-up
+  _DLS_MAP[left]=move-left
+  _DLS_MAP[right]=move-right
+  _DLS_MAP[up]=move-up
+  _DLS_MAP[down]=move-down
+  _DLS_MAP[enter]=open
+  _DLS_MAP[shift-enter]=quit-dir
+  _DLS_MAP[backspace]=parent
+  _DLS_MAP[esc]=quit
+  _DLS_MAP[.]=toggle-hidden
+  _DLS_MAP[o]=cycle-sort
+  _DLS_MAP[R]=reload
+  _DLS_MAP[/]=filter
+}
+
+_dls_config_defaults() {
+  _DLS_SHOW_HIDDEN=0
+  _DLS_SORT=name
+  _DLS_SORT_DIRS=mixed
+  _DLS_SORT_DOTS=mixed
+  _DLS_SORT_REVERSE=0
+  _DLS_SORT_CASE=ignore
+  _DLS_COLORSCHEME=default
+  _DLS_AUTO_CLS=off
+  _DLS_SHIFT_LS=off
+  _DLS_TIME=mtime
+  _DLS_TIME_STYLE=locale
+  _DLS_INDICATOR=slash
+  _DLS_LONG=0
+  _DLS_HUMAN=0
+  _DLS_SI=0
+  _DLS_INODE=0
+  _DLS_BLOCKS=0
+  _DLS_NUMERIC=0
+  _DLS_NO_OWNER=0
+  _DLS_NO_GROUP=0
+  _DLS_DEREF=0
+  _DLS_DIRECTORY=0
+  _DLS_SHOW_DOTDOT=0
+  _DLS_BACKUPS=0
+  _DLS_WIDTH_SET=0
+  _DLS_WIDTH=0
+  _DLS_IGNORE=()
+  _DLS_HIDE=()
+  _DLS_EXT=()
+  _dls_style_defaults
+  _dls_map_defaults
+}
+
+_dls_color_code() {
+  case $1 in
+    black) print -rn -- 30 ;;
+    red) print -rn -- 31 ;;
+    green) print -rn -- 32 ;;
+    yellow) print -rn -- 33 ;;
+    blue) print -rn -- 34 ;;
+    magenta) print -rn -- 35 ;;
+    cyan) print -rn -- 36 ;;
+    white) print -rn -- 37 ;;
+    bright-black) print -rn -- 90 ;;
+    bright-red) print -rn -- 91 ;;
+    bright-green) print -rn -- 92 ;;
+    bright-yellow) print -rn -- 93 ;;
+    bright-blue) print -rn -- 94 ;;
+    bright-magenta) print -rn -- 95 ;;
+    bright-cyan) print -rn -- 96 ;;
+    bright-white) print -rn -- 97 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Words after the kind. Sets _DLS_STYLE_CODE. 1 on an unknown word.
+_dls_join_style() {
+  emulate -L zsh
+  local w code="" part
+  _DLS_STYLE_CODE=""
+  for w in "$@"; do
+    case $w in
+      default) code=""; continue ;;
+      bold) part=1 ;;
+      dim) part=2 ;;
+      underline) part=4 ;;
+      reverse) part=7 ;;
+      *)
+        if [[ $w == <-> ]] && (( w >= 0 && w <= 255 )); then
+          part="38;5;$w"
+        else
+          part="$(_dls_color_code "$w")" || return 1
+        fi
+        ;;
+    esac
+    if [[ -n $code ]]; then
+      code+=";$part"
+    else
+      code="$part"
+    fi
+  done
+  _DLS_STYLE_CODE="$code"
+  return 0
+}
+
+# SGR for a kind, with the selection style stacked on top when $2 is non-zero.
+_dls_style() {
+  emulate -L zsh
+  _dls_style_set "$1" "${2:-0}"
+  print -rn -- "$REPLY"
+}
+
+_dls_apply_colorscheme() {
+  local name="${(L)1}"
+  local f base
+  case $name in
+    default)
+      _dls_style_defaults
+      _DLS_COLORSCHEME=default
+      return 0
+      ;;
+    plain)
+      _dls_style_defaults
+      _DLS_STYLE[dir]=""
+      _DLS_STYLE[link]=""
+      _DLS_STYLE[exec]=""
+      _DLS_STYLE[file]=""
+      _DLS_STYLE[image]=""
+      _DLS_STYLE[archive]=""
+      _DLS_STYLE[media]=""
+      _DLS_STYLE[selected]=7
+      _DLS_STYLE[status]=2
+      _DLS_COLORSCHEME=plain
+      return 0
+      ;;
+  esac
+  base="${XDG_CONFIG_HOME:-$HOME/.config}/dls/colorschemes/$name"
+  if [[ -f $base && -r $base ]]; then
+    _dls_style_defaults
+    _DLS_COLORSCHEME="$name"
+    _dls_config_load_file "$base" scheme
+    return 0
+  fi
+  _dls_config_warn "${_DLS_RC_LINE:-1}" "unknown colorscheme: $name"
+  _dls_style_defaults
+  _DLS_COLORSCHEME=default
+  return 0
+}
+
+# One auto_cls term. Sets _DLS_TERM_KIND, _DLS_TERM_OP, and _DLS_TERM_N.
+# kind is always, never, key, action, pct, or rows. 1 if the word is unknown.
+# Operators are quoted so '>' stays in the pattern. N% means pct >= N.
+_dls_auto_cls_term() {
+  emulate -L zsh
+  local term="$1" n=""
+  _DLS_TERM_KIND=""
+  _DLS_TERM_OP=""
+  _DLS_TERM_N=0
+  case $term in
+    off|never|false|no|0) _DLS_TERM_KIND=never; return 0 ;;
+    on|always|true|yes|1) _DLS_TERM_KIND=always; return 0 ;;
+    enter|shift-enter|s-enter|esc|ctrl-c) _DLS_TERM_KIND=key; return 0 ;;
+    quit|quit-dir|cancel) _DLS_TERM_KIND=action; return 0 ;;
+    pct'=='<->) _DLS_TERM_OP='=='; n="${term#'pct=='}" ;;
+    pct'>='<->) _DLS_TERM_OP='>='; n="${term#'pct>='}" ;;
+    pct'<='<->) _DLS_TERM_OP='<='; n="${term#'pct<='}" ;;
+    pct'='<->)  _DLS_TERM_OP='=';  n="${term#'pct='}" ;;
+    pct'>'<->)  _DLS_TERM_OP='>';  n="${term#'pct>'}" ;;
+    pct'<'<->)  _DLS_TERM_OP='<';  n="${term#'pct<'}" ;;
+    rows'=='<->) _DLS_TERM_OP='=='; n="${term#'rows=='}" ;;
+    rows'>='<->) _DLS_TERM_OP='>='; n="${term#'rows>='}" ;;
+    rows'<='<->) _DLS_TERM_OP='<='; n="${term#'rows<='}" ;;
+    rows'='<->)  _DLS_TERM_OP='=';  n="${term#'rows='}" ;;
+    rows'>'<->)  _DLS_TERM_OP='>';  n="${term#'rows>'}" ;;
+    rows'<'<->)  _DLS_TERM_OP='<';  n="${term#'rows<'}" ;;
+    <->%) _DLS_TERM_OP='>='; n="${term%'%'}" ;;
+    *) return 1 ;;
+  esac
+  [[ $n == <-> ]] || return 1
+  if [[ $term == rows* ]]; then
+    _DLS_TERM_KIND=rows
+  else
+    (( n <= 100 )) || { _DLS_TERM_OP=""; return 1; }
+    _DLS_TERM_KIND=pct
+  fi
+  _DLS_TERM_N=$n
+  return 0
+}
+
+# 0 when $1 $2 $3 is true. rows below 1 makes a percent false.
+_dls_auto_cls_cmp() {
+  emulate -L zsh
+  local -i left=$1 right=$3
+  case $2 in
+    '>=') (( left >= right )) ;;
+    '>') (( left > right )) ;;
+    '<=') (( left <= right )) ;;
+    '<') (( left < right )) ;;
+    '='|'==') (( left == right )) ;;
+    *) return 1 ;;
+  esac
+}
+
+# 0 when this term matches the leave. $2 key, $3 action, $4 drawn lines, $5 screen rows.
+# rows compares the painted line count. pct is drawn * 100 / screen rows.
+_dls_auto_cls_term_hit() {
+  emulate -L zsh
+  local term="$1" key="$2" action="$3"
+  local -i drawn=$4 rows=$5 pct=0
+  _dls_auto_cls_term "$term" || return 1
+  case $_DLS_TERM_KIND in
+    never) return 1 ;;
+    always) return 0 ;;
+    key)
+      if [[ $term == shift-enter || $term == s-enter ]]; then
+        [[ $key == shift-enter ]]
+      else
+        [[ $key == $term ]]
+      fi
+      ;;
+    action)
+      [[ $action == $term ]]
+      ;;
+    pct)
+      (( rows >= 1 )) || return 1
+      pct=$(( drawn * 100 / rows ))
+      _dls_auto_cls_cmp "$pct" "$_DLS_TERM_OP" "$_DLS_TERM_N"
+      ;;
+    rows)
+      _dls_auto_cls_cmp "$drawn" "$_DLS_TERM_OP" "$_DLS_TERM_N"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# 0 when every term is known. Empty clauses and empty terms are rejected.
+_dls_auto_cls_valid() {
+  emulate -L zsh
+  local expr="$1" clause term
+  local -a clauses terms
+  [[ -n $expr ]] || return 1
+  clauses=("${(@s:|:)expr}")
+  (( $#clauses )) || return 1
+  for clause in "${clauses[@]}"; do
+    [[ -n $clause ]] || return 1
+    terms=("${(@s:&:)clause}")
+    (( $#terms )) || return 1
+    for term in "${terms[@]}"; do
+      [[ -n $term ]] || return 1
+      _dls_auto_cls_term "$term" || return 1
+    done
+  done
+  return 0
+}
+
+# Store a normalized expression. Lowercase, spaces removed. Previous value stays on failure.
+_dls_auto_cls_set() {
+  emulate -L zsh
+  local expr="${(L)1}"
+  expr="${expr//[[:space:]]/}"
+  _dls_auto_cls_valid "$expr" || return 1
+  _DLS_AUTO_CLS="$expr"
+  return 0
+}
+
+# 0 when any clause matches. A clause matches when every term matches.
+_dls_auto_cls_hit() {
+  emulate -L zsh
+  local expr="${_DLS_AUTO_CLS:-off}" key="$1" action="$2"
+  local -i drawn=${3:-0} rows=${4:-0} ok=0
+  local clause term
+  local -a clauses terms
+  [[ -n $expr ]] || return 1
+  clauses=("${(@s:|:)expr}")
+  for clause in "${clauses[@]}"; do
+    [[ -n $clause ]] || continue
+    terms=("${(@s:&:)clause}")
+    (( $#terms )) || continue
+    ok=1
+    for term in "${terms[@]}"; do
+      [[ -n $term ]] || { ok=0; break; }
+      _dls_auto_cls_term_hit "$term" "$key" "$action" "$drawn" "$rows" || { ok=0; break; }
+    done
+    (( ok )) && return 0
+  done
+  return 1
+}
+
+_dls_config_set() {
+  emulate -L zsh
+  setopt localoptions noglob
+  local -a w
+  w=(${=1})
+  (( $#w >= 2 )) || return 1
+  if [[ ${(L)w[1]} == auto_cls ]]; then
+    _dls_auto_cls_set "${(j: :)w[2,-1]}" || return 1
+    return 0
+  fi
+  (( $#w == 2 )) || return 1
+  case ${(L)w[1]} in
+    show_hidden)
+      case ${(L)w[2]} in
+        true|yes|1) _DLS_SHOW_HIDDEN=1 ;;
+        false|no|0) _DLS_SHOW_HIDDEN=0 ;;
+        *) return 1 ;;
+      esac ;;
+    sort)
+      case ${(L)w[2]} in
+        name|natural|ext|size|mtime) _DLS_SORT="${(L)w[2]}" ;;
+        *) return 1 ;;
+      esac ;;
+    sort_dirs)
+      case ${(L)w[2]} in
+        first|last|mixed) _DLS_SORT_DIRS="${(L)w[2]}" ;;
+        *) return 1 ;;
+      esac ;;
+    sort_dots)
+      case ${(L)w[2]} in
+        first|last|mixed) _DLS_SORT_DOTS="${(L)w[2]}" ;;
+        *) return 1 ;;
+      esac ;;
+    sort_reverse)
+      case ${(L)w[2]} in
+        true|yes|1) _DLS_SORT_REVERSE=1 ;;
+        false|no|0) _DLS_SORT_REVERSE=0 ;;
+        *) return 1 ;;
+      esac ;;
+    sort_case)
+      case ${(L)w[2]} in
+        ignore|sensitive) _DLS_SORT_CASE="${(L)w[2]}" ;;
+        *) return 1 ;;
+      esac ;;
+    colorscheme)
+      _dls_apply_colorscheme "${w[2]}"
+      ;;
+    shift_enter_ls)
+      case ${(L)w[2]} in
+        off|none|false|no|0) _DLS_SHIFT_LS=off ;;
+        on|true|yes|1|ls) _DLS_SHIFT_LS=ls ;;
+        dls) _DLS_SHIFT_LS=dls ;;
+        *) return 1 ;;
+      esac ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+_dls_config_highlight() {
+  emulate -L zsh
+  setopt localoptions noglob extended_glob
+  local -a w
+  local kind
+  w=(${=1})
+  (( $#w >= 2 )) || return 1
+  kind="${(L)w[1]}"
+  [[ $kind == [a-z_][a-z0-9_-]# ]] || return 1
+  _dls_join_style "${(@)w[2,-1]}" || return 1
+  _DLS_STYLE[$kind]="$_DLS_STYLE_CODE"
+  return 0
+}
+
+_dls_config_ext() {
+  emulate -L zsh
+  setopt localoptions noglob extended_glob
+  local -a w parts
+  local kind s
+  w=(${=1})
+  (( $#w == 2 )) || return 1
+  kind="${(L)w[2]}"
+  [[ $kind == [a-z_][a-z0-9_-]# ]] || return 1
+  parts=("${(@s:,:)w[1]}")
+  (( $#parts )) || return 1
+  for s in "${parts[@]}"; do
+    s="${${${(L)s}#.}:-}"
+    [[ -n $s ]] || continue
+    _DLS_EXT[$s]="$kind"
+  done
+  return 0
+}
+
+_dls_config_map() {
+  emulate -L zsh
+  setopt localoptions noglob
+  local -a w
+  local key action
+  w=(${=1})
+  (( $#w == 2 )) || return 1
+  action="${(L)w[2]}"
+  case $action in
+    move-left|move-right|move-up|move-down|open|parent|quit|quit-dir|cancel|toggle-hidden|cycle-sort|reload|filter) ;;
+    *) return 1 ;;
+  esac
+  case ${(L)w[1]} in
+    '<enter>') key=enter ;;
+    '<s-enter>'|'<shift-enter>') key=shift-enter ;;
+    '<esc>') key=esc ;;
+    '<bs>') key=backspace ;;
+    '<left>') key=left ;;
+    '<right>') key=right ;;
+    '<up>') key=up ;;
+    '<down>') key=down ;;
+    *)
+      (( ${#w[1]} == 1 )) || return 1
+      key="$w[1]"
+      ;;
+  esac
+  [[ $key == ctrl-c ]] && return 1
+  _DLS_MAP[$key]="$action"
+  return 0
+}
+
+_dls_config_line() {
+  emulate -L zsh
+  local line="$1" n="$2" only="${3:-}"
+  local cmd rest
+  line="${line%$'\r'}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -z $line || $line == \#* ]] && return 0
+  _DLS_RC_LINE="$n"
+  cmd="${line%%[[:space:]]*}"
+  rest="${line#$cmd}"
+  rest="${rest#"${rest%%[![:space:]]*}"}"
+  if [[ $only == scheme && $cmd != highlight && $cmd != ext ]]; then
+    _dls_config_warn "$n" "not allowed in a colorscheme: $cmd"
+    return 0
+  fi
+  case $cmd in
+    set) _dls_config_set "$rest" || _dls_config_warn "$n" "bad set: $rest" ;;
+    highlight) _dls_config_highlight "$rest" || _dls_config_warn "$n" "bad highlight: $rest" ;;
+    ext) _dls_config_ext "$rest" || _dls_config_warn "$n" "bad ext: $rest" ;;
+    map) _dls_config_map "$rest" || _dls_config_warn "$n" "bad map: $rest" ;;
+    source) _dls_config_source "$rest" ;;
+    *) _dls_config_warn "$n" "unknown command: $cmd" ;;
+  esac
+  return 0
+}
+
+_dls_config_source() {
+  emulate -L zsh
+  local spec="$1" path
+  spec="${spec#"${spec%%[![:space:]]*}"}"
+  spec="${spec%"${spec##*[![:space:]]}"}"
+  [[ -n $spec ]] || { _dls_config_warn "${_DLS_RC_LINE:-1}" "bad source"; return 0; }
+  spec="${spec/#\~/$HOME}"
+  if [[ $spec == /* ]]; then
+    path="$spec"
+  else
+    path="${_DLS_RC_DIR:-$PWD}/$spec"
+  fi
+  path="${path:a}"
+  if (( ${_DLS_RC_SEEN[$path]:-0} )); then
+    _dls_config_warn "${_DLS_RC_LINE:-1}" "source cycle: ${path:t}"
+    return 0
+  fi
+  if [[ ! -f $path || ! -r $path ]]; then
+    _dls_config_warn "${_DLS_RC_LINE:-1}" "cannot read ${path:t}"
+    return 0
+  fi
+  _dls_config_load_file "$path"
+}
+
+# $2 = scheme to allow only highlight and ext.
+_dls_config_load_file() {
+  emulate -L zsh
+  local path="$1" only="${2:-}" line n=0 prev_dir
+  path="${path:a}"
+  [[ -f $path && -r $path ]] || return 1
+  _DLS_RC_SEEN[$path]=1
+  prev_dir="${_DLS_RC_DIR:-}"
+  _DLS_RC_DIR="${path:h}"
+  while IFS= read -r line || [[ -n $line ]]; do
+    n=$(( n + 1 ))
+    _dls_config_line "$line" "$n" "$only"
+  done < "$path"
+  _DLS_RC_DIR="$prev_dir"
+  unset "_DLS_RC_SEEN[$path]"
+  return 0
+}
+
+_dls_config_discover() {
+  emulate -L zsh
+  if [[ -n ${_DLS_CONFIG_ARG:-} ]]; then
+    print -rn -- "${_DLS_CONFIG_ARG/#\~/$HOME}"
+    return
+  fi
+  if [[ -n ${DLS_CONFIG:-} ]]; then
+    print -rn -- "${DLS_CONFIG/#\~/$HOME}"
+    return
+  fi
+  print -rn -- "${XDG_CONFIG_HOME:-$HOME/.config}/dls/rc"
+}
+
+# $1 path (empty = discover). $2 = 1 to warn when that path is missing.
+_dls_config_load() {
+  emulate -L zsh
+  local path="${1:-}" warn_missing="${2:-0}"
+  _DLS_RC_WARN=()
+  _DLS_RC_SEEN=()
+  _DLS_RC_DIR=""
+  _DLS_RC_LINE=0
+  if [[ -z $path ]]; then
+    path="$(_dls_config_discover)"
+    if [[ -n ${_DLS_CONFIG_ARG:-} || -n ${DLS_CONFIG:-} ]]; then
+      warn_missing=1
+      _DLS_RC_EXPLICIT=1
+    else
+      _DLS_RC_EXPLICIT=0
+    fi
+  fi
+  _DLS_RC_PATH="$path"
+  _dls_config_defaults
+  if [[ ! -f $path ]]; then
+    (( warn_missing )) && _dls_config_warn 1 "not found: ${path:t}"
+    return 0
+  fi
+  if [[ ! -r $path ]]; then
+    _dls_config_warn 1 "cannot read: ${path:t}"
+    return 0
+  fi
+  _dls_config_load_file "$path"
+  return 0
+}
+
+_dls_action() {
+  emulate -L zsh
+  if [[ $1 == ctrl-c ]]; then
+    print -rn -- cancel
+    return
+  fi
+  print -rn -- "${_DLS_MAP[$1]:-}"
+}
+
+_dls_usage() {
+  print -r -- "usage: dls [OPTION]... [PATH]..."
+  print -r -- "config: ${XDG_CONFIG_HOME:-$HOME/.config}/dls/rc"
+  print -r -- "Shift+Enter cds into the folder and leaves. map <s-enter> ACTION"
+  print -r -- "  -a -A -B -d -f -F -h -i -l -r -s -S -t -U -v -X"
+  print -r -- "  -c -u -g -o -G -n -p -L -H -w COLS -I PAT"
+  print -r -- "  --all --almost-all --ignore-backups --ignore=PAT --hide=PAT"
+  print -r -- "  --directory --reverse --group-directories-first --sort=WORD"
+  print -r -- "  --time=WORD --time-style=STYLE --full-time --human-readable --si"
+  print -r -- "  --classify --file-type --indicator-style=WORD --color=WHEN"
+  print -r -- "  --config FILE"
+  print -r -- "set: show_hidden sort sort_dirs sort_dots sort_reverse sort_case colorscheme auto_cls shift_enter_ls"
+  print -r -- "auto_cls: off always KEY ACTION N% pct>=N rows>=N. | is or. & is and."
+  print -r -- "shift_enter_ls: off | ls | dls. Listing after Shift+Enter leaves."
+  print -r -- "highlight KIND ATTRS    ext SUFFIXES KIND    map KEY ACTION    source FILE"
+}
+
+_dls_set_sort_word() {
+  case ${(L)1} in
+    name) _DLS_CLI_SORT=name ;;
+    size) _DLS_CLI_SORT=size ;;
+    time) _DLS_CLI_SORT=time ;;
+    version) _DLS_CLI_SORT=version ;;
+    extension) _DLS_CLI_SORT=extension ;;
+    none) _DLS_CLI_SORT=none ;;
+    *) print -u2 -- "dls: invalid sort: $1"; return 2 ;;
+  esac
+}
+
+_dls_set_time_word() {
+  case ${(L)1} in
+    mtime|modification) _DLS_CLI_TIME=mtime; _DLS_CLI_TIME_FROM=time ;;
+    ctime|status) _DLS_CLI_TIME=ctime; _DLS_CLI_TIME_FROM=time ;;
+    atime|access|use) _DLS_CLI_TIME=atime; _DLS_CLI_TIME_FROM=time ;;
+    birth|creation) _DLS_CLI_TIME=birth; _DLS_CLI_TIME_FROM=time ;;
+    *) print -u2 -- "dls: invalid time: $1"; return 2 ;;
+  esac
+}
+
+_dls_parse_args() {
+  emulate -L zsh
+  local -i end=0
+  local arg cluster c pat word
+  _dls_cli_reset
+  _DLS_CONFIG_ARG=""
+  while (( $# )); do
+    arg=$1
+    shift
+    if (( end )) || [[ $arg != -* || $arg == - ]]; then
+      _DLS_PATHS+=("$arg")
+      continue
+    fi
+    if [[ $arg == -- ]]; then
+      end=1
+      continue
+    fi
+    if [[ $arg == --help ]]; then
+      _DLS_HELP=1
+      return 0
+    fi
+    if [[ $arg == --* ]]; then
+      case $arg in
+        --config)
+          (( $# )) || { print -u2 -- "dls: --config needs a path"; return 2 }
+          _DLS_CONFIG_ARG=$1
+          shift
+          ;;
+        --config=*) _DLS_CONFIG_ARG=${arg#--config=} ;;
+        --all) _DLS_CLI_DOTS=a ;;
+        --almost-all) _DLS_CLI_DOTS=A ;;
+        --ignore-backups) _DLS_CLI_BACKUPS=1 ;;
+        --directory) _DLS_CLI_DIRECTORY=1 ;;
+        --reverse) _DLS_CLI_REVERSE=1 ;;
+        --group-directories-first) _DLS_CLI_GROUP_DIRS=1 ;;
+        --human-readable) _DLS_CLI_HUMAN=1 ;;
+        --si) _DLS_CLI_SI=1 ;;
+        --inode) _DLS_CLI_INODE=1 ;;
+        --size) _DLS_CLI_BLOCKS=1 ;;
+        --numeric-uid-gid) _DLS_CLI_NUMERIC=1; _DLS_CLI_LONG=1 ;;
+        --no-group) _DLS_CLI_NO_GROUP=1 ;;
+        --full-time) _DLS_CLI_LONG=1; _DLS_CLI_STYLE=full-iso ;;
+        --file-type) _DLS_CLI_INDICATOR=file-type ;;
+        --dereference) _DLS_CLI_DEREF=1 ;;
+        --dereference-command-line) _DLS_CLI_DEREF_CMD=1 ;;
+        --classify) _DLS_CLI_INDICATOR=classify ;;
+        --classify=*)
+          word=${arg#--classify=}
+          case ${(L)word} in
+            always|auto) _DLS_CLI_INDICATOR=classify ;;
+            never) _DLS_CLI_INDICATOR=none ;;
+            *) print -u2 -- "dls: invalid classify: $word"; return 2 ;;
+          esac
+          ;;
+        --ignore=*) _DLS_CLI_IGNORE+=("${arg#--ignore=}") ;;
+        --ignore)
+          (( $# )) || { print -u2 -- "dls: --ignore needs a pattern"; return 2 }
+          _DLS_CLI_IGNORE+=("$1")
+          shift
+          ;;
+        --hide=*) _DLS_CLI_HIDE+=("${arg#--hide=}") ;;
+        --hide)
+          (( $# )) || { print -u2 -- "dls: --hide needs a pattern"; return 2 }
+          _DLS_CLI_HIDE+=("$1")
+          shift
+          ;;
+        --sort=*) _dls_set_sort_word "${arg#--sort=}" || return $? ;;
+        --sort)
+          (( $# )) || { print -u2 -- "dls: --sort needs a value"; return 2 }
+          _dls_set_sort_word "$1" || return $?
+          shift
+          ;;
+        --time=*) _dls_set_time_word "${arg#--time=}" || return $? ;;
+        --time)
+          (( $# )) || { print -u2 -- "dls: --time needs a value"; return 2 }
+          _dls_set_time_word "$1" || return $?
+          shift
+          ;;
+        --time-style=*) _DLS_CLI_STYLE=${arg#--time-style=} ;;
+        --time-style)
+          (( $# )) || { print -u2 -- "dls: --time-style needs a value"; return 2 }
+          _DLS_CLI_STYLE=$1
+          shift
+          ;;
+        --indicator-style=*)
+          word=${arg#--indicator-style=}
+          case $word in
+            none|slash|file-type|classify) _DLS_CLI_INDICATOR=$word ;;
+            *) print -u2 -- "dls: invalid indicator style: $word"; return 2 ;;
+          esac
+          ;;
+        --indicator-style)
+          (( $# )) || { print -u2 -- "dls: --indicator-style needs a value"; return 2 }
+          word=$1
+          shift
+          case $word in
+            none|slash|file-type|classify) _DLS_CLI_INDICATOR=$word ;;
+            *) print -u2 -- "dls: invalid indicator style: $word"; return 2 ;;
+          esac
+          ;;
+        --color) _DLS_CLI_COLOR=always ;;
+        --color=*)
+          word=${${arg#--color=}:l}
+          case $word in
+            always|auto|never) _DLS_CLI_COLOR=$word ;;
+            *) print -u2 -- "dls: invalid color: $word"; return 2 ;;
+          esac
+          ;;
+        --width=*)
+          word=${arg#--width=}
+          [[ $word == <-> ]] || { print -u2 -- "dls: invalid width: $word"; return 2 }
+          _DLS_CLI_WIDTH_SET=1
+          _DLS_CLI_WIDTH=$word
+          ;;
+        --width)
+          (( $# )) || { print -u2 -- "dls: --width needs a value"; return 2 }
+          word=$1
+          shift
+          [[ $word == <-> ]] || { print -u2 -- "dls: invalid width: $word"; return 2 }
+          _DLS_CLI_WIDTH_SET=1
+          _DLS_CLI_WIDTH=$word
+          ;;
+        *)
+          print -u2 -- "dls: unknown option: $arg"
+          return 2
+          ;;
+      esac
+      continue
+    fi
+    cluster=${arg#-}
+    while [[ -n $cluster ]]; do
+      c=${cluster[1]}
+      cluster=${cluster[2,-1]}
+      case $c in
+        a) _DLS_CLI_DOTS=a ;;
+        A) _DLS_CLI_DOTS=A ;;
+        B) _DLS_CLI_BACKUPS=1 ;;
+        d) _DLS_CLI_DIRECTORY=1 ;;
+        f) _DLS_CLI_DOTS=a; _DLS_CLI_SORT=none ;;
+        F) _DLS_CLI_INDICATOR=classify ;;
+        p) _DLS_CLI_INDICATOR=slash ;;
+        h) _DLS_CLI_HUMAN=1 ;;
+        i) _DLS_CLI_INODE=1 ;;
+        l) _DLS_CLI_LONG=1 ;;
+        r) _DLS_CLI_REVERSE=1 ;;
+        s) _DLS_CLI_BLOCKS=1 ;;
+        S) _DLS_CLI_SORT=size ;;
+        t) _DLS_CLI_SORT=time ;;
+        U) _DLS_CLI_SORT=none ;;
+        v) _DLS_CLI_SORT=version ;;
+        X) _DLS_CLI_SORT=extension ;;
+        c) _DLS_CLI_TIME=ctime; _DLS_CLI_TIME_FROM=c ;;
+        u) _DLS_CLI_TIME=atime; _DLS_CLI_TIME_FROM=u ;;
+        g) _DLS_CLI_LONG=1; _DLS_CLI_NO_OWNER=1 ;;
+        o) _DLS_CLI_LONG=1; _DLS_CLI_NO_GROUP=1 ;;
+        G) _DLS_CLI_NO_GROUP=1 ;;
+        n) _DLS_CLI_LONG=1; _DLS_CLI_NUMERIC=1 ;;
+        L) _DLS_CLI_DEREF=1 ;;
+        H) _DLS_CLI_DEREF_CMD=1 ;;
+        I)
+          if [[ -n $cluster ]]; then
+            pat=$cluster
+            cluster=""
+          else
+            (( $# )) || { print -u2 -- "dls: -I needs a pattern"; return 2 }
+            pat=$1
+            shift
+          fi
+          _DLS_CLI_IGNORE+=("$pat")
+          ;;
+        w)
+          if [[ -n $cluster ]]; then
+            word=$cluster
+            cluster=""
+          else
+            (( $# )) || { print -u2 -- "dls: -w needs a width"; return 2 }
+            word=$1
+            shift
+          fi
+          [[ $word == <-> ]] || { print -u2 -- "dls: invalid width: $word"; return 2 }
+          _DLS_CLI_WIDTH_SET=1
+          _DLS_CLI_WIDTH=$word
+          ;;
+        *)
+          print -u2 -- "dls: unknown option: -$c"
+          return 2
+          ;;
+      esac
+    done
+  done
+  if (( $#_DLS_PATHS )); then
+    _DLS_START="${_DLS_PATHS[1]}"
+  else
+    _DLS_START="."
+  fi
+  return 0
+}
+
+_dls_sort_label() {
+  emulate -L zsh
+  local s="${_DLS_SORT:-name}"
+  [[ $s == time ]] && s="${_DLS_TIME:-mtime}"
+  (( ${_DLS_SORT_REVERSE:-0} )) && s+="~"
+  [[ ${_DLS_SORT_DIRS:-mixed} != mixed ]] && s+=" dirs"
+  [[ ${_DLS_SORT_DOTS:-mixed} != mixed ]] && s+=" dots"
+  print -rn -- "$s"
+}
+
+# Zero-pad digit runs so f2 sorts before f10. Sets REPLY.
+_dls_natural_set() {
+  local rest="$1" out="" pre num
+  [[ ${_DLS_SORT_CASE:-ignore} == ignore ]] && rest="${(L)rest}"
+  while [[ -n $rest ]]; do
+    if [[ $rest =~ '^([^0-9]*)([0-9]+)(.*)$' ]]; then
+      pre="${match[1]}"
+      num="${match[2]}"
+      rest="${match[3]}"
+      if (( ${#num} < 12 )); then
+        num=$(( 10#$num ))
+        num="${(l:12::0:)num}"
+      fi
+      out+="${pre}${num}"
+    else
+      out+="$rest"
+      break
+    fi
+  done
+  REPLY=$out
+}
+
+_dls_natural_key() {
+  emulate -L zsh
+  _dls_natural_set "$1"
+  print -rn -- "$REPLY"
+}
+
+# 20-wide zero pad, sign first, matching printf '%020d'.
+_dls_zpad() {
+  local n="$1" w=20 body bw
+  [[ $n == <-> ]] || n=0
+  if [[ $n == -* ]]; then
+    body="${n#-}"
+    bw=$(( w - 1 ))
+    (( ${#body} < bw )) && body="${(l:bw::0:)body}"
+    REPLY="-$body"
+  elif (( ${#n} < w )); then
+    REPLY="${(l:w::0:)n}"
+  else
+    REPLY=$n
+  fi
+}
+
+_dls_sort_key_set() {
+  local i="$1" name="${_DLS_NAMES[$1]}" key ext stamp
+  case ${_DLS_SORT:-name} in
+    natural)
+      _dls_natural_set "$name"
+      key=$REPLY
+      ;;
+    ext)
+      ext="${name:e}"
+      if [[ ${_DLS_SORT_CASE:-ignore} == ignore ]]; then
+        ext="${(L)ext}"
+        name="${(L)name}"
+      fi
+      key="${ext} ${name}"
+      ;;
+    size)
+      stamp="${_DLS_SIZE[$i]:-0}"
+      _dls_zpad "$stamp"
+      key="$REPLY $name"
+      ;;
+    mtime)
+      stamp="${_DLS_MTIME[$i]:-0}"
+      _dls_zpad "$stamp"
+      key="$REPLY $name"
+      ;;
+    time)
+      case ${_DLS_TIME:-mtime} in
+        ctime) stamp="${_DLS_CTIME[$i]:-0}" ;;
+        atime) stamp="${_DLS_ATIME[$i]:-0}" ;;
+        birth) stamp="${_DLS_BIRTH[$i]:-0}" ;;
+        *) stamp="${_DLS_MTIME[$i]:-0}" ;;
+      esac
+      [[ $stamp == <-> ]] || stamp=0
+      _dls_zpad "$stamp"
+      key="$REPLY $name"
+      ;;
+    *)
+      [[ ${_DLS_SORT_CASE:-ignore} == ignore ]] && name="${(L)name}"
+      key="$name"
+      ;;
+  esac
+  REPLY=$key
+}
+
+_dls_sort_key() {
+  emulate -L zsh
+  _dls_sort_key_set "$1"
+  print -rn -- "$REPLY"
+}
+
+# Group, then sort inside each group. sort_dirs and sort_dots each add a
+# split; mixed leaves that split out. Reverse flips inside a group only.
+# dirs first + dots first: dot dirs, dirs, dot files, files.
+_dls_apply_sort() {
+  emulate -L zsh
+  local -a b0 b1 b2 b3 items nn nd nl ne ns nm nk
+  local -i i n=$#_DLS_NAMES dc hc g
+  local rec key name
+  (( n == 0 )) && return 0
+  for (( i = 1; i <= n; i++ )); do
+    _dls_sort_key_set "$i"
+    key=$REPLY
+    rec="${key}"$'\t'"$i"
+    name="${_DLS_NAMES[i]}"
+    case ${_DLS_SORT_DIRS:-mixed} in
+      mixed) dc=0 ;;
+      last) (( _DLS_ISDIR[i] )) && dc=1 || dc=0 ;;
+      *) (( _DLS_ISDIR[i] )) && dc=0 || dc=1 ;;
+    esac
+    case ${_DLS_SORT_DOTS:-mixed} in
+      mixed) hc=0 ;;
+      last) [[ $name == .* ]] && hc=1 || hc=0 ;;
+      *) [[ $name == .* ]] && hc=0 || hc=1 ;;
+    esac
+    g=$(( dc * 2 + hc ))
+    case $g in
+      0) b0+=("$rec") ;;
+      1) b1+=("$rec") ;;
+      2) b2+=("$rec") ;;
+      *) b3+=("$rec") ;;
+    esac
+  done
+  if [[ ${_DLS_SORT:-name} == none ]]; then
+    if (( ${_DLS_SORT_REVERSE:-0} )); then
+      (( $#b0 )) && b0=("${(@Oa)b0}")
+      (( $#b1 )) && b1=("${(@Oa)b1}")
+      (( $#b2 )) && b2=("${(@Oa)b2}")
+      (( $#b3 )) && b3=("${(@Oa)b3}")
+    fi
+  elif (( ${_DLS_SORT_REVERSE:-0} )); then
+    (( $#b0 )) && b0=("${(@O)b0}")
+    (( $#b1 )) && b1=("${(@O)b1}")
+    (( $#b2 )) && b2=("${(@O)b2}")
+    (( $#b3 )) && b3=("${(@O)b3}")
+  else
+    (( $#b0 )) && b0=("${(@o)b0}")
+    (( $#b1 )) && b1=("${(@o)b1}")
+    (( $#b2 )) && b2=("${(@o)b2}")
+    (( $#b3 )) && b3=("${(@o)b3}")
+  fi
+  items=("${b0[@]}" "${b1[@]}" "${b2[@]}" "${b3[@]}")
+  local -a nfull nmode nnlink nuid ngid natime nctime nbirth ninode nblocks ntarget
+  for rec in "${items[@]}"; do
+    i="${rec##*$'\t'}"
+    nn+=("${_DLS_NAMES[i]}")
+    nd+=("${_DLS_ISDIR[i]}")
+    nl+=("${_DLS_LINK[i]}")
+    ne+=("${_DLS_EXEC[i]}")
+    ns+=("${_DLS_SIZE[i]}")
+    nm+=("${_DLS_MTIME[i]}")
+    nk+=("${_DLS_KIND[i]}")
+    nfull+=("${_DLS_FULL[i]:-}")
+    nmode+=("${_DLS_MODE[i]:-0}")
+    nnlink+=("${_DLS_NLINK[i]:-0}")
+    nuid+=("${_DLS_UID[i]:-0}")
+    ngid+=("${_DLS_GID[i]:-0}")
+    natime+=("${_DLS_ATIME[i]:-0}")
+    nctime+=("${_DLS_CTIME[i]:-0}")
+    nbirth+=("${_DLS_BIRTH[i]:-0}")
+    ninode+=("${_DLS_INODE_N[i]:-0}")
+    nblocks+=("${_DLS_BLOCKS_N[i]:-0}")
+    ntarget+=("${_DLS_TARGET[i]:-}")
+  done
+  _DLS_NAMES=("${nn[@]}")
+  _DLS_ISDIR=("${nd[@]}")
+  _DLS_LINK=("${nl[@]}")
+  _DLS_EXEC=("${ne[@]}")
+  _DLS_SIZE=("${ns[@]}")
+  _DLS_MTIME=("${nm[@]}")
+  _DLS_KIND=("${nk[@]}")
+  _DLS_FULL=("${nfull[@]}")
+  _DLS_MODE=("${nmode[@]}")
+  _DLS_NLINK=("${nnlink[@]}")
+  _DLS_UID=("${nuid[@]}")
+  _DLS_GID=("${ngid[@]}")
+  _DLS_ATIME=("${natime[@]}")
+  _DLS_CTIME=("${nctime[@]}")
+  _DLS_BIRTH=("${nbirth[@]}")
+  _DLS_INODE_N=("${ninode[@]}")
+  _DLS_BLOCKS_N=("${nblocks[@]}")
+  _DLS_TARGET=("${ntarget[@]}")
+}
+
+_dls_clear_rows() {
+  _DLS_NAMES=()
+  _DLS_ISDIR=()
+  _DLS_LINK=()
+  _DLS_EXEC=()
+  _DLS_SIZE=()
+  _DLS_MTIME=()
+  _DLS_KIND=()
+  _DLS_FULL=()
+  _DLS_MODE=()
+  _DLS_NLINK=()
+  _DLS_UID=()
+  _DLS_GID=()
+  _DLS_ATIME=()
+  _DLS_CTIME=()
+  _DLS_BIRTH=()
+  _DLS_INODE_N=()
+  _DLS_BLOCKS_N=()
+  _DLS_TARGET=()
+  _DLS_TEXT=()
+  _DLS_META=()
+  _DLS_SIG=""
+  _DLS_VIS=()
+  _DLS_LIST_ID=$(( _DLS_LIST_ID + 1 ))
+}
+
+# 0 when $1 should stay visible for query $2.
+# Every word is required. A dash excludes the rest of that word only when a
+# space is in front of the dash, so "-bash" is a literal and "foo-bar" is one
+# word. A dash with nothing after it is ignored. The match is a literal substring.
+_dls_filter_ok() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local name="${(L)1}" query="${(L)2}"
+  local -a tok
+  local word body
+  local -i i
+  [[ -z ${query//[[:space:]]/} ]] && return 0
+  tok=("${(@s: :)query}")
+  for (( i = 1; i <= $#tok; i++ )); do
+    word="${tok[i]}"
+    [[ -z $word ]] && continue
+    if (( i > 1 )) && [[ $word == -* ]]; then
+      body="${word[2,-1]}"
+      [[ -z $body ]] && continue
+      [[ $name == *"$body"* ]] && return 1
+    else
+      [[ $name == *"$word"* ]] || return 1
+    fi
+  done
+  return 0
+}
+
+# Rebuild the visible indexes from the current query. Keep the highlighted
+# name when it still matches. Cell text stays cached.
+_dls_show_sync() {
+  emulate -L zsh
+  local keep=""
+  local -i i ni
+  if (( $#_DLS_VIS && _DLS_SEL >= 0 && _DLS_SEL < $#_DLS_VIS )); then
+    ni=${_DLS_VIS[_DLS_SEL+1]}
+    (( ni >= 1 && ni <= $#_DLS_NAMES )) && keep="${_DLS_NAMES[ni]}"
+  fi
+  _DLS_VIS=()
+  for (( i = 1; i <= $#_DLS_NAMES; i++ )); do
+    _dls_filter_ok "${_DLS_NAMES[i]}" "$_DLS_FILTER" && _DLS_VIS+=("$i")
+  done
+  _DLS_SEL=0
+  [[ -n $keep ]] || return 0
+  for (( i = 1; i <= $#_DLS_VIS; i++ )); do
+    if [[ ${_DLS_NAMES[_DLS_VIS[i]]} == "$keep" ]]; then
+      _DLS_SEL=$(( i - 1 ))
+      return 0
+    fi
+  done
+  return 0
+}
+
+# One key while the filter is open. 1 when a filter is not open.
+_dls_filter_key() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local token="$1"
+  (( ${_DLS_FILTERING:-0} )) || return 1
+  case $token in
+    enter)
+      _DLS_FILTERING=0
+      ;;
+    backspace)
+      if [[ -z $_DLS_FILTER ]]; then
+        _DLS_FILTERING=0
+      else
+        _DLS_FILTER="${_DLS_FILTER[1,-2]}"
+        _DLS_SCROLL=0
+        _dls_show_sync
+      fi
+      ;;
+    esc)
+      _DLS_FILTER=""
+      _DLS_FILTERING=0
+      _DLS_SCROLL=0
+      _dls_show_sync
+      ;;
+    left|right|up|down|shift-enter|ignore)
+      ;;
+    *)
+      _DLS_FILTER+="$token"
+      _DLS_SCROLL=0
+      _dls_show_sync
+      ;;
+  esac
+  return 0
+}
+
+_dls_stat_num() {
+  [[ $1 == <-> ]] && print -rn -- "$1" || print -rn -- 0
+}
+
+# $2 non-zero follows the link (GNU -L). Otherwise lstat, the link itself.
+_dls_stat_path() {
+  emulate -L zsh
+  local -A st
+  local follow="${2:-0}"
+  _DLS_STAT_SIZE=0
+  _DLS_STAT_MTIME=0
+  _DLS_STAT_ATIME=0
+  _DLS_STAT_CTIME=0
+  _DLS_STAT_MODE=0
+  _DLS_STAT_NLINK=0
+  _DLS_STAT_UID=0
+  _DLS_STAT_GID=0
+  _DLS_STAT_INODE=0
+  _DLS_STAT_BLOCKS=0
+  _DLS_STAT_BIRTH=0
+  _DLS_STAT_TARGET=""
+  (( $+builtins[zstat] )) || zmodload -F zsh/stat b:zstat 2>/dev/null || return 0
+  if (( follow )); then
+    zstat -H st -- "$1" 2>/dev/null || return 0
+  else
+    zstat -L -H st -- "$1" 2>/dev/null || return 0
+  fi
+  local v
+  v="${st[size]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_SIZE=$v
+  v="${st[mtime]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_MTIME=$v
+  v="${st[atime]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_ATIME=$v
+  v="${st[ctime]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_CTIME=$v
+  v="${st[mode]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_MODE=$v
+  v="${st[nlink]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_NLINK=$v
+  v="${st[uid]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_UID=$v
+  v="${st[gid]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_GID=$v
+  v="${st[inode]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_INODE=$v
+  v="${st[blocks]:-0}"; [[ $v == <-> ]] || v=0; _DLS_STAT_BLOCKS=$v
+  _DLS_STAT_TARGET="${st[link]:-}"
+  if [[ ${_DLS_TIME:-mtime} == birth ]]; then
+    local w
+    if (( follow )); then
+      w="$(command stat -L -c %W -- "$1" 2>/dev/null)" || w=0
+    else
+      w="$(command stat -c %W -- "$1" 2>/dev/null)" || w=0
+    fi
+    [[ $w == <-> ]] || w=0
+    _DLS_STAT_BIRTH=$w
+  fi
+}
+
+# Size and times are only needed for a long row or a size/time sort.
+# zstat is a syscall per name, so the plain grid does not pay it.
+_dls_want_stat() {
+  case ${_DLS_SORT:-name} in
+    size|mtime|time) return 0 ;;
+  esac
+  (( ${_DLS_LONG:-0} || ${_DLS_INODE:-0} || ${_DLS_BLOCKS:-0} )) && return 0
+  return 1
+}
+
+# $1 path, $2 display name, $3 follow.
+_dls_push() {
+  emulate -L zsh
+  local path="$1" name="$2" follow="${3:-0}" d=0 link=0 ex=0
+  _dls_visible_set "$name"
+  name=$REPLY
+  [[ -n $name ]] || return 0
+  [[ -L $path ]] && link=1
+  [[ -d $path ]] && d=1
+  (( follow )) && link=0
+  if (( ! d && ! link )) && [[ -x $path ]]; then
+    ex=1
+  fi
+  if _dls_want_stat; then
+    _dls_stat_path "$path" "$follow"
+  else
+    _DLS_STAT_SIZE=0
+    _DLS_STAT_MTIME=0
+    _DLS_STAT_ATIME=0
+    _DLS_STAT_CTIME=0
+    _DLS_STAT_MODE=0
+    _DLS_STAT_NLINK=0
+    _DLS_STAT_UID=0
+    _DLS_STAT_GID=0
+    _DLS_STAT_INODE=0
+    _DLS_STAT_BLOCKS=0
+    _DLS_STAT_BIRTH=0
+    _DLS_STAT_TARGET=""
+    if [[ ${_DLS_INDICATOR:-slash} == classify || ${_DLS_INDICATOR:-slash} == file-type ]]; then
+      if [[ -p $path ]]; then
+        _DLS_STAT_MODE=$(( 8#010000 ))
+      elif [[ -S $path ]]; then
+        _DLS_STAT_MODE=$(( 8#140000 ))
+      fi
+    fi
+  fi
+  _DLS_NAMES+=("$name")
+  _DLS_ISDIR+=("$d")
+  _DLS_LINK+=("$link")
+  _DLS_EXEC+=("$ex")
+  _DLS_SIZE+=("$_DLS_STAT_SIZE")
+  _DLS_MTIME+=("$_DLS_STAT_MTIME")
+  _DLS_FULL+=("$path")
+  _DLS_MODE+=("$_DLS_STAT_MODE")
+  _DLS_NLINK+=("$_DLS_STAT_NLINK")
+  _DLS_UID+=("$_DLS_STAT_UID")
+  _DLS_GID+=("$_DLS_STAT_GID")
+  _DLS_ATIME+=("$_DLS_STAT_ATIME")
+  _DLS_CTIME+=("$_DLS_STAT_CTIME")
+  _DLS_BIRTH+=("$_DLS_STAT_BIRTH")
+  _DLS_INODE_N+=("$_DLS_STAT_INODE")
+  _DLS_BLOCKS_N+=("$_DLS_STAT_BLOCKS")
+  _DLS_TARGET+=("$_DLS_STAT_TARGET")
+  _dls_kind_set "$name" "$d" "$link" "$ex"
+  _DLS_KIND+=("$REPLY")
+}
+
+# 0 when this name is left out by -B, -I, or --hide.
+_dls_ignored() {
+  emulate -L zsh
+  local name="$1" pat
+  if (( ${_DLS_BACKUPS:-0} )) && [[ $name == *~ ]]; then
+    return 0
+  fi
+  for pat in "${_DLS_IGNORE[@]}"; do
+    [[ -n $pat && $name == ${~pat} ]] && return 0
+  done
+  if [[ ${_DLS_CLI_DOTS:-} != a && ${_DLS_CLI_DOTS:-} != A ]]; then
+    for pat in "${_DLS_HIDE[@]}"; do
+      [[ -n $pat && $name == ${~pat} ]] && return 0
+    done
+  fi
+  return 1
+}
+
+# dir, then symlink, then executable, then ext group, then file. Sets REPLY.
+_dls_kind_set() {
+  local name="$1" ext
+  if (( ${2:-0} )); then
+    REPLY=dir
+    return
+  fi
+  if (( ${3:-0} )); then
+    REPLY=link
+    return
+  fi
+  if (( ${4:-0} )); then
+    REPLY=exec
+    return
+  fi
+  ext="${${name:e}:l}"
+  if [[ -n $ext && -n ${_DLS_EXT[$ext]:-} ]]; then
+    REPLY="${_DLS_EXT[$ext]}"
+    return
+  fi
+  REPLY=file
+}
+
+_dls_kind_of() {
+  emulate -L zsh
+  _dls_kind_set "$@"
+  print -rn -- "$REPLY"
+}
+
+# Fill the name arrays. 0 ok, 1 not a directory, 2 unreadable.
+_dls_list() {
+  emulate -L zsh
+  setopt localoptions nullglob
+  local dir="$1" show="${2:-0}"
+  local -a raw
+  local e b parent
+  _dls_clear_rows
+  _DLS_VIEW=dir
+  [[ -d $dir ]] || return 1
+  [[ -r $dir && -x $dir ]] || return 2
+  dir="${dir:a}"
+  if (( show && ${_DLS_SHOW_DOTDOT:-0} )); then
+    _dls_ignored . || _dls_push "$dir" "." 0
+    parent="$(_dls_parent "$dir")"
+    _dls_ignored .. || _dls_push "$parent" ".." 0
+  fi
+  if (( show )); then
+    raw=("$dir"/*(oN) "$dir"/.*(oN))
+  else
+    raw=("$dir"/*(oN))
+  fi
+  for e in "${raw[@]}"; do
+    b="${e:t}"
+    [[ $b == . || $b == .. ]] && continue
+    _dls_ignored "$b" && continue
+    _dls_push "$e" "$b" "${_DLS_DEREF:-0}"
+  done
+  _dls_apply_sort
+  _dls_show_sync
+  return 0
+}
+
+# One grid of command-line operands. Names are the arguments as given.
+_dls_list_operands() {
+  emulate -L zsh
+  local p full follow
+  _dls_clear_rows
+  _DLS_VIEW=operands
+  _DLS_OPERANDS=("$@")
+  for p in "$@"; do
+    if [[ ! -e $p && ! -L $p ]]; then
+      print -u2 -- "dls: cannot access: $p"
+      _DLS_CLI_MISS=1
+      continue
+    fi
+    full="${p:a}"
+    follow=0
+    if (( ${_DLS_DEREF:-0} )); then
+      follow=1
+    elif (( ${_DLS_CLI_DEREF_CMD:-0} )) && [[ -L $p ]]; then
+      follow=1
+    fi
+    _dls_push "$full" "$p" "$follow"
+  done
+  _dls_apply_sort
+  _dls_show_sync
+  return 0
+}
+
+# Ceiling to one decimal under 10, else to the next integer. Matches GNU ls -h / --si.
+_dls_human_set() {
+  emulate -L zsh
+  local n="${1:-0}" base="${2:-1024}"
+  local -a letters
+  local e=0 pow=1 whole rem tenths
+  [[ $n == <-> ]] || n=0
+  [[ $base == <-> ]] || base=1024
+  (( base < 2 )) && base=1024
+  (( n < 0 )) && n=0
+  (( n < base )) && { REPLY=$n; return }
+  if (( base == 1000 )); then
+    letters=(k M G T P E Z Y)
+  else
+    letters=(K M G T P E Z Y)
+  fi
+  while (( e < $#letters && pow <= n / base )); do
+    pow=$(( pow * base ))
+    e=$(( e + 1 ))
+  done
+  (( e < 1 )) && { REPLY=$n; return }
+  whole=$(( n / pow ))
+  rem=$(( n % pow ))
+  if (( whole >= 10 )); then
+    (( rem > 0 )) && whole=$(( whole + 1 ))
+    if (( whole >= base && e < $#letters )); then
+      REPLY="1.0${letters[e+1]}"
+      return
+    fi
+    REPLY="${whole}${letters[e]}"
+    return
+  fi
+  if (( rem > 0 )); then
+    tenths=$(( (rem * 10 + pow - 1) / pow ))
+  else
+    tenths=0
+  fi
+  if (( tenths >= 10 )); then
+    whole=$(( whole + 1 ))
+    tenths=0
+  fi
+  if (( whole >= 10 )); then
+    REPLY="${whole}${letters[e]}"
+    return
+  fi
+  REPLY="${whole}.${tenths}${letters[e]}"
+}
+
+_dls_human() {
+  emulate -L zsh
+  _dls_human_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_size_set() {
+  local n="${1:-0}"
+  [[ $n == <-> ]] || n=0
+  if (( ${_DLS_SI:-0} )); then
+    _dls_human_set "$n" 1000
+  elif (( ${_DLS_HUMAN:-0} )); then
+    _dls_human_set "$n" 1024
+  else
+    REPLY=$n
+  fi
+}
+
+_dls_size_text() {
+  emulate -L zsh
+  _dls_size_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_blocks_set() {
+  local b="${1:-0}" kb bytes
+  [[ $b == <-> ]] || b=0
+  kb=$(( (b + 1) / 2 ))
+  if (( ${_DLS_HUMAN:-0} || ${_DLS_SI:-0} )); then
+    bytes=$(( kb * 1024 ))
+    if (( ${_DLS_SI:-0} )); then
+      _dls_human_set "$bytes" 1000
+    else
+      _dls_human_set "$bytes" 1024
+    fi
+  else
+    REPLY=$kb
+  fi
+}
+
+_dls_blocks_text() {
+  emulate -L zsh
+  _dls_blocks_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_rwx_set() {
+  local bits="${1:-0}" spec="${2:-0}" pair="${3:-sS}" out=""
+  (( bits & 4 )) && out+="r" || out+="-"
+  (( bits & 2 )) && out+="w" || out+="-"
+  if (( bits & 1 )); then
+    (( spec )) && out+="${pair[1]}" || out+="x"
+  else
+    (( spec )) && out+="${pair[2]}" || out+="-"
+  fi
+  REPLY=$out
+}
+
+_dls_rwx() {
+  emulate -L zsh
+  _dls_rwx_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_mode_set() {
+  local mode="${1:-0}" t c u g o su sg st ru rg ro
+  [[ $mode == <-> ]] || mode=0
+  t=$(( mode & 8#170000 ))
+  case $t in
+    $((8#140000))) c=s ;;
+    $((8#120000))) c=l ;;
+    $((8#100000))) c=- ;;
+    $((8#060000))) c=b ;;
+    $((8#040000))) c=d ;;
+    $((8#020000))) c=c ;;
+    $((8#010000))) c=p ;;
+    *) c='?' ;;
+  esac
+  u=$(( (mode >> 6) & 7 ))
+  g=$(( (mode >> 3) & 7 ))
+  o=$(( mode & 7 ))
+  su=$(( (mode & 8#4000) != 0 ))
+  sg=$(( (mode & 8#2000) != 0 ))
+  st=$(( (mode & 8#1000) != 0 ))
+  _dls_rwx_set "$u" "$su" sS
+  ru=$REPLY
+  _dls_rwx_set "$g" "$sg" sS
+  rg=$REPLY
+  _dls_rwx_set "$o" "$st" tT
+  ro=$REPLY
+  REPLY="${c}${ru}${rg}${ro}"
+}
+
+_dls_mode_str() {
+  emulate -L zsh
+  _dls_mode_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_id_set() {
+  local kind="$1" id="${2:-0}" key line name
+  [[ $id == <-> ]] || id=0
+  if (( ${_DLS_NUMERIC:-0} )); then
+    REPLY=$id
+    return
+  fi
+  key="${kind}:${id}"
+  if [[ -n ${_DLS_IDCACHE[$key]:-} ]]; then
+    REPLY="${_DLS_IDCACHE[$key]}"
+    return
+  fi
+  if [[ $kind == user ]]; then
+    line="$(command getent passwd "$id" 2>/dev/null)" || line=""
+  else
+    line="$(command getent group "$id" 2>/dev/null)" || line=""
+  fi
+  name="${line%%:*}"
+  [[ -n $name ]] || name="$id"
+  _DLS_IDCACHE[$key]="$name"
+  REPLY=$name
+}
+
+_dls_id_name() {
+  emulate -L zsh
+  _dls_id_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_stamp_set() {
+  local i="${1:-0}"
+  case ${_DLS_TIME:-mtime} in
+    ctime) REPLY="${_DLS_CTIME[i]:-0}" ;;
+    atime) REPLY="${_DLS_ATIME[i]:-0}" ;;
+    birth) REPLY="${_DLS_BIRTH[i]:-0}" ;;
+    *) REPLY="${_DLS_MTIME[i]:-0}" ;;
+  esac
+}
+
+_dls_stamp_at() {
+  emulate -L zsh
+  _dls_stamp_set "$1"
+  print -rn -- "$REPLY"
+}
+
+_dls_time_set() {
+  local epoch="${1:-0}" fmt now age recent old
+  if [[ ${_DLS_TIME:-mtime} == birth && ( $epoch == 0 || $epoch != <-> ) ]]; then
+    REPLY="-"
+    return
+  fi
+  [[ $epoch == <-> ]] || epoch=0
+  if (( ! $+builtins[strftime] )); then
+    zmodload -F zsh/datetime b:strftime p:EPOCHSECONDS 2>/dev/null || true
+  fi
+  case ${_DLS_TIME_STYLE:-locale} in
+    iso) fmt='%Y-%m-%d' ;;
+    long-iso) fmt='%Y-%m-%d %H:%M' ;;
+    full-iso) fmt='%Y-%m-%d %H:%M:%S %z' ;;
+    +*)
+      fmt="${_DLS_TIME_STYLE#+}"
+      if [[ $fmt == *$'\n'* ]]; then
+        recent="${fmt%%$'\n'*}"
+        old="${fmt#*$'\n'}"
+        now="${EPOCHSECONDS:-0}"
+        age=$(( now - epoch ))
+        if (( age < 15778800 && age > -3600 )); then
+          fmt="$recent"
+        else
+          fmt="$old"
+        fi
+      fi
+      ;;
+    *)
+      now="${EPOCHSECONDS:-0}"
+      age=$(( now - epoch ))
+      if (( age < 15778800 && age > -3600 )); then
+        fmt='%b %e %H:%M'
+      else
+        fmt='%b %e  %Y'
+      fi
+      ;;
+  esac
+  if (( $+builtins[strftime] )); then
+    strftime -s REPLY "$fmt" "$epoch"
+  else
+    REPLY=$epoch
+  fi
+}
+
+_dls_time_text() {
+  emulate -L zsh
+  _dls_time_set "$@"
+  print -rn -- "$REPLY"
+}
+
+# Indicator for row $1 (1-based). Sets REPLY to one character or empty.
+# slash is the default, including on a link to a directory.
+_dls_suf_set() {
+  local i="${1:-0}" style="${_DLS_INDICATOR:-slash}"
+  local link isdir ex mode t
+  REPLY=""
+  (( i < 1 )) && return 0
+  [[ $style == none ]] && return 0
+  link="${_DLS_LINK[i]:-0}"
+  isdir="${_DLS_ISDIR[i]:-0}"
+  ex="${_DLS_EXEC[i]:-0}"
+  mode="${_DLS_MODE[i]:-0}"
+  [[ $mode == <-> ]] && t=$(( mode & 8#170000 )) || t=0
+  if (( link )) && [[ $style == classify || $style == file-type ]]; then
+    REPLY="@"
+    return
+  fi
+  if (( isdir || t == 8#040000 )); then
+    REPLY="/"
+    return
+  fi
+  [[ $style == slash ]] && return 0
+  if (( t == 8#010000 )); then
+    REPLY="|"
+    return
+  fi
+  if (( t == 8#140000 )); then
+    REPLY="="
+    return
+  fi
+  if [[ $style == classify ]] && (( ex )); then
+    REPLY="*"
+  fi
+}
+
+_dls_suffix() {
+  emulate -L zsh
+  _dls_suf_set "$1"
+  print -rn -- "$REPLY"
+}
+
+_dls_rpad_set() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local s="$1" w="${2:-0}" n pad
+  [[ $w == <-> ]] || w=0
+  n=${(m)#s}
+  if (( n < w )); then
+    printf -v pad '%*s' $(( w - n )) ''
+    s="${pad}${s}"
+  fi
+  REPLY=$s
+}
+
+_dls_rpad() {
+  emulate -L zsh
+  _dls_rpad_set "$@"
+  print -rn -- "$REPLY"
+}
+
+_dls_measure() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local i n=$#_DLS_NAMES s epoch dw
+  _DLS_W_INO=1
+  _DLS_W_BLK=1
+  _DLS_W_LINK=1
+  _DLS_W_USER=1
+  _DLS_W_GROUP=1
+  _DLS_W_SIZE=1
+  _DLS_W_TIME=1
+  for (( i = 1; i <= n; i++ )); do
+    if (( ${_DLS_INODE:-0} )); then
+      s="${_DLS_INODE_N[i]:-0}"
+      (( ${#s} > _DLS_W_INO )) && _DLS_W_INO=${#s}
+    fi
+    if (( ${_DLS_BLOCKS:-0} )); then
+      _dls_blocks_set "${_DLS_BLOCKS_N[i]:-0}"
+      s=$REPLY
+      (( ${#s} > _DLS_W_BLK )) && _DLS_W_BLK=${#s}
+    fi
+    if (( ${_DLS_LONG:-0} )); then
+      s="${_DLS_NLINK[i]:-0}"
+      (( ${#s} > _DLS_W_LINK )) && _DLS_W_LINK=${#s}
+      if (( ! ${_DLS_NO_OWNER:-0} )); then
+        _dls_id_set user "${_DLS_UID[i]:-0}"
+        s=$REPLY
+        dw=${(m)#s}
+        (( dw > _DLS_W_USER )) && _DLS_W_USER=$dw
+      fi
+      if (( ! ${_DLS_NO_GROUP:-0} )); then
+        _dls_id_set group "${_DLS_GID[i]:-0}"
+        s=$REPLY
+        dw=${(m)#s}
+        (( dw > _DLS_W_GROUP )) && _DLS_W_GROUP=$dw
+      fi
+      _dls_size_set "${_DLS_SIZE[i]:-0}"
+      s=$REPLY
+      (( ${#s} > _DLS_W_SIZE )) && _DLS_W_SIZE=${#s}
+      _dls_stamp_set "$i"
+      epoch=$REPLY
+      _dls_time_set "$epoch"
+      s=$REPLY
+      dw=${(m)#s}
+      (( dw > _DLS_W_TIME )) && _DLS_W_TIME=$dw
+    fi
+  done
+}
+
+_dls_meta_set() {
+  local i="${1:-0}"
+  local -a parts
+  local s
+  if (( ${_DLS_INODE:-0} )); then
+    _dls_rpad_set "${_DLS_INODE_N[i]:-0}" "${_DLS_W_INO:-1}"
+    parts+=("$REPLY")
+  fi
+  if (( ${_DLS_BLOCKS:-0} )); then
+    _dls_blocks_set "${_DLS_BLOCKS_N[i]:-0}"
+    s=$REPLY
+    _dls_rpad_set "$s" "${_DLS_W_BLK:-1}"
+    parts+=("$REPLY")
+  fi
+  if (( ${_DLS_LONG:-0} )); then
+    _dls_mode_set "${_DLS_MODE[i]:-0}"
+    parts+=("$REPLY")
+    _dls_rpad_set "${_DLS_NLINK[i]:-0}" "${_DLS_W_LINK:-1}"
+    parts+=("$REPLY")
+    if (( ! ${_DLS_NO_OWNER:-0} )); then
+      _dls_id_set user "${_DLS_UID[i]:-0}"
+      s=$REPLY
+      _dls_pad_set "$s" "${_DLS_W_USER:-1}"
+      parts+=("$REPLY")
+    fi
+    if (( ! ${_DLS_NO_GROUP:-0} )); then
+      _dls_id_set group "${_DLS_GID[i]:-0}"
+      s=$REPLY
+      _dls_pad_set "$s" "${_DLS_W_GROUP:-1}"
+      parts+=("$REPLY")
+    fi
+    _dls_size_set "${_DLS_SIZE[i]:-0}"
+    s=$REPLY
+    _dls_rpad_set "$s" "${_DLS_W_SIZE:-1}"
+    parts+=("$REPLY")
+    _dls_stamp_set "$i"
+    s=$REPLY
+    _dls_time_set "$s"
+    s=$REPLY
+    _dls_pad_set "$s" "${_DLS_W_TIME:-1}"
+    parts+=("$REPLY")
+  fi
+  REPLY="${(j: :)parts}"
+}
+
+_dls_meta_prefix() {
+  emulate -L zsh
+  _dls_meta_set "$1"
+  print -rn -- "$REPLY"
+}
+
+# Body in REPLY, meta (no trailing space) in REPLY2.
+_dls_cell_parts() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local i="${1:-0}" maxw="${2:-1}"
+  local shown name prew bodyw meta body
+  name="${_DLS_NAMES[i]:-}"
+  _dls_suf_set "$i"
+  shown="${name}${REPLY}"
+  if (( ${_DLS_LONG:-0} && ${_DLS_LINK[i]:-0} )) && [[ -n ${_DLS_TARGET[i]:-} ]]; then
+    shown+=" -> ${_DLS_TARGET[i]}"
+  fi
+  _dls_meta_set "$i"
+  meta=$REPLY
+  prew=0
+  if [[ -n $meta ]]; then
+    prew=$(( ${(m)#meta} + 1 ))
+  fi
+  # A long row on a narrow screen must not wrap. A wrapped row steals a
+  # screen line and the window stops lining up with the cursor.
+  if (( prew >= maxw )); then
+    _dls_cut_set "$meta" "$maxw"
+    meta=$REPLY
+    body=""
+  else
+    bodyw=$(( maxw - prew ))
+    (( bodyw < 1 )) && bodyw=1
+    _dls_fit_set "$shown" "" "$bodyw"
+    body=$REPLY
+    if (( ! _DLS_LONG )); then
+      _dls_pad_set "$body" "$bodyw"
+      body=$REPLY
+    fi
+  fi
+  REPLY=$body
+  REPLY2=$meta
+}
+
+# $1 meta, $2 body, $3 kind SGR, $4 selected. Sets REPLY.
+_dls_join_cell() {
+  local meta="$1" body="$2" sgr="$3" sel="${4:-0}" line=""
+  if [[ -n $meta ]]; then
+    if (( sel )); then
+      line=$'\e[7m'"${meta}"
+      [[ -n $body ]] && line+=" "
+      line+=$'\e[0m'
+    else
+      line="$meta"
+      [[ -n $body ]] && line+=" "
+    fi
+  fi
+  if [[ -n $sgr ]]; then
+    line+="${sgr}${body}"$'\e[0m'
+  else
+    line+="$body"
+  fi
+  REPLY=$line
+}
+
+_dls_style_set() {
+  local kind="$1" sel="${2:-0}" a b
+  a="${_DLS_STYLE[$kind]:-}"
+  if (( sel )); then
+    b="${_DLS_STYLE[selected]:-}"
+    if [[ -n $a && -n $b ]]; then
+      a="${a};${b}"
+    elif [[ -n $b ]]; then
+      a="$b"
+    fi
+  fi
+  if [[ -n $a ]]; then
+    REPLY=$'\e['"${a}m"
+  else
+    REPLY=""
+  fi
+}
+
+# One cell, including color. $3 is 1 when this row is selected.
+_dls_cell() {
+  emulate -L zsh
+  local i="${1:-0}" maxw="${2:-1}" sel="${3:-0}" body meta sgr
+  _dls_cell_parts "$i" "$maxw"
+  body=$REPLY
+  meta=$REPLY2
+  _dls_style_set "${_DLS_KIND[i]:-file}" "$sel"
+  sgr=$REPLY
+  _dls_join_cell "$meta" "$body" "$sgr" "$sel"
+  print -rn -- "$REPLY"
+}
+
+# Plain row text, no color. Tests and the width of a long line use this.
+_dls_row_plain() {
+  emulate -L zsh
+  local i="${1:-0}" meta name suf shown
+  _dls_measure
+  meta="$(_dls_meta_prefix "$i")"
+  name="${_DLS_NAMES[i]:-}"
+  suf="$(_dls_suffix "$i")"
+  shown="${name}${suf}"
+  if (( ${_DLS_LONG:-0} && ${_DLS_LINK[i]:-0} )) && [[ -n ${_DLS_TARGET[i]:-} ]]; then
+    shown+=" -> ${_DLS_TARGET[i]}"
+  fi
+  if [[ -n $meta ]]; then
+    print -rn -- "${meta} ${shown}"
+  else
+    print -rn -- "$shown"
+  fi
+}
+
+_dls_cli_reset() {
+  _DLS_CLI_DOTS=""
+  _DLS_CLI_SORT=""
+  _DLS_CLI_TIME=""
+  _DLS_CLI_TIME_FROM=""
+  _DLS_CLI_INDICATOR=""
+  _DLS_CLI_COLOR=""
+  _DLS_CLI_STYLE=""
+  _DLS_CLI_BACKUPS=0
+  _DLS_CLI_DIRECTORY=0
+  _DLS_CLI_LONG=0
+  _DLS_CLI_HUMAN=0
+  _DLS_CLI_SI=0
+  _DLS_CLI_INODE=0
+  _DLS_CLI_BLOCKS=0
+  _DLS_CLI_NUMERIC=0
+  _DLS_CLI_NO_OWNER=0
+  _DLS_CLI_NO_GROUP=0
+  _DLS_CLI_DEREF=0
+  _DLS_CLI_DEREF_CMD=0
+  _DLS_CLI_REVERSE=0
+  _DLS_CLI_GROUP_DIRS=0
+  _DLS_CLI_WIDTH_SET=0
+  _DLS_CLI_WIDTH=0
+  _DLS_CLI_MISS=0
+  _DLS_CLI_IGNORE=()
+  _DLS_CLI_HIDE=()
+  _DLS_PATHS=()
+  _DLS_HELP=0
+}
+
+_dls_apply_cli() {
+  emulate -L zsh
+  local want="" desc=0
+  _DLS_BACKUPS=$_DLS_CLI_BACKUPS
+  _DLS_IGNORE=("${_DLS_CLI_IGNORE[@]}")
+  _DLS_HIDE=("${_DLS_CLI_HIDE[@]}")
+  _DLS_DIRECTORY=$_DLS_CLI_DIRECTORY
+  _DLS_LONG=$_DLS_CLI_LONG
+  _DLS_HUMAN=$_DLS_CLI_HUMAN
+  _DLS_SI=$_DLS_CLI_SI
+  _DLS_INODE=$_DLS_CLI_INODE
+  _DLS_BLOCKS=$_DLS_CLI_BLOCKS
+  _DLS_NUMERIC=$_DLS_CLI_NUMERIC
+  _DLS_NO_OWNER=$_DLS_CLI_NO_OWNER
+  _DLS_NO_GROUP=$_DLS_CLI_NO_GROUP
+  _DLS_DEREF=$_DLS_CLI_DEREF
+  _DLS_WIDTH_SET=$_DLS_CLI_WIDTH_SET
+  _DLS_WIDTH=$_DLS_CLI_WIDTH
+  if [[ -n ${_DLS_CLI_STYLE:-} ]]; then
+    _DLS_TIME_STYLE="$_DLS_CLI_STYLE"
+  fi
+  if [[ ${_DLS_CLI_DOTS:-} == a || ${_DLS_CLI_DOTS:-} == A ]]; then
+    _DLS_SHOW_HIDDEN=1
+  fi
+  _DLS_SHOW_DOTDOT=0
+  [[ ${_DLS_CLI_DOTS:-} == a ]] && _DLS_SHOW_DOTDOT=1
+  if [[ -n ${_DLS_CLI_TIME:-} ]]; then
+    _DLS_TIME="$_DLS_CLI_TIME"
+  fi
+  if [[ -n ${_DLS_CLI_SORT:-} ]]; then
+    want="$_DLS_CLI_SORT"
+  elif [[ ${_DLS_CLI_TIME_FROM:-} == c || ${_DLS_CLI_TIME_FROM:-} == u ]] && (( ! _DLS_LONG )); then
+    want=time
+  fi
+  if [[ -n $want ]]; then
+    case $want in
+      time) _DLS_SORT=time; desc=1 ;;
+      size) _DLS_SORT=size; desc=1 ;;
+      extension) _DLS_SORT=ext; desc=0 ;;
+      version) _DLS_SORT=natural; desc=0 ;;
+      none) _DLS_SORT=none; desc=0 ;;
+      name) _DLS_SORT=name; desc=0 ;;
+    esac
+    _DLS_SORT_REVERSE=$desc
+    (( _DLS_CLI_REVERSE )) && _DLS_SORT_REVERSE=$(( 1 - _DLS_SORT_REVERSE ))
+  elif (( _DLS_CLI_REVERSE )); then
+    _DLS_SORT_REVERSE=$(( 1 - ${_DLS_SORT_REVERSE:-0} ))
+  fi
+  if (( _DLS_CLI_GROUP_DIRS )); then
+    _DLS_SORT_DIRS=first
+  fi
+  if [[ -n ${_DLS_CLI_INDICATOR:-} ]]; then
+    _DLS_INDICATOR="$_DLS_CLI_INDICATOR"
+  else
+    _DLS_INDICATOR=slash
+  fi
+  if [[ ${_DLS_CLI_COLOR:-} == never ]]; then
+    local k
+    for k in "${(k)_DLS_STYLE[@]}"; do
+      _DLS_STYLE[$k]=""
+    done
+    _DLS_STYLE[selected]=7
+    _DLS_STYLE[status]=2
+    _DLS_COLORSCHEME=plain
+  fi
+}
+
+# $1 = term columns. Sets _DLS_COLW and _DLS_NCOLS.
+# Display width stays in this process. A command substitution here forks once per name.
+_dls_layout() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local termw="${1:-80}" name style mode
+  local -i gap=2 w=0 dw i n=$#_DLS_NAMES ncols
+  [[ $termw == <-> ]] || termw=80
+  (( termw < 1 )) && termw=1
+  if (( ${_DLS_LONG:-0} )); then
+    _DLS_COLW=$termw
+    _DLS_NCOLS=1
+    return
+  fi
+  style="${_DLS_INDICATOR:-slash}"
+  if [[ $style == slash || $style == none ]]; then
+    for (( i = 1; i <= n; i++ )); do
+      name="${_DLS_NAMES[i]}"
+      dw=${(m)#name}
+      if [[ $style == slash ]]; then
+        if (( ${_DLS_ISDIR[i]:-0} )); then
+          (( dw++ ))
+        else
+          mode="${_DLS_MODE[i]:-0}"
+          if [[ $mode == <-> ]] && (( (mode & 8#170000) == 8#040000 )); then
+            (( dw++ ))
+          fi
+        fi
+      fi
+      (( dw > w )) && w=$dw
+    done
+  else
+    for (( i = 1; i <= n; i++ )); do
+      _dls_suf_set "$i"
+      name="${_DLS_NAMES[i]}${REPLY}"
+      dw=${(m)#name}
+      (( dw > w )) && w=$dw
+    done
+  fi
+  (( w < 1 )) && w=1
+  (( w > termw )) && w=$termw
+  ncols=$(( (termw + gap) / (w + gap) ))
+  (( ncols < 1 )) && ncols=1
+  (( n > 0 && ncols > n )) && ncols=$n
+  _DLS_COLW=$w
+  _DLS_NCOLS=$ncols
+}
+
+# New highlight index in REPLY. Edges clamp. No wrap.
+_dls_move() {
+  emulate -L zsh
+  local idx="$1" key="$2" ncols="$3" n="$4" col
+  [[ $idx == <-> ]] || idx=0
+  [[ $ncols == <-> ]] || ncols=1
+  [[ $n == <-> ]] || n=0
+  (( idx < 0 )) && idx=0
+  if (( n < 1 || ncols < 1 )); then
+    REPLY=$idx
+    return
+  fi
+  (( idx >= n )) && idx=$(( n - 1 ))
+  col=$(( idx % ncols ))
+  case $key in
+    h|left)
+      (( col > 0 )) && (( idx-- ))
+      ;;
+    l|right)
+      (( col < ncols - 1 && idx + 1 < n )) && (( idx++ ))
+      ;;
+    j|down)
+      (( idx + ncols < n )) && (( idx += ncols ))
+      ;;
+    k|up)
+      (( idx >= ncols )) && (( idx -= ncols ))
+      ;;
+  esac
+  REPLY=$idx
+}
+
+# First visible grid row in REPLY. $5 is the previous row.
+_dls_scroll() {
+  emulate -L zsh
+  local sel="$1" ncols="$2" n="$3" body="$4" scroll="$5"
+  local total row
+  [[ $sel == <-> ]] || sel=0
+  [[ $ncols == <-> ]] || ncols=1
+  [[ $n == <-> ]] || n=0
+  [[ $body == <-> ]] || body=1
+  [[ $scroll == <-> ]] || scroll=0
+  (( ncols < 1 )) && ncols=1
+  (( body < 1 )) && body=1
+  if (( n < 1 )); then
+    REPLY=0
+    return
+  fi
+  total=$(( (n + ncols - 1) / ncols ))
+  row=$(( sel / ncols ))
+  (( row < 0 )) && row=0
+  (( scroll < 0 )) && scroll=0
+  (( row < scroll )) && scroll=$row
+  (( row >= scroll + body )) && scroll=$(( row - body + 1 ))
+  (( scroll > total - body )) && scroll=$(( total - body ))
+  (( scroll < 0 )) && scroll=0
+  REPLY=$scroll
+}
+
+# Where a block of $3 lines starts. $1 = term rows, $2 = cursor row.
+# REPLY = origin row. REPLY2 = newlines to print before drawing.
+# Newlines run from the current cursor, so a full screen scrolls the
+# prompt up instead of drawing past the bottom.
+_dls_place() {
+  emulate -L zsh
+  local H="${1:-24}" R="${2:-1}" want="${3:-1}" space
+  [[ $H == <-> ]] || H=24
+  [[ $R == <-> ]] || R=1
+  [[ $want == <-> ]] || want=1
+  (( H < 1 )) && H=1
+  (( R < 1 )) && R=1
+  (( R > H )) && R=H
+  (( want < 1 )) && want=1
+  (( want > H )) && want=H
+  space=$(( H - R + 1 ))
+  if (( space >= want )); then
+    REPLY=$R
+    REPLY2=0
+    return
+  fi
+  REPLY=$(( H - want + 1 ))
+  REPLY2=$(( want - 1 ))
+}
+
+# Grow a block that already has an origin. $2 = current origin.
+# REPLY = new origin. REPLY2 = newlines once the cursor is on the last row.
+_dls_expand_place() {
+  emulate -L zsh
+  local H="${1:-24}" origin="${2:-1}" want="${3:-1}" have shift
+  [[ $H == <-> ]] || H=24
+  [[ $origin == <-> ]] || origin=1
+  [[ $want == <-> ]] || want=1
+  (( H < 1 )) && H=1
+  (( want < 1 )) && want=1
+  (( want > H )) && want=H
+  (( origin < 1 )) && origin=1
+  if (( origin > H )); then
+    origin=$(( H - want + 1 ))
+    (( origin < 1 )) && origin=1
+    REPLY=$origin
+    REPLY2=0
+    return
+  fi
+  have=$(( H - origin + 1 ))
+  if (( have >= want )); then
+    REPLY=$origin
+    REPLY2=0
+    return
+  fi
+  shift=$(( want - have ))
+  origin=$(( origin - shift ))
+  (( origin < 1 )) && origin=1
+  REPLY=$origin
+  REPLY2=$shift
+}
+
+# Content rows that fit above the status line.
+# $1 = term rows, $2 = origin. REPLY = content rows. REPLY2 = 1 if status fits.
+_dls_view_cap() {
+  emulate -L zsh
+  local H="${1:-24}" origin="${2:-1}" cap
+  [[ $H == <-> ]] || H=24
+  [[ $origin == <-> ]] || origin=1
+  (( H < 1 )) && H=1
+  (( origin < 1 )) && origin=1
+  (( origin > H )) && origin=$H
+  cap=$(( H - origin + 1 ))
+  if (( cap < 2 )); then
+    REPLY=1
+    REPLY2=0
+  else
+    REPLY=$(( cap - 1 ))
+    REPLY2=1
+  fi
+}
+
+_dls_parent() {
+  emulate -L zsh
+  local d="$1"
+  d="${d%/}"
+  [[ -z $d || $d == / ]] && { print -rn -- /; return }
+  print -rn -- "${d:h}"
+}
+
+# descend if $1 is non-zero, else stay.
+_dls_enter_kind() {
+  emulate -L zsh
+  if (( ${1:-0} )); then
+    print -rn -- descend
+  else
+    print -rn -- stay
+  fi
+}
+
+# Print the path of directory entry $2 (0-based) under $1. Return 1 for a file.
+_dls_dir_at() {
+  emulate -L zsh
+  local cwd="$1" idx="$2" name
+  [[ $idx == <-> ]] || return 1
+  (( idx < 0 || idx >= $#_DLS_NAMES )) && return 1
+  (( _DLS_ISDIR[idx+1] )) || return 1
+  if [[ -n ${_DLS_FULL[idx+1]:-} ]]; then
+    print -rn -- "${_DLS_FULL[idx+1]}"
+    return 0
+  fi
+  name="${_DLS_NAMES[idx+1]}"
+  if [[ $cwd == / ]]; then
+    print -rn -- "/$name"
+  else
+    print -rn -- "${cwd%/}/$name"
+  fi
+}
+
+# /dev/tty when this process has a controlling terminal, else the stdio tty.
+_dls_bind_tty() {
+  if ( : <> /dev/tty ) >/dev/null 2>&1; then
+    _DLS_TTY=/dev/tty
+    return 0
+  fi
+  if [[ -t 0 || -t 1 ]]; then
+    _DLS_TTY=""
+    return 0
+  fi
+  _DLS_TTY=""
+  return 1
+}
+
+_dls_stty_g() {
+  if [[ ${_DLS_TTY:-} == /dev/tty ]]; then
+    stty -g < /dev/tty 2>/dev/null
+  else
+    stty -g 2>/dev/null
+  fi
+}
+
+_dls_stty() {
+  if [[ ${_DLS_TTY:-} == /dev/tty ]]; then
+    stty "$@" < /dev/tty
+  else
+    stty "$@"
+  fi
+}
+
+_dls_term() {
+  emulate -L zsh
+  local r c size
+  r=""
+  c=""
+  if [[ ${_DLS_TTY:-} == /dev/tty ]]; then
+    size="$(stty size < /dev/tty 2>/dev/null)" || size=""
+  else
+    size="$(stty size 2>/dev/null)" || size=""
+  fi
+  if read -r r c <<< "$size"; then
+    :
+  fi
+  [[ $r == <-> ]] || r=${LINES:-24}
+  [[ $c == <-> ]] || c=${COLUMNS:-80}
+  if (( ${_DLS_WIDTH_SET:-0} && ${_DLS_WIDTH:-0} > 0 )); then
+    c=$_DLS_WIDTH
+  fi
+  (( r < 1 )) && r=1
+  (( c < 1 )) && c=1
+  _DLS_ROWS=$r
+  _DLS_COLS=$c
+}
+
+_dls_refresh_term() {
+  (( ${_DLS_TERM_OK:-0} )) && return 0
+  _dls_term
+  _DLS_TERM_OK=1
+}
+
+_dls_out() {
+  if [[ ${_DLS_TTY:-} == /dev/tty ]]; then
+    printf "$@" > /dev/tty
+  else
+    printf "$@"
+  fi
+}
+
+_dls_status_text() {
+  emulate -L zsh
+  local path="$1" err="$2" cols="$3" hint right leftw pw
+  if (( ${_DLS_FILTERING:-0} )) || [[ -n ${_DLS_FILTER:-} ]]; then
+    hint="/${_DLS_FILTER}"
+    (( ${_DLS_FILTERING:-0} )) && hint+="_"
+  else
+    hint="$(_dls_sort_label)  hjkl  enter  bksp  esc"
+  fi
+  [[ $cols == <-> ]] || cols=80
+  (( cols < 1 )) && cols=1
+  right="  $hint"
+  if [[ -n $err ]]; then
+    path="$err"
+  fi
+  if (( $(_dls_disp_w "$right") >= cols )); then
+    print -rn -- "$(_dls_cut "$right" "$cols")"
+    return
+  fi
+  leftw=$(( cols - $(_dls_disp_w "$right") ))
+  pw="$(_dls_disp_w "$path")"
+  if (( pw > leftw )); then
+    if (( leftw > 1 )); then
+      path="$(_dls_cut "$path" $(( leftw - 1 )))…"
+    else
+      path="$(_dls_cut "$path" "$leftw")"
+    fi
+  fi
+  print -rn -- "${path}${right}"
+}
+
+# Cursor row from the terminal. 1 on a missing or broken report.
+_dls_cursor_row() {
+  emulate -L zsh
+  local resp row
+  resp=""
+  _dls_out '\e[6n'
+  if [[ ${_DLS_TTY:-} == /dev/tty ]]; then
+    IFS= read -r -s -t 0.4 -d R resp < /dev/tty
+  else
+    IFS= read -r -s -t 0.4 -d R resp
+  fi
+  resp="${resp#*\[}"
+  row="${resp%%;*}"
+  [[ $row == <-> ]] || return 1
+  (( row < 1 )) && return 1
+  REPLY=$row
+}
+
+# Make room for $1 lines. First call scrolls from the real cursor.
+# Later calls grow the block upward when a taller directory needs it.
+_dls_reserve() {
+  emulate -L zsh
+  local want="$1" crow origin newlines
+  local -i i
+  [[ $want == <-> ]] || want=1
+  (( want < 1 )) && want=1
+  if (( _DLS_DRAW_ROW < 1 )); then
+    if _dls_cursor_row; then
+      crow=$REPLY
+    else
+      crow=$_DLS_ROWS
+    fi
+    _dls_place "$_DLS_ROWS" "$crow" "$want"
+    origin=$REPLY
+    newlines=$REPLY2
+    for (( i = 0; i < newlines; i++ )); do
+      _dls_out '\n'
+    done
+    _DLS_DRAW_ROW=$origin
+    return
+  fi
+  _dls_expand_place "$_DLS_ROWS" "$_DLS_DRAW_ROW" "$want"
+  origin=$REPLY
+  newlines=$REPLY2
+  if (( newlines > 0 )); then
+    _dls_out '\e[%d;1H' "$_DLS_ROWS"
+    for (( i = 0; i < newlines; i++ )); do
+      _dls_out '\n'
+    done
+  fi
+  _DLS_DRAW_ROW=$origin
+}
+
+# Paint $2... at row $1. No trailing newline, so a full screen does not scroll.
+_dls_paint() {
+  emulate -L zsh
+  local start="$1"
+  shift
+  local -a lines=("$@")
+  local -i n=$#lines i row
+  [[ $start == <-> ]] || start=1
+  (( start < 1 )) && start=1
+  (( n < 1 )) && return
+  for (( i = 1; i <= n; i++ )); do
+    row=$(( start + i - 1 ))
+    (( row > _DLS_ROWS )) && break
+    _dls_out '\e[%d;1H\e[2K%s' "$row" "${lines[i]}"
+  done
+  row=$(( start + n ))
+  if (( row <= _DLS_ROWS )); then
+    _dls_out '\e[%d;1H\e[J' "$row"
+  fi
+  _DLS_DRAWN=$n
+}
+
+# Signature of everything that changes cell text. Selection is not part of it.
+_dls_prepare_sig() {
+  local k
+  REPLY="${_DLS_LIST_ID};${_DLS_COLS};${_DLS_LONG};${_DLS_HUMAN};${_DLS_SI};${_DLS_TIME};${_DLS_TIME_STYLE};${_DLS_INDICATOR};${_DLS_INODE};${_DLS_BLOCKS};${_DLS_NUMERIC};${_DLS_NO_OWNER};${_DLS_NO_GROUP};${_DLS_DEREF}"
+  for k in "${(ok)_DLS_STYLE[@]}"; do
+    REPLY+=";s:${k}=${_DLS_STYLE[$k]}"
+  done
+  for k in "${(ok)_DLS_EXT[@]}"; do
+    REPLY+=";e:${k}=${_DLS_EXT[$k]}"
+  done
+}
+
+# Plain grid: pad each name once. Meta stays empty, so the mode string is never colored.
+_dls_prepare_plain() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local -i i n=$#_DLS_NAMES dw colw=$_DLS_COLW
+  local name shown style="${_DLS_INDICATOR:-slash}" mode pad
+  _DLS_TEXT=()
+  _DLS_META=()
+  for (( i = 1; i <= n; i++ )); do
+    name="${_DLS_NAMES[i]}"
+    if [[ $style == none ]]; then
+      shown="$name"
+    elif [[ $style == slash ]]; then
+      if (( ${_DLS_ISDIR[i]:-0} )); then
+        shown="${name}/"
+      else
+        mode="${_DLS_MODE[i]:-0}"
+        if [[ $mode == <-> ]] && (( (mode & 8#170000) == 8#040000 )); then
+          shown="${name}/"
+        else
+          shown="$name"
+        fi
+      fi
+    else
+      _dls_suf_set "$i"
+      shown="${name}${REPLY}"
+    fi
+    dw=${(m)#shown}
+    if (( dw > colw )); then
+      _dls_fit_set "$shown" "" "$colw"
+      shown=$REPLY
+      dw=${(m)#shown}
+    fi
+    if (( dw < colw )); then
+      printf -v pad '%*s' $(( colw - dw )) ''
+      shown+="$pad"
+    fi
+    _DLS_TEXT[i]=$shown
+  done
+}
+
+# Build column text once per listing. A keystroke only recolors the selection.
+_dls_prepare() {
+  emulate -L zsh
+  setopt localoptions multibyte
+  local sig kind body meta
+  local -i i n=$#_DLS_NAMES
+  _dls_prepare_sig
+  sig=$REPLY
+  if [[ $sig == "$_DLS_SIG" && ${#_DLS_TEXT} -eq n ]]; then
+    return 0
+  fi
+  if (( ${_DLS_LONG:-0} || ${_DLS_INODE:-0} || ${_DLS_BLOCKS:-0} )); then
+    _dls_measure
+  fi
+  _dls_layout "$_DLS_COLS"
+  _DLS_SGR=()
+  _DLS_SGR_SEL=()
+  for (( i = 1; i <= n; i++ )); do
+    kind="${_DLS_KIND[i]:-file}"
+    if (( ! ${+_DLS_SGR[$kind]} )); then
+      _dls_style_set "$kind" 0
+      _DLS_SGR[$kind]=$REPLY
+      _dls_style_set "$kind" 1
+      _DLS_SGR_SEL[$kind]=$REPLY
+    fi
+  done
+  if (( ${_DLS_LONG:-0} || ${_DLS_INODE:-0} || ${_DLS_BLOCKS:-0} )); then
+    _DLS_TEXT=()
+    _DLS_META=()
+    for (( i = 1; i <= n; i++ )); do
+      _dls_cell_parts "$i" "$_DLS_COLW"
+      body=$REPLY
+      meta=$REPLY2
+      _DLS_TEXT[i]=$body
+      _DLS_META[i]=$meta
+    done
+  else
+    _dls_prepare_plain
+  fi
+  _DLS_SIG=$sig
+}
+
+# Paint one cached cell. $2 is 1 when it is selected.
+_dls_line_set() {
+  local i="${1:-0}" sel="${2:-0}" kind sgr
+  kind="${_DLS_KIND[i]:-file}"
+  if (( sel )); then
+    sgr="${_DLS_SGR_SEL[$kind]:-}"
+  else
+    sgr="${_DLS_SGR[$kind]:-}"
+  fi
+  _dls_join_cell "${_DLS_META[i]:-}" "${_DLS_TEXT[i]:-}" "$sgr" "$sel"
+}
+
+_dls_draw() {
+  emulate -L zsh
+  local -a lines
+  local n ncols sel r c idx ni cell line st sgr
+  local -i body total want cap showst last
+  _dls_out '\e[?25l'
+  _dls_refresh_term
+  if (( $#_DLS_NAMES > 0 && $#_DLS_VIS == 0 )); then
+    [[ -z ${_DLS_FILTER//[[:space:]]/} ]] && _dls_show_sync
+  fi
+  _dls_prepare
+  n=$#_DLS_VIS
+  ncols=$_DLS_NCOLS
+  sel=$_DLS_SEL
+  (( ncols < 1 )) && ncols=1
+  (( n > 0 && sel >= n )) && sel=$(( n - 1 ))
+  (( sel < 0 )) && sel=0
+  _DLS_SEL=$sel
+  if (( n == 0 )); then
+    total=1
+  else
+    total=$(( (n + ncols - 1) / ncols ))
+  fi
+  want=$(( total + 1 ))
+  (( want > _DLS_ROWS )) && want=$_DLS_ROWS
+  (( want < 1 )) && want=1
+  _dls_reserve "$want"
+  _dls_view_cap "$_DLS_ROWS" "$_DLS_DRAW_ROW"
+  cap=$REPLY
+  showst=$REPLY2
+  body=$cap
+  (( body > total )) && body=$total
+  (( body < 1 )) && body=1
+
+  if (( n == 0 )); then
+    lines+=("(empty)")
+  else
+    _dls_scroll "$sel" "$ncols" "$n" "$body" "$_DLS_SCROLL"
+    _DLS_SCROLL=$REPLY
+    last=$(( _DLS_SCROLL + body - 1 ))
+    (( last >= total )) && last=$(( total - 1 ))
+    for (( r = _DLS_SCROLL; r <= last; r++ )); do
+      line=""
+      for (( c = 0; c < ncols; c++ )); do
+        idx=$(( r * ncols + c ))
+        (( idx >= n )) && break
+        ni=${_DLS_VIS[idx+1]}
+        _dls_line_set "$ni" $(( idx == sel ))
+        cell=$REPLY
+        (( c > 0 )) && line+="  "
+        line+="$cell"
+      done
+      lines+=("$line")
+    done
+  fi
+  if (( showst )); then
+    st="$(_dls_status_text "$(_dls_show_path "${_DLS_CWD:-$PWD}")" "$_DLS_ERR" "$_DLS_COLS")"
+    sgr="$(_dls_style status 0)"
+    if [[ -n $sgr ]]; then
+      lines+=("${sgr}${st}"$'\e[0m')
+    else
+      lines+=("$st")
+    fi
+  fi
+  _dls_paint "$_DLS_DRAW_ROW" "${lines[@]}"
+}
+
+# cd and list. On failure the previous listing stays. 2 = unreadable.
+_dls_open() {
+  emulate -L zsh
+  local dest="$1" label prev rc
+  label="${dest:t}"
+  [[ $dest == / ]] && label="/"
+  if [[ ! -d $dest ]]; then
+    _DLS_ERR="not a directory: $label"
+    return 1
+  fi
+  if [[ ! -r $dest || ! -x $dest ]]; then
+    _DLS_ERR="cannot read: $label"
+    return 2
+  fi
+  prev="$PWD"
+  if ! cd -- "$dest" 2>/dev/null; then
+    _DLS_ERR="cannot read: $label"
+    return 2
+  fi
+  _DLS_FILTER=""
+  _DLS_FILTERING=0
+  _dls_list "$PWD" "$_DLS_SHOW_HIDDEN"
+  rc=$?
+  if (( rc != 0 )); then
+    cd -- "$prev" 2>/dev/null || true
+    _DLS_ERR="cannot read: $label"
+    return 2
+  fi
+  _DLS_CWD="$PWD"
+  _DLS_ERR=""
+  _DLS_SEL=0
+  _DLS_SCROLL=0
+  return 0
+}
+
+_dls_reload() {
+  emulate -L zsh
+  local keep=""
+  local -i i ni
+  if (( $#_DLS_VIS && _DLS_SEL >= 0 && _DLS_SEL < $#_DLS_VIS )); then
+    ni=${_DLS_VIS[_DLS_SEL+1]}
+    (( ni >= 1 && ni <= $#_DLS_NAMES )) && keep="${_DLS_NAMES[ni]}"
+  fi
+  if [[ ${_DLS_VIEW:-dir} == operands ]]; then
+    _dls_list_operands "${_DLS_OPERANDS[@]}"
+  else
+    _dls_list "$PWD" "$_DLS_SHOW_HIDDEN" || return
+    _DLS_CWD="$PWD"
+  fi
+  _DLS_SEL=0
+  [[ -n $keep ]] || return 0
+  for (( i = 1; i <= $#_DLS_VIS; i++ )); do
+    if [[ ${_DLS_NAMES[_DLS_VIS[i]]} == "$keep" ]]; then
+      _DLS_SEL=$(( i - 1 ))
+      return 0
+    fi
+  done
+}
+
+_dls_erase() {
+  if (( _DLS_DRAW_ROW > 0 )); then
+    _dls_out '\e[%d;1H\e[J' "$_DLS_DRAW_ROW"
+  fi
+  _DLS_DRAWN=0
+}
+
+# Kitty disambiguate and xterm modifyOtherKeys mode 1.
+# Flag 8 stays off. Shift+Enter is CSI 13;2u or CSI 27;2;13~.
+# ICRNL is off so a raw newline is Shift+Enter and carriage return stays Enter.
+_dls_kb_push() {
+  _dls_out '%s' $'\e[>1u\e[>4;1m'
+  _DLS_KB_PROTO=1
+}
+_dls_kb_pop() {
+  (( ${_DLS_KB_PROTO:-0} )) || return 0
+  _dls_out '%s' $'\e[<u\e[>4;0m'
+  _DLS_KB_PROTO=0
+}
+
+_dls_leave() {
+  # The EXIT trap calls this again after the explicit leave. The second call
+  # must not clear a second time.
+  if (( ${_DLS_LEFT:-0} )); then
+    return 0
+  fi
+  _DLS_LEFT=1
+  _dls_kb_pop
+  if (( ${_DLS_DRAWN:-0} > 0 )); then
+    local -i drawn=${_DLS_DRAWN:-0} rows=${_DLS_ROWS:-0}
+    if _dls_auto_cls_hit "${_DLS_EXIT_KEY:-}" "${_DLS_EXIT_ACTION:-}" "$drawn" "$rows"; then
+      # Visible page only. Scrollback stays. Skip the cursor-below-the-grid move.
+      _dls_out '%s' $'\e[H\e[2J'
+    else
+      local next=$(( ${_DLS_DRAW_ROW:-1} + _DLS_DRAWN ))
+      if (( _DLS_DRAW_ROW > 0 && next <= ${_DLS_ROWS:-1} )); then
+        _dls_out '\e[%d;1H' "$next"
+      else
+        # Block fills the screen. One newline makes a row for the next prompt.
+        _dls_out '\e[%d;1H\n' "${_DLS_ROWS:-1}"
+      fi
+    fi
+    _DLS_DRAWN=0
+  fi
+  if [[ -n ${_DLS_STTY:-} ]]; then
+    _dls_stty "$_DLS_STTY" 2>/dev/null || _dls_stty sane 2>/dev/null || true
+    _DLS_STTY=""
+  fi
+  _dls_out '\e[?25h'
+}
+
+_dls_enter_raw() {
+  emulate -L zsh
+  _DLS_STTY="$(_dls_stty_g)" || _DLS_STTY=""
+  if [[ -z $_DLS_STTY ]] || ! _dls_stty -echo -icanon -isig -icrnl -inlcr -igncr min 1 time 0 2>/dev/null; then
+    [[ -n $_DLS_STTY ]] && _dls_stty "$_DLS_STTY" 2>/dev/null || true
+    _DLS_STTY=""
+    print -u2 -- "dls: not a terminal"
+    return 1
+  fi
+  _DLS_WINCH=0
+  _DLS_INT=0
+  _DLS_DRAWN=0
+  _DLS_DRAW_ROW=0
+  _DLS_TERM_OK=0
+  _dls_kb_push
+  return 0
+}
+
+# Bytes after ESC [ until a CSI final (0x40–0x7E) or 16 bytes.
+_dls_read_csi() {
+  emulate -L zsh
+  local b=""
+  local -i n=0
+  REPLY=""
+  while (( n < 16 )); do
+    _dls_read_byte 0.05 || break
+    [[ -n $_DLS_BYTE ]] || break
+    b+="$_DLS_BYTE"
+    n=$(( n + 1 ))
+    [[ $_DLS_BYTE == [@-~] ]] && break
+  done
+  REPLY="$b"
+}
+
+# Payload after ESC [. Sets REPLY. Modified arrows stay arrows.
+# Kitty's modifier number is 1 plus a bitmask. Num Lock and Caps Lock set
+# their own bits, so Shift+Enter is 13;2u or 13;130u and Ctrl+C is 99;5u
+# or 99;133u. Lock bits are ignored. A near-miss stays ignore.
+# Bare Escape never reaches here.
+_dls_match_csi() {
+  emulate -L zsh
+  local p="$1" body key mods rest
+  local -a f
+  local -i k=0 m=0 bits=0
+  REPLY=ignore
+  case $p in
+    *A) REPLY=up; return ;;
+    *B) REPLY=down; return ;;
+    *C) REPLY=right; return ;;
+    *D) REPLY=left; return ;;
+    *H) REPLY=home; return ;;
+    *F) REPLY=end; return ;;
+    3~|3\;*~) REPLY=delete; return ;;
+    1~|7~|1\;*~|7\;*~) REPLY=home; return ;;
+    4~|8~|4\;*~|8\;*~) REPLY=end; return ;;
+  esac
+
+  if [[ $p == *u ]]; then
+    body="${p%u}"
+    key="${body%%;*}"
+    key="${key%%:*}"
+    if [[ $body == *\;* ]]; then
+      rest="${body#*;}"
+      mods="${rest%%;*}"
+      mods="${mods%%:*}"
+    else
+      mods=1
+    fi
+  elif [[ $p == 27\;*~ ]]; then
+    body="${p%\~}"
+    f=("${(@s:;:)body}")
+    (( $#f >= 3 )) || return 0
+    mods="${${f[2]}%%:*}"
+    key="${${f[3]}%%:*}"
+  else
+    return 0
+  fi
+
+  [[ $key == <-> && $mods == <-> ]] || return 0
+  k=$key
+  m=$mods
+  if (( m > 0 )); then
+    bits=$(( m - 1 ))
+  fi
+  if (( k == 27 )); then
+    REPLY=esc
+    return 0
+  fi
+  # Ctrl is bit 2 of the mask. 'c' and 'C'.
+  if (( (k == 99 || k == 67) && (bits & 4) )); then
+    REPLY=ctrl-c
+    return 0
+  fi
+  # Shift is bit 0. Enter is 13, linefeed is 10, numpad enter is 57414.
+  # Ctrl+Enter stays ignored.
+  if (( (k == 13 || k == 10 || k == 57414) && (bits & 1) && (bits & 4) == 0 )); then
+    REPLY=shift-enter
+    return 0
+  fi
+}
+
+_dls_read_token() {
+  emulate -L zsh
+  local k k2
+  REPLY=""
+  while true; do
+    (( _DLS_INT )) && { REPLY=ctrl-c; return 0; }
+    if (( _DLS_WINCH )); then
+      _DLS_WINCH=0
+      REPLY=winch
+      return 0
+    fi
+    if ! _dls_read_byte 0.2; then
+      continue
+    fi
+    k="$_DLS_BYTE"
+    [[ -n $k ]] || continue
+    break
+  done
+  case $k in
+    $'\x03') REPLY=ctrl-c ;;
+    $'\r') REPLY=enter ;;
+    $'\n') REPLY=shift-enter ;;
+    $'\177'|$'\b') REPLY=backspace ;;
+    $'\e')
+      if _dls_read_byte 0.05; then
+        k2="$_DLS_BYTE"
+        if [[ $k2 == '[' ]]; then
+          _dls_read_csi
+          _dls_match_csi "$REPLY"
+        else
+          REPLY=esc
+        fi
+      else
+        REPLY=esc
+      fi
+      ;;
+    *) REPLY="$k" ;;
+  esac
+  return 0
+}
+
+# One byte into _DLS_BYTE. $1 is a timeout in seconds. 1 on timeout or EOF.
+_dls_read_byte() {
+  local t="${1:-}"
+  _DLS_BYTE=""
+  if [[ ${_DLS_TTY:-} == /dev/tty ]]; then
+    if [[ -n $t ]]; then
+      read -t "$t" -k 1 _DLS_BYTE < /dev/tty
+    else
+      read -k 1 _DLS_BYTE < /dev/tty
+    fi
+  elif [[ -n $t ]]; then
+    read -t "$t" -k 1 _DLS_BYTE
+  else
+    read -k 1 _DLS_BYTE
+  fi
+}
+
+_dls_cancel() {
+  emulate -L zsh
+  [[ -n ${_DLS_ORIGIN:-} && -d $_DLS_ORIGIN ]] && cd -- "$_DLS_ORIGIN" 2>/dev/null || true
+  _dls_erase
+}
+
+_dls_move_sel() {
+  emulate -L zsh
+  _dls_refresh_term
+  _dls_prepare
+  _dls_move "$_DLS_SEL" "$1" "$_DLS_NCOLS" "$#_DLS_VIS"
+  _DLS_SEL=$REPLY
+  _DLS_ERR=""
+  _dls_draw
+}
+
+# cd into the selected directory and leave dls. A file stays in the grid.
+# Does not list again, and does not start another dls.
+_dls_quit_dir() {
+  emulate -L zsh
+  local kind dest ni cwd
+  if (( $#_DLS_VIS == 0 || _DLS_SEL < 0 || _DLS_SEL >= $#_DLS_VIS )); then
+    return 1
+  fi
+  ni=${_DLS_VIS[_DLS_SEL+1]}
+  kind="$(_dls_enter_kind "${_DLS_ISDIR[ni]:-0}")"
+  [[ $kind == descend ]] || return 1
+  cwd="${_DLS_CWD:-$PWD}"
+  dest="$(_dls_dir_at "$cwd" $(( ni - 1 )))" || return 1
+  [[ -n $dest && -d $dest ]] || return 1
+  if [[ ! -r $dest || ! -x $dest ]]; then
+    _DLS_ERR="cannot read: ${dest:t}"
+    return 1
+  fi
+  if ! cd -- "$dest" 2>/dev/null; then
+    _DLS_ERR="cannot read: ${dest:t}"
+    return 1
+  fi
+  _DLS_FILTER=""
+  _DLS_FILTERING=0
+  _DLS_CWD="$PWD"
+  _DLS_ERR=""
+  _DLS_DONE=1
+  _DLS_RC=0
+  return 0
+}
+
+_dls_open_sel() {
+  emulate -L zsh
+  local kind dest ni
+  if (( $#_DLS_VIS == 0 || _DLS_SEL < 0 || _DLS_SEL >= $#_DLS_VIS )); then
+    _dls_draw
+    return
+  fi
+  ni=${_DLS_VIS[_DLS_SEL+1]}
+  kind="$(_dls_enter_kind "${_DLS_ISDIR[ni]:-0}")"
+  if [[ $kind == descend ]]; then
+    dest="$(_dls_dir_at "$_DLS_CWD" $(( ni - 1 )))" || dest=""
+    [[ -n $dest ]] && _dls_open "$dest"
+  fi
+  _dls_draw
+}
+
+_dls_cycle_sort() {
+  case ${_DLS_SORT:-name} in
+    name) _DLS_SORT=natural ;;
+    natural) _DLS_SORT=ext ;;
+    ext) _DLS_SORT=size ;;
+    size) _DLS_SORT=mtime ;;
+    *) _DLS_SORT=name ;;
+  esac
+}
+
+_dls_handle_key() {
+  emulate -L zsh
+  local token="$1" action dest
+  _DLS_DONE=0
+  case $token in
+    winch)
+      _dls_draw
+      return
+      ;;
+    ctrl-c)
+      _DLS_EXIT_KEY=ctrl-c
+      _DLS_EXIT_ACTION=cancel
+      _dls_cancel
+      _DLS_DONE=1
+      _DLS_RC=130
+      return
+      ;;
+    ignore)
+      return
+      ;;
+  esac
+  if (( ${_DLS_FILTERING:-0} )); then
+    _dls_filter_key "$token"
+    _dls_draw
+    return
+  fi
+  action="$(_dls_action "$token")"
+  case $action in
+    move-left) _dls_move_sel h ;;
+    move-right) _dls_move_sel l ;;
+    move-up) _dls_move_sel k ;;
+    move-down) _dls_move_sel j ;;
+    open) _dls_open_sel ;;
+    quit-dir)
+      if _dls_quit_dir; then
+        _DLS_EXIT_KEY="$token"
+        _DLS_EXIT_ACTION=quit-dir
+      else
+        _dls_draw
+      fi
+      ;;
+    parent)
+      dest="$(_dls_parent "$_DLS_CWD")"
+      [[ $dest == "$_DLS_CWD" ]] || _dls_open "$dest"
+      _dls_draw
+      ;;
+    quit)
+      _DLS_EXIT_KEY="$token"
+      _DLS_EXIT_ACTION=quit
+      _DLS_DONE=1
+      _DLS_RC=0
+      ;;
+    cancel)
+      _DLS_EXIT_KEY="$token"
+      _DLS_EXIT_ACTION=cancel
+      _dls_cancel
+      _DLS_DONE=1
+      _DLS_RC=130
+      ;;
+    toggle-hidden)
+      if (( _DLS_SHOW_HIDDEN )); then
+        _DLS_SHOW_HIDDEN=0
+        _DLS_SHOW_DOTDOT=0
+      else
+        _DLS_SHOW_HIDDEN=1
+        [[ ${_DLS_CLI_DOTS:-} == a ]] && _DLS_SHOW_DOTDOT=1
+      fi
+      _DLS_ERR=""
+      _dls_reload
+      _dls_draw
+      ;;
+    cycle-sort)
+      _dls_cycle_sort
+      _DLS_ERR=""
+      _dls_reload
+      _dls_draw
+      ;;
+    reload)
+      _dls_config_load "$_DLS_RC_PATH" "$_DLS_RC_EXPLICIT"
+      _dls_apply_cli
+      _DLS_ERR=""
+      _dls_reload
+      _dls_draw
+      ;;
+    filter)
+      _DLS_FILTERING=1
+      _DLS_ERR=""
+      _dls_draw
+      ;;
+  esac
+}
+
+dls() {
+  emulate -L zsh
+  setopt localoptions localtraps
+  local rc=0 prc
+
+  _dls_parse_args "$@"
+  prc=$?
+  (( prc )) && return $prc
+  if (( _DLS_HELP )); then
+    _dls_usage
+    return 0
+  fi
+  if (( $#_DLS_PATHS == 0 )); then
+    _DLS_PATHS=(.)
+  fi
+
+  local -a ok
+  local p open_dir=""
+  ok=()
+  for p in "${_DLS_PATHS[@]}"; do
+    if [[ -e $p || -L $p ]]; then
+      ok+=("$p")
+    else
+      print -u2 -- "dls: cannot access: $p"
+    fi
+  done
+  (( $#ok )) || return 2
+  if (( ! _DLS_CLI_DIRECTORY && $#ok == 1 )) && [[ -d ${ok[1]} ]]; then
+    open_dir="${ok[1]}"
+    if [[ ! -r $open_dir || ! -x $open_dir ]]; then
+      print -u2 -- "dls: cannot read: ${open_dir:t}"
+      return 1
+    fi
+  fi
+
+  _dls_bind_tty || {
+    print -u2 -- "dls: not a terminal"
+    return 1
+  }
+  # Warnings stay on the cooked terminal. Raw mode starts after this.
+  _dls_config_load
+  _dls_apply_cli
+  _DLS_ORIGIN="$PWD"
+  _DLS_ERR=""
+  _DLS_SEL=0
+  _DLS_SCROLL=0
+  _DLS_FILTER=""
+  _DLS_FILTERING=0
+  _DLS_EXIT_KEY=""
+  _DLS_EXIT_ACTION=""
+  _DLS_LEFT=0
+  _dls_enter_raw || return 1
+  # Traps stay for the whole call. emulate -L in helpers would drop traps set there.
+  trap '_DLS_WINCH=1; _DLS_TERM_OK=0' WINCH
+  trap '_DLS_INT=1' INT TERM
+  trap '_dls_leave' EXIT
+  if [[ -n $open_dir ]]; then
+    if ! _dls_open "$open_dir"; then
+      _dls_erase
+      _dls_leave
+      print -u2 -- "dls: cannot read: ${open_dir:t}"
+      return 1
+    fi
+  else
+    _dls_list_operands "${ok[@]}"
+    _DLS_CWD="$PWD"
+    _DLS_ERR=""
+    _DLS_SEL=0
+    _DLS_SCROLL=0
+  fi
+  _dls_draw
+
+  while true; do
+    _dls_read_token || {
+      _DLS_EXIT_KEY=""
+      _DLS_EXIT_ACTION=cancel
+      _dls_cancel
+      rc=130
+      break
+    }
+    _dls_handle_key "$REPLY"
+    if (( _DLS_DONE )); then
+      rc=$_DLS_RC
+      break
+    fi
+  done
+
+  _dls_leave
+  _dls_shift_enter_follow $rc
+  if (( _DLS_SCRIPT && rc == 0 )); then
+    print -r -- "$PWD"
+  fi
+  return $rc
+}
+
+# ls -a on the terminal. Skips stdout in script mode so the printed path stays alone.
+_dls_run_ls() {
+  emulate -L zsh
+  if [[ -w /dev/tty ]]; then
+    command ls -a --color=auto > /dev/tty || true
+    return 0
+  fi
+  (( ${_DLS_SCRIPT:-0} )) && return 0
+  command ls -a --color=auto || true
+}
+
+# After a successful Shift+Enter leave. off does nothing.
+# dls opens another grid. Script mode is restored so only the outer call prints the path.
+_dls_shift_enter_follow() {
+  emulate -L zsh
+  local -i rc=${1:-0} script=0
+  (( rc == 0 )) || return 0
+  [[ ${_DLS_EXIT_KEY:-} == shift-enter ]] || return 0
+  case ${_DLS_SHIFT_LS:-off} in
+    ls) _dls_run_ls ;;
+    dls)
+      script=${_DLS_SCRIPT:-0}
+      _DLS_SCRIPT=0
+      dls || true
+      _DLS_SCRIPT=$script
+      ;;
+  esac
+}
+
+# Executed as a script: draw on the tty, print the chosen directory on stdout.
+# Sourcing only defines dls and the built-in defaults.
+_dls_config_defaults
+
+if [[ ${ZSH_EVAL_CONTEXT:-} == toplevel ]]; then
+  _DLS_SCRIPT=1
+  dls "$@"
+fi

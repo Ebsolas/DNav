@@ -27,7 +27,7 @@ UNINSTALL=0
 UPDATE=0
 
 # Files shipped with the package (relative to PACKAGE_DIR)
-PACKAGE_FILES=(dnav dfile djump dsearch dsearch-index dindexer dnav-about dnav-update jumps)
+PACKAGE_FILES=(dnav dfile dls dlsrc djump dsearch dsearch-index dindexer dnav-about dnav-update jumps)
 
 # Markers for idempotent .zshrc edits
 RC_BEGIN="# >>> dnav >>>"
@@ -155,7 +155,7 @@ zcompile_zsh() {
   zsh -f -c '
     emulate -L zsh
     local f
-    for f in dnav djump dfile dsearch dsearch-index dindexer dnav-about dnav-update; do
+    for f in dnav djump dfile dls dsearch dsearch-index dindexer dnav-about dnav-update; do
       [[ -f $1/$f ]] || continue
       zcompile -U -- "$1/$f" 2>/dev/null || true
     done
@@ -191,12 +191,17 @@ color_bg = cyan
 # Brand chip label on the main bar
 brand = DNav
 
-# ls -a after a successful select/jump
+# Listing after a successful select/jump: 0 | ls | dls
+# ls runs ls -a. dls opens the grid. *_dnav / *_djump override.
 ls_after = 0
 # ls_after_dnav = inherit
-# ls_after_djump = inherit
+# ls_after_djump = dls
 # milliseconds to wait after the path bar before ls (0 = no wait)
 ls_after_ms = 0
+
+# Shift+Enter on the bar: none | ls | dls. The path bar is separate.
+shift_enter = none
+shift_enter_bar = 0
 
 # dfile: show hidden files/dirs by default (toggle still works with .)
 show_hidden = 0
@@ -318,6 +323,21 @@ EOF
   fi
 
   ok "config → $CONFIG_DIR"
+  seed_dls_rc
+}
+
+# Example rc only. Never replace one the user already has.
+seed_dls_rc() {
+  local dest="${XDG_CONFIG_HOME:-$HOME/.config}/dls/rc"
+  local src="$PACKAGE_DIR/dlsrc"
+  [[ -f $src ]] || return 0
+  if [[ -f $dest ]]; then
+    info "keep  $dest"
+    return 0
+  fi
+  mkdir -p -- "${dest%/*}"
+  install -m 0644 -- "$src" "$dest"
+  info "wrote $dest"
 }
 
 # ── Shell rc hook ─────────────────────────────────────────────────────────
@@ -503,6 +523,7 @@ main() {
     update_other_shells
     install_rc
     merge_user_config
+    seed_dls_rc
     printf '\n'
     ok "DNav updated"
     printf '\nReload:  exec zsh    or    source %s/dnav\n' "$PREFIX"
@@ -533,6 +554,7 @@ main() {
   info "$CONFIG_DIR/config"
   info "$CONFIG_DIR/folders"
   info "$CONFIG_DIR/jumps"
+  info "${XDG_CONFIG_HOME:-$HOME/.config}/dls/rc"
   printf '\n'
 }
 

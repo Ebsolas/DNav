@@ -98,6 +98,7 @@ _dnav_config_seed() {
 color_fg = black
 color_bg = cyan
 brand = DNav
+# 0 | ls | dls. Bash runs ls for both ls and dls.
 ls_after = 0
 show_hidden = 0
 success_anim = 1
@@ -152,7 +153,12 @@ _dnav_config_load_kv() {
       color_fg|highlight_fg|fg) DNAV_CFG_COLOR_FG="$val" ;;
       color_bg|highlight_bg|bg) DNAV_CFG_COLOR_BG="$val" ;;
       brand) DNAV_CFG_BRAND="$val" ;;
-      ls_after|ls) _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
+      ls_after|ls)
+        case ${val,,} in
+          dls|ls) DNAV_CFG_LS=1 ;;
+          *) _dnav_truthy "$val" && DNAV_CFG_LS=1 || DNAV_CFG_LS=0 ;;
+        esac
+        ;;
       show_hidden|hidden) _dnav_truthy "$val" && DNAV_CFG_SHOW_HIDDEN=1 || DNAV_CFG_SHOW_HIDDEN=0 ;;
       success_anim|anim) _dnav_truthy "$val" && DNAV_CFG_SUCCESS_ANIM=1 || DNAV_CFG_SUCCESS_ANIM=0 ;;
       full_redraw|redraw) _dnav_truthy "$val" && DNAV_CFG_FULL_REDRAW=1 || DNAV_CFG_FULL_REDRAW=0 ;;

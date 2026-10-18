@@ -16,8 +16,12 @@ fi
 typeset -g DNAV_CONFIG_DIR
 typeset -g DNAV_CFG_COLOR_FG=30 DNAV_CFG_COLOR_BG=46
 typeset -g DNAV_CFG_LS=0 DNAV_CFG_SHOW_HIDDEN=0
-typeset -gi DNAV_CFG_LS_DNAV=-1 DNAV_CFG_LS_DJUMP=-1
+# -1 inherit, 1 ls, 0 off, dls the grid. Not integers: dls is a word.
+typeset -g DNAV_CFG_LS_DNAV=-1 DNAV_CFG_LS_DJUMP=-1
 typeset -gi DNAV_CFG_LS_AFTER_MS=0
+# Shift+Enter on the bar. none | ls | dls. Not an integer.
+typeset -g DNAV_CFG_SHIFT_ENTER=none
+typeset -gi DNAV_CFG_SHIFT_BAR=0
 typeset -g DNAV_CFG_SUCCESS_ANIM=1 DNAV_CFG_FULL_REDRAW=0
 typeset -g DNAV_CFG_SUCCESS_BAR=1
 typeset -gi DNAV_CFG_SUCCESS_BAR_DNAV=-1 DNAV_CFG_SUCCESS_BAR_DJUMP=-1
@@ -59,6 +63,26 @@ _dnav_truthy() {
   case ${(L)1} in
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# Stored value for ls_after. 1 means ls, so older configs stay valid.
+# Defined before the first config load, which runs while this file is sourced.
+_dnav_ls_norm() {
+  case ${(L)1} in
+    dls) print -rn -- dls ;;
+    1|true|yes|on|ls) print -rn -- 1 ;;
+    *) print -rn -- 0 ;;
+  esac
+}
+
+# Stored value for ls_after_dnav / ls_after_djump. -1 inherits ls_after.
+_dnav_ls_norm3() {
+  case ${(L)1} in
+    inherit|-1|'') print -rn -- -1 ;;
+    dls) print -rn -- dls ;;
+    1|true|yes|on|ls) print -rn -- 1 ;;
+    *) print -rn -- 0 ;;
   esac
 }
 
@@ -175,12 +199,17 @@ color_bg = cyan
 # Brand chip label on the main bar
 brand = DNav
 
-# ls -a after a successful select/jump
+# Listing after a successful select/jump: 0 | ls | dls
+# ls runs ls -a. dls opens the grid. *_dnav / *_djump override.
 ls_after = 0
-# ls_after_dnav = 1
-# ls_after_djump = 0
+# ls_after_dnav = inherit
+# ls_after_djump = dls
 # milliseconds to wait after the path bar before ls (0 = no wait)
 ls_after_ms = 0
+
+# Shift+Enter on the bar: none | ls | dls. The path bar is separate.
+shift_enter = none
+shift_enter_bar = 0
 
 # dfile: show hidden files/dirs by default (toggle still works with .)
 show_hidden = 0
@@ -265,10 +294,12 @@ _dnav_config_schema() {
   print -r -- 'color_fg|color:fg|DNAV_CFG_COLOR_FG|black|highlight_fg,fg|value|Enter edit number/name|fg: color name or ANSI 30–37 / 90–97 (black red green yellow blue magenta cyan white)'
   print -r -- 'color_bg|color:bg|DNAV_CFG_COLOR_BG|cyan|highlight_bg,bg|value|Enter edit number/name|bg: color name or ANSI 40–47 / 100–107'
   print -r -- 'brand|string|DNAV_CFG_BRAND|DNav||value|Enter edit text|Brand chip label on the main bar'
-  print -r -- 'ls_after|bool|DNAV_CFG_LS|0|ls|toggle|Enter toggle (default)|ls -a after a successful select/jump (1/0)'
-  print -r -- 'ls_after_dnav|cycle3|DNAV_CFG_LS_DNAV|inherit||cycle3|Enter cycle inherit/on/off|ls after dnav: 1/0/inherit (inherit uses ls_after)'
-  print -r -- 'ls_after_djump|cycle3|DNAV_CFG_LS_DJUMP|inherit||cycle3|Enter cycle inherit/on/off|ls after djump: 1/0/inherit (inherit uses ls_after)'
+  print -r -- 'ls_after|lsmode|DNAV_CFG_LS|0|ls|lsmode|Enter cycle off/ls/dls|ls -a after a successful select/jump, or dls (0/ls/dls)'
+  print -r -- 'ls_after_dnav|lsmode3|DNAV_CFG_LS_DNAV|inherit||lsmode3|Enter cycle inherit/ls/dls/off|listing after dnav: ls, dls, 0, or inherit (inherit uses ls_after)'
+  print -r -- 'ls_after_djump|lsmode3|DNAV_CFG_LS_DJUMP|inherit||lsmode3|Enter cycle inherit/ls/dls/off|listing after djump: ls, dls, 0, or inherit (inherit uses ls_after)'
   print -r -- 'ls_after_ms|int|DNAV_CFG_LS_AFTER_MS|0|ls_delay,ls_delay_ms|value|Enter edit (0 = no wait)|milliseconds to wait after the path bar before ls (0 = no wait)'
+  print -r -- 'shift_enter|enum:none,ls,dls|DNAV_CFG_SHIFT_ENTER|none||enum|Enter cycle none/ls/dls|Shift+Enter on the bar: none, ls, or dls'
+  print -r -- 'shift_enter_bar|bool|DNAV_CFG_SHIFT_BAR|0||toggle|Enter toggle|Shift+Enter plays the path bar (1/0)'
   print -r -- 'show_hidden|bool|DNAV_CFG_SHOW_HIDDEN|0|hidden|toggle|Enter toggle|dfile: show hidden files/dirs by default (toggle with .)'
   print -r -- 'dfile_sort_dirs|enum:alpha,hidden_first|DNAV_CFG_DFILE_SORT_DIRS|alpha||enum|Enter cycle alpha/hidden_first|dfile dir order: alpha | hidden_first'
   print -r -- 'dfile_sort_files|enum:alpha,ext,dot_first,dot_ext|DNAV_CFG_DFILE_SORT_FILES|alpha||enum|Enter cycle alpha/ext/dot_first/dot_ext|dfile file order: alpha | ext | dot_first | dot_ext'
@@ -340,6 +371,13 @@ _dnav_config_enum_norm() {
       esac ;;
     index_when)
       case $val in search|s) print -r -- search ;; *) print -r -- open ;; esac ;;
+    shift_enter)
+      case $val in
+        ls|dls|none) print -r -- "$val" ;;
+        0|off|false|no) print -r -- none ;;
+        1|true|yes|on) print -r -- ls ;;
+        *) print -r -- none ;;
+      esac ;;
     *) print -r -- "$2" ;;
   esac
 }
@@ -353,6 +391,10 @@ _dnav_config_assign() {
   case $type in
     bool)
       if _dnav_truthy "$val"; then _dnav_config_var_set "$var" 1; else _dnav_config_var_set "$var" 0; fi ;;
+    lsmode)
+      _dnav_config_var_set "$var" "$(_dnav_ls_norm "$val")" ;;
+    lsmode3)
+      _dnav_config_var_set "$var" "$(_dnav_ls_norm3 "$val")" ;;
     cycle3)
       case ${(L)val} in
         inherit|-1|'') _dnav_config_var_set "$var" -1 ;;
@@ -647,6 +689,7 @@ dconfig() {
         print -r -- "  color  fg=${DNAV_CFG_COLOR_FG} bg=${DNAV_CFG_COLOR_BG}"
         print -r -- "  brand  ${DNAV_CFG_BRAND}"
         print -r -- "  ls_after=${DNAV_CFG_LS}  dnav=${DNAV_CFG_LS_DNAV}  djump=${DNAV_CFG_LS_DJUMP}  ms=${DNAV_CFG_LS_AFTER_MS}"
+        print -r -- "  shift_enter=${DNAV_CFG_SHIFT_ENTER}  bar=${DNAV_CFG_SHIFT_BAR}"
         print -r -- "  success_bar=${DNAV_CFG_SUCCESS_BAR}  dnav=${DNAV_CFG_SUCCESS_BAR_DNAV}  djump=${DNAV_CFG_SUCCESS_BAR_DJUMP}"
         print -r -- "  success_anim=${DNAV_CFG_SUCCESS_ANIM}  steps=${DNAV_CFG_SUCCESS_ANIM_STEPS}  ms=${DNAV_CFG_SUCCESS_ANIM_MS}  full_redraw=${DNAV_CFG_FULL_REDRAW}"
         print -r -- "  show_hidden=${DNAV_CFG_SHOW_HIDDEN}"
@@ -969,14 +1012,95 @@ _dnav_maybe_autoindex() {
   fi
 }
 
-# $1 = dnav | djump (inherit ls_after when the specific flag is -1)
-_dnav_want_ls() {
-  local ctx="${1:-dnav}"
+# Canonical listing mode: off | ls | dls.
+# $1 is dnav or djump. $2 is enter (ls_after) or shift-enter (shift_enter).
+_dnav_ls_mode() {
+  emulate -L zsh
+  local ctx="${1:-dnav}" how="${2:-enter}" spec
+  if [[ $how == shift-enter ]]; then
+    spec="${DNAV_CFG_SHIFT_ENTER:-none}"
+    case ${(L)spec} in
+      dls) print -rn -- dls ;;
+      1|true|yes|on|ls) print -rn -- ls ;;
+      *) print -rn -- off ;;
+    esac
+    return
+  fi
   case $ctx in
-    djump)
-      if (( DNAV_CFG_LS_DJUMP >= 0 )); then (( DNAV_CFG_LS_DJUMP )); else (( DNAV_CFG_LS )); fi ;;
-    *)
-      if (( DNAV_CFG_LS_DNAV >= 0 )); then (( DNAV_CFG_LS_DNAV )); else (( DNAV_CFG_LS )); fi ;;
+    djump) spec="${DNAV_CFG_LS_DJUMP:--1}" ;;
+    *) spec="${DNAV_CFG_LS_DNAV:--1}" ;;
+  esac
+  if [[ $spec == -1 || -z $spec || ${(L)spec} == inherit ]]; then
+    spec="${DNAV_CFG_LS:-0}"
+  fi
+  case ${(L)spec} in
+    dls) print -rn -- dls ;;
+    1|true|yes|on|ls) print -rn -- ls ;;
+    *) print -rn -- off ;;
+  esac
+}
+
+# 0 when this exit should list.
+_dnav_want_ls() {
+  [[ $(_dnav_ls_mode "${1:-dnav}") != off ]]
+}
+
+# Word shown in Settings and written back to the config file.
+_dnav_ls_label() {
+  case ${(L)1} in
+    dls) print -rn -- dls ;;
+    1|ls|true|yes|on) print -rn -- ls ;;
+    -1|inherit) print -rn -- inherit ;;
+    *) print -rn -- off ;;
+  esac
+}
+
+_dnav_cfg_lsmode_store() {
+  case $1 in
+    dls) print -rn -- dls ;;
+    1) print -rn -- ls ;;
+    *) print -rn -- 0 ;;
+  esac
+}
+
+_dnav_cfg_lsmode3_store() {
+  case $1 in
+    -1) print -rn -- inherit ;;
+    dls) print -rn -- dls ;;
+    1) print -rn -- ls ;;
+    *) print -rn -- 0 ;;
+  esac
+}
+
+# Enter on the ls_after rows. Cycles and saves.
+_dnav_ls_cycle() {
+  emulate -L zsh
+  local key="$1" var cur
+  _dnav_config_schema_init
+  var="${_DNAV_CFG_VAR[$key]:-}"
+  [[ -n $var ]] || return 1
+  eval "cur=\${$var}"
+  case $key in
+    ls_after)
+      case $cur in
+        0) cur=1 ;;
+        1) cur=dls ;;
+        *) cur=0 ;;
+      esac
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$(_dnav_cfg_lsmode_store "$cur")"
+      ;;
+    ls_after_dnav|ls_after_djump)
+      case $cur in
+        -1) cur=1 ;;
+        1) cur=dls ;;
+        dls) cur=0 ;;
+        *) cur=-1 ;;
+      esac
+      _dnav_config_var_set "$var" "$cur"
+      _dnav_config_set "$key" "$(_dnav_cfg_lsmode3_store "$cur")"
+      ;;
+    *) return 1 ;;
   esac
 }
 
@@ -990,12 +1114,35 @@ _dnav_want_bar() {
   esac
 }
 
+# Open the dls grid in the current directory. Falls back to ls -a.
+_dnav_run_dls() {
+  emulate -L zsh
+  if (( ! $+functions[dls] )) && [[ -r ${DNAV_DIR:-}/dls ]]; then
+    source "${DNAV_DIR}/dls" || true
+  fi
+  if (( $+functions[dls] )); then
+    dls
+    return $?
+  fi
+  print -u2 -- "dnav: dls is not available"
+  command ls -a --color=auto
+}
+
+# $1 = dnav | djump. $2 = path just chosen. $3 = enter | shift-enter.
+# A file stays with ls so an editor can open; a directory (or an empty path) may open dls.
+# Shift+Enter uses shift_enter and ignores ls_after.
 _dnav_maybe_ls() {
   emulate -L zsh
+  local ctx="${1:-dnav}" dest="${2:-}" how="${3:-enter}" mode
   local -i ms
-  _dnav_want_ls "${1:-dnav}" || return 0
+  mode="$(_dnav_ls_mode "$ctx" "$how")"
+  [[ $mode == off ]] && return 0
   ms=${DNAV_CFG_LS_AFTER_MS:-0}
   (( ms > 0 )) && (( $+functions[_dnav_sleep_ms] )) && _dnav_sleep_ms $ms
+  if [[ $mode == dls && ( -z $dest || -d $dest ) ]]; then
+    _dnav_run_dls
+    return $?
+  fi
   command ls -a --color=auto
 }
 
@@ -1041,6 +1188,20 @@ _dnav_usable_cols() {
 _dnav_autowrap_off() { printf '\e[?7l'; }
 _dnav_autowrap_on()  { printf '\e[?7h'; }
 
+# Kitty disambiguate and xterm modifyOtherKeys mode 1.
+# Flag 8 (report all keys) stays off, so plain keys keep their bytes.
+# Shift+Enter arrives as CSI 13;2u or CSI 27;2;13~.
+# ICRNL is off: a newline is Shift+Enter, a carriage return stays Enter.
+_dnav_kb_push() {
+  printf '\e[>1u\e[>4;1m'
+  _DNAV_KB_PROTO=1
+}
+_dnav_kb_pop() {
+  (( ${_DNAV_KB_PROTO:-0} )) || return 0
+  printf '\e[<u\e[>4;0m'
+  _DNAV_KB_PROTO=0
+}
+
 typeset -gi _DNAV_RESIZING=0
 typeset -gi _DNAV_RESIZE_MODE=0
 typeset -gi _DNAV_INLINE_EDIT=0
@@ -1057,6 +1218,7 @@ typeset -gi _DNAV_STEADY_NEED=6
 typeset -g  DNAV_ABORT=0
 typeset -g  _DNAV_STTY_ORIG=""
 typeset -gi _DNAV_CLEANED=0
+typeset -gi _DNAV_KB_PROTO=0
 typeset -ga _DNAV_NAMES _DNAV_PATHS
 typeset -ga _DNAV_ITEM_START _DNAV_ITEM_END
 typeset -gi _DNAV_SEL=0
@@ -1371,13 +1533,98 @@ _dnav_read_key() {
   done
 }
 
+# Bytes after ESC [ until a CSI final (0x40–0x7E) or 16 bytes.
+_dnav_read_csi() {
+  local b="" ch
+  local -i n=0
+  REPLY=""
+  while (( n < 16 )); do
+    if ! read -t 0.05 -k 1 ch 2>/dev/null; then
+      break
+    fi
+    [[ -n $ch ]] || break
+    b+="$ch"
+    n=$(( n + 1 ))
+    [[ $ch == [@-~] ]] && break
+  done
+  REPLY="$b"
+}
+
+# Payload after ESC [. Sets REPLY. Modified arrows stay arrows.
+# Kitty's modifier number is 1 plus a bitmask. Num Lock and Caps Lock set
+# their own bits, so Shift+Enter is 13;2u or 13;130u and Ctrl+C is 99;5u
+# or 99;133u. Lock bits are ignored. A near-miss stays ignore.
+# Bare Escape never reaches here.
+_dnav_match_csi() {
+  emulate -L zsh
+  local p="$1" body key mods rest
+  local -a f
+  local -i k=0 m=0 bits=0
+  REPLY=ignore
+  case $p in
+    *A) REPLY=up; return ;;
+    *B) REPLY=down; return ;;
+    *C) REPLY=right; return ;;
+    *D) REPLY=left; return ;;
+    *H) REPLY=home; return ;;
+    *F) REPLY=end; return ;;
+    3~|3\;*~) REPLY=delete; return ;;
+    1~|7~|1\;*~|7\;*~) REPLY=home; return ;;
+    4~|8~|4\;*~|8\;*~) REPLY=end; return ;;
+  esac
+
+  if [[ $p == *u ]]; then
+    body="${p%u}"
+    key="${body%%;*}"
+    key="${key%%:*}"
+    if [[ $body == *\;* ]]; then
+      rest="${body#*;}"
+      mods="${rest%%;*}"
+      mods="${mods%%:*}"
+    else
+      mods=1
+    fi
+  elif [[ $p == 27\;*~ ]]; then
+    body="${p%\~}"
+    f=("${(@s:;:)body}")
+    (( $#f >= 3 )) || return 0
+    mods="${${f[2]}%%:*}"
+    key="${${f[3]}%%:*}"
+  else
+    return 0
+  fi
+
+  [[ $key == <-> && $mods == <-> ]] || return 0
+  k=$key
+  m=$mods
+  if (( m > 0 )); then
+    bits=$(( m - 1 ))
+  fi
+  if (( k == 27 )); then
+    REPLY=esc
+    return 0
+  fi
+  # Ctrl is bit 2 of the mask. 'c' and 'C'.
+  if (( (k == 99 || k == 67) && (bits & 4) )); then
+    REPLY=ctrl-c
+    return 0
+  fi
+  # Shift is bit 0. Enter is 13, linefeed is 10, numpad enter is 57414.
+  # Ctrl+Enter stays ignored.
+  if (( (k == 13 || k == 10 || k == 57414) && (bits & 1) && (bits & 4) == 0 )); then
+    REPLY=shift-enter
+    return 0
+  fi
+}
+
 # Classify one byte; sets REPLY.
 _dnav_classify_key() {
-  local k="$1" k2 k3 k4
+  local k="$1" k2
   REPLY=""
   case $k in
     $'\x03') REPLY=ctrl-c; return 0 ;;
-    $'\n'|$'\r') REPLY=enter; return 0 ;;
+    $'\r') REPLY=enter; return 0 ;;
+    $'\n') REPLY=shift-enter; return 0 ;;
     $'\t') REPLY=tab; return 0 ;;
     $'\177'|$'\b') REPLY=backspace; return 0 ;;
     $'\x01') REPLY=ctrl-a; return 0 ;;
@@ -1388,30 +1635,9 @@ _dnav_classify_key() {
     $'\e')
       if read -t 0.05 -k 1 k2 2>/dev/null; then
         if [[ $k2 == '[' ]]; then
-          read -k 1 k3 2>/dev/null || k3=""
-          case $k3 in
-            A) REPLY=up; return 0 ;;
-            B) REPLY=down; return 0 ;;
-            C) REPLY=right; return 0 ;;
-            D) REPLY=left; return 0 ;;
-            H) REPLY=home; return 0 ;;
-            F) REPLY=end; return 0 ;;
-            3)
-              read -t 0.05 -k 1 k4 2>/dev/null || true
-              REPLY=delete
-              return 0
-              ;;
-            1|4|7|8)
-              read -t 0.05 -k 1 k4 2>/dev/null || true
-              if [[ $k3 == 1 || $k3 == 7 ]]; then
-                REPLY=home
-              else
-                REPLY=end
-              fi
-              return 0
-              ;;
-            *) REPLY=esc; return 0 ;;
-          esac
+          _dnav_read_csi
+          _dnav_match_csi "$REPLY"
+          return 0
         fi
         REPLY=esc
         return 0
@@ -1632,13 +1858,15 @@ _dnav_out() {
   printf '%s' "$1"
 }
 
-# Path bar. $1=path $2=origin col $3=dnav|djump. One row, never the last column.
+# Path bar. $1=path $2=origin col $3=dnav|djump $4=enter|shift-enter.
+# One row, never the last column. Shift+Enter uses shift_enter_bar.
 _dnav_success_bar() {
   emulate -L zsh
   setopt localoptions nomonitor nonotify
   local bar_path="$1"
   local origin_mid="${2:-}"
   local ctx="${3:-dnav}"
+  local how="${4:-enter}"
   local hl="${DNAV_HIGHLIGHT:-\e[30;46m}"
   local rst="${DNAV_RESET:-\e[0m}"
   local max_w usable
@@ -1647,7 +1875,11 @@ _dnav_success_bar() {
   local steps=${DNAV_CFG_SUCCESS_ANIM_STEPS:-8}
   local ms=${DNAV_CFG_SUCCESS_ANIM_MS:-2}
 
-  _dnav_want_bar "$ctx" || return 0
+  if [[ $how == shift-enter ]]; then
+    (( ${DNAV_CFG_SHIFT_BAR:-0} )) || return 0
+  else
+    _dnav_want_bar "$ctx" || return 0
+  fi
 
   max_w="$(_dnav_term_cols)"
   # Spare last column (wrap on iSH / narrow ttys).
@@ -1688,12 +1920,13 @@ _dnav_record_dest() {
   print -r -- "$1" > "$f" 2>/dev/null || true
 }
 
-# $1=path $2=dnav|djump $3=origin col. Bar, restore tty, maybe ls.
+# $1=path $2=dnav|djump $3=origin col $4=enter|shift-enter.
+# Bar, restore tty, maybe ls. Callers that omit $4 keep Enter.
 _dnav_finish() {
-  local dest="$1" ctx="${2:-dnav}" origin="${3:-}"
+  local dest="$1" ctx="${2:-dnav}" origin="${3:-}" how="${4:-enter}"
   _dnav_record_dest "$dest"
   if (( $+functions[_dnav_success_bar] )); then
-    _dnav_success_bar "$dest" "$origin" "$ctx"
+    _dnav_success_bar "$dest" "$origin" "$ctx" "$how"
   else
     print -r -- "$dest"
   fi
@@ -1702,7 +1935,7 @@ _dnav_finish() {
   else
     printf "\e[?25h"
   fi
-  (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls "$ctx"
+  (( $+functions[_dnav_maybe_ls] )) && _dnav_maybe_ls "$ctx" "$dest" "$how"
 }
 
 _dnav_cleanup() {
@@ -1711,6 +1944,7 @@ _dnav_cleanup() {
   (( $+functions[_dsearch_index_cancel] )) && _dsearch_index_cancel
   [[ -n $_DNAV_STTY_ORIG ]] && stty "$_DNAV_STTY_ORIG" 2>/dev/null
   _dnav_autowrap_on
+  _dnav_kb_pop
   printf "\e[0 q\e[?25h"
   _DNAV_CLEANED=1
 }
@@ -1886,9 +2120,10 @@ _dnav_reload_main_bar() {
 
 
 # Clear the chip strip, then the shared path bar.
+# $2 is enter or shift-enter. Enter keeps ls_after and success_bar.
 _dnav_success_from_sel() {
   _dnav_clear_menu
-  _dnav_finish "$1" dnav
+  _dnav_finish "$1" dnav "" "${2:-enter}"
 }
 
 dnav() {
@@ -1947,9 +2182,10 @@ dnav() {
   trap '_dnav_abort; return 130' INT TERM QUIT
   trap '_DNAV_WINCH=1' WINCH
 
-  stty -echo -icanon isig 2>/dev/null
+  stty -echo -icanon isig -icrnl -inlcr -igncr 2>/dev/null
   printf "\e[?25l"
   _dnav_autowrap_off
+  _dnav_kb_push
 
   _dnav_sync_term_size
   _dnav_mark_size
@@ -2003,6 +2239,8 @@ dnav() {
         _dnav_abort
         return 130
         ;;
+      ignore)
+        ;;
       left)
         if [[ $_DNAV_MODE == about ]]; then
           _dnav_ensure_about && _dnav_about_move_h -1
@@ -2040,7 +2278,7 @@ dnav() {
           return 0
         fi
         ;;
-      enter)
+      enter|shift-enter)
         if [[ $_DNAV_MODE == about ]]; then
           _dnav_ensure_about || continue
           if [[ $_DNAV_ABOUT_TAB == settings ]]; then
@@ -2062,7 +2300,7 @@ dnav() {
             _dnav_cleanup
             return 1
           }
-          _dnav_success_from_sel "$(_dnav_logical_path "$target")"
+          _dnav_success_from_sel "$(_dnav_logical_path "$target")" "$key"
           return 0
         else
           _dnav_clear_menu

@@ -67,7 +67,7 @@ _dnav_update() {
   dest="${DNAV_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/dnav}"
   if [[ ${dest:A} != ${repo:A}/zsh ]]; then
     print -r -- "dnav: $repo  →  $dest"
-    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile djump dsearch dsearch-index dindexer dnav-about dnav-update jumps || {
+    _dnav_update_copy "$repo/zsh" "$dest" dnav dfile dls dlsrc djump dsearch dsearch-index dindexer dnav-about dnav-update jumps || {
       print -u2 -- "dnav: failed to copy zsh scripts"
       return 1
     }
@@ -75,7 +75,7 @@ _dnav_update() {
       command mkdir -p -- "$dest/shell"
       command cp -f -- "$repo/shell"/dnav.sh "$repo/shell"/dnav.zsh "$repo/shell"/dnav.fish "$repo/shell"/dnav.ps1 "$dest/shell/" 2>/dev/null || true
     fi
-    zsh -f -c 'emulate -L zsh; local f; for f in dnav djump dfile dsearch dsearch-index dindexer dnav-about dnav-update; do
+    zsh -f -c 'emulate -L zsh; local f; for f in dnav djump dfile dls dsearch dsearch-index dindexer dnav-about dnav-update; do
       [[ -f $1/$f ]] && zcompile -U -- $1/$f 2>/dev/null || true
     done' zsh "$dest" || true
     if [[ -f $repo/install.sh ]]; then
@@ -95,6 +95,15 @@ _dnav_update() {
     copied=1
   else
     print -r -- "dnav: already running from $repo/zsh"
+  fi
+
+  local dlsrc="${XDG_CONFIG_HOME:-$HOME/.config}/dls/rc"
+  local dlsrc_src="$repo/zsh/dlsrc"
+  [[ -f $dlsrc_src ]] || dlsrc_src="$dest/dlsrc"
+  if [[ ! -f $dlsrc && -f $dlsrc_src ]]; then
+    command mkdir -p -- "${dlsrc:h}"
+    command cp -f -- "$dlsrc_src" "$dlsrc"
+    print -r -- "dls: wrote $dlsrc"
   fi
 
   added="$(_dnav_config_merge_defaults)"

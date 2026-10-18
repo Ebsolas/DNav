@@ -32,6 +32,7 @@ If the repo is not next to the install: `DNAV_UPDATE_FROM=/path/to/DNav dnav --u
 | `dnav` | folder bar |
 | `dnav f [PATH]` | file explorer |
 | `dnav s [QUERY]` | search |
+| `dls [ls flags] [PATH]...` | grid listing; `ls` flags such as `-l`, `-a`, `-t`. Enter opens a folder, Escape returns there. Config: `~/.config/dls/rc` |
 | `dhome`, `dproj`, … | jump without the TUI |
 | `djump add LABEL [PATH]` | add a jump |
 | `djump edit LABEL [PATH]` | change a jump |

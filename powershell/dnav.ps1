@@ -131,7 +131,7 @@ function global:Get-DnavSettings {
                 if ($val) { $s.Brand = $val }
             }
             { $_ -in @('ls_after', 'ls') } {
-                $s.LsAfter = ($val -match '^(1|true|yes|on)$')
+                $s.LsAfter = ($val -match '^(1|true|yes|on|ls|dls)$')
             }
             { $_ -in @('success_anim', 'anim') } {
                 $s.SuccessAnim = ($val -match '^(1|true|yes|on)$')

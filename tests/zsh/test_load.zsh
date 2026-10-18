@@ -468,6 +468,143 @@ test_maybe_ls_skips_wait_when_ls_off() {
   assert_eq "$slept" "0" "no wait when ls is off"
 }
 
+test_maybe_ls_uses_dls_for_one_command() {
+  emulate -L zsh
+  local save_ls="${DNAV_CFG_LS:-0}"
+  local save_dnav="${DNAV_CFG_LS_DNAV:--1}"
+  local save_djump="${DNAV_CFG_LS_DJUMP:--1}"
+  local save_ms="${DNAV_CFG_LS_AFTER_MS:-0}"
+  local ran="" had=0 file
+  file="$DNAV_ZSH_DIR/dnav"
+  if (( $+functions[dls] )); then
+    had=1
+    functions -c dls _dls_test_orig
+  fi
+  dls() { ran=dls }
+  DNAV_CFG_LS=dls
+  DNAV_CFG_LS_DNAV=-1
+  DNAV_CFG_LS_DJUMP=0
+  DNAV_CFG_LS_AFTER_MS=0
+
+  ran=""
+  _dnav_maybe_ls dnav / >/dev/null
+  assert_eq "$ran" "dls" "dnav exit opens dls"
+  ran=""
+  _dnav_maybe_ls dnav "$file" >/dev/null
+  assert_eq "$ran" "" "a file exit does not open dls"
+  ran=""
+  _dnav_maybe_ls djump >/dev/null
+  assert_eq "$ran" "" "djump off does not open dls"
+  DNAV_CFG_LS_DJUMP=dls
+  DNAV_CFG_LS=0
+  ran=""
+  _dnav_maybe_ls djump /tmp >/dev/null
+  assert_eq "$ran" "dls" "djump exit opens dls on its own"
+  ran=""
+  _dnav_maybe_ls dnav /tmp >/dev/null
+  assert_eq "$ran" "" "dnav stays off when only djump asks for dls"
+
+  unfunction dls
+  if (( had )); then
+    functions -c _dls_test_orig dls
+    unfunction _dls_test_orig
+  fi
+  DNAV_CFG_LS=$save_ls
+  DNAV_CFG_LS_DNAV=$save_dnav
+  DNAV_CFG_LS_DJUMP=$save_djump
+  DNAV_CFG_LS_AFTER_MS=$save_ms
+}
+
+test_maybe_ls_shift_enter() {
+  emulate -L zsh
+  local save_ls="${DNAV_CFG_LS:-0}"
+  local save_dnav="${DNAV_CFG_LS_DNAV:--1}"
+  local save_djump="${DNAV_CFG_LS_DJUMP:--1}"
+  local save_shift="${DNAV_CFG_SHIFT_ENTER:-none}"
+  local save_bar="${DNAV_CFG_SHIFT_BAR:-0}"
+  local save_anim="${DNAV_CFG_SUCCESS_ANIM:-1}"
+  local save_steps="${DNAV_CFG_SUCCESS_ANIM_STEPS:-8}"
+  local save_ms="${DNAV_CFG_SUCCESS_ANIM_MS:-2}"
+  local save_ok="${DNAV_CFG_SUCCESS_BAR:-1}"
+  local save_ok_dnav="${DNAV_CFG_SUCCESS_BAR_DNAV:--1}"
+  local ran="" had=0 file
+  local -i n=0
+  file="$DNAV_ZSH_DIR/dnav"
+  if (( $+functions[dls] )); then
+    had=1
+    functions -c dls _dls_test_shift_orig
+  fi
+  dls() { ran=dls }
+  functions -c _dnav_sleep_ms _dnav_sleep_ms_shift
+  functions -c _dnav_out _dnav_out_shift
+  _dnav_sleep_ms() { n=$(( n + 1 )) }
+  _dnav_out() { : }
+  DNAV_CFG_LS=0
+  DNAV_CFG_LS_DNAV=-1
+  DNAV_CFG_LS_DJUMP=-1
+  DNAV_CFG_SHIFT_ENTER=dls
+  DNAV_CFG_LS_AFTER_MS=0
+
+  ran=""
+  _dnav_maybe_ls dnav /tmp >/dev/null
+  assert_eq "$ran" "" "enter ignores shift_enter"
+  ran=""
+  _dnav_maybe_ls dnav /tmp shift-enter >/dev/null
+  assert_eq "$ran" "dls" "shift-enter opens dls"
+  ran=""
+  _dnav_maybe_ls dnav "$file" shift-enter >/dev/null
+  assert_eq "$ran" "" "shift-enter on a file does not open dls"
+  DNAV_CFG_SHIFT_ENTER=none
+  ran=""
+  _dnav_maybe_ls dnav /tmp shift-enter >/dev/null
+  assert_eq "$ran" "" "shift-enter none lists nothing"
+  DNAV_CFG_SHIFT_ENTER=ls
+  ran=""
+  _dnav_maybe_ls dnav /tmp shift-enter >/dev/null
+  assert_eq "$ran" "" "shift-enter ls does not open dls"
+  DNAV_CFG_SHIFT_ENTER=dls
+  ran=""
+  _dnav_maybe_ls djump /tmp >/dev/null
+  assert_eq "$ran" "" "djump does not use shift_enter"
+
+  DNAV_CFG_SUCCESS_ANIM=1
+  DNAV_CFG_SUCCESS_ANIM_STEPS=4
+  DNAV_CFG_SUCCESS_ANIM_MS=10
+  DNAV_CFG_SUCCESS_BAR=1
+  DNAV_CFG_SUCCESS_BAR_DNAV=1
+  DNAV_CFG_SHIFT_BAR=0
+  COLUMNS=80
+  n=0
+  _dnav_success_bar /tmp "" dnav shift-enter
+  assert_eq "$n" "0" "shift bar off does not animate"
+  n=0
+  _dnav_success_bar /tmp "" dnav
+  assert_eq "$n" "4" "enter still animates when the shift bar is off"
+  DNAV_CFG_SHIFT_BAR=1
+  n=0
+  _dnav_success_bar /tmp "" dnav shift-enter
+  assert_eq "$n" "4" "shift bar on animates once per step"
+
+  unfunction dls _dnav_sleep_ms _dnav_out
+  if (( had )); then
+    functions -c _dls_test_shift_orig dls
+    unfunction _dls_test_shift_orig
+  fi
+  functions -c _dnav_sleep_ms_shift _dnav_sleep_ms
+  functions -c _dnav_out_shift _dnav_out
+  unfunction _dnav_sleep_ms_shift _dnav_out_shift
+  DNAV_CFG_LS=$save_ls
+  DNAV_CFG_LS_DNAV=$save_dnav
+  DNAV_CFG_LS_DJUMP=$save_djump
+  DNAV_CFG_SHIFT_ENTER=$save_shift
+  DNAV_CFG_SHIFT_BAR=$save_bar
+  DNAV_CFG_SUCCESS_ANIM=$save_anim
+  DNAV_CFG_SUCCESS_ANIM_STEPS=$save_steps
+  DNAV_CFG_SUCCESS_ANIM_MS=$save_ms
+  DNAV_CFG_SUCCESS_BAR=$save_ok
+  DNAV_CFG_SUCCESS_BAR_DNAV=$save_ok_dnav
+}
+
 test_success_bar_sleeps_per_step() {
   emulate -L zsh
   local -i n=0
@@ -520,7 +657,7 @@ test_sleep_ms_survives_sigchld() {
 
 test_syntax_zsh_scripts() {
   local f
-  for f in dnav dfile djump dsearch dsearch-index dindexer dnav-about dnav-update; do
+  for f in dnav dfile dls djump dsearch dsearch-index dindexer dnav-about dnav-update; do
     if zsh -n "$DNAV_ZSH_DIR/$f" 2>/dev/null; then
       _dnav_test_pass "zsh -n $f"
     else
@@ -563,6 +700,8 @@ run_test test_sourced_dnav_does_not_run_tui
 run_test test_resourcing_reloads_search_plugin
 run_test test_maybe_ls_waits_after_bar
 run_test test_maybe_ls_skips_wait_when_ls_off
+run_test test_maybe_ls_uses_dls_for_one_command
+run_test test_maybe_ls_shift_enter
 run_test test_success_bar_sleeps_per_step
 run_test test_sleep_ms_survives_sigchld
 run_test test_syntax_zsh_scripts

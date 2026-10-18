@@ -38,6 +38,8 @@ test_seeded_config_loaded() {
   assert_eq "$DNAV_CFG_BRAND" "ZshTestNav" "brand from fixture"
   assert_eq "$DNAV_CFG_LS" "0" "ls_after off"
   assert_eq "$DNAV_CFG_LS_AFTER_MS" "0" "ls_after_ms default 0"
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "none" "shift_enter default none"
+  assert_eq "$DNAV_CFG_SHIFT_BAR" "0" "shift_enter_bar default off"
   assert_eq "$DNAV_CFG_SUCCESS_ANIM" "0" "success_anim off"
   assert_eq "$DNAV_CFG_INDEX_AUTO" "1" "index_auto default on"
   assert_eq "$DNAV_CFG_INDEX_WHEN" "open" "index_when default open"
@@ -192,6 +194,9 @@ EOF
   assert_contains "$txt" "success_bar = 1" "adds success_bar"
   assert_contains "$txt" "# Cyan path bar after select (0 = hide)" "notes success_bar"
   assert_contains "$txt" "ls_after_ms = 0" "adds ls_after_ms"
+  assert_contains "$txt" "shift_enter = none" "adds shift_enter"
+  assert_contains "$txt" "shift_enter_bar = 0" "adds shift_enter_bar"
+  assert_contains "$txt" "# Shift+Enter on the bar: none, ls, or dls" "notes shift_enter"
   added="$(_dnav_config_merge_defaults "$DNAV_TEST_CONFIG")"
   assert_eq "$added" "0" "second merge is a no-op"
   txt="$(<"$DNAV_TEST_CONFIG/config")"
@@ -403,8 +408,192 @@ EOF
   assert_eq "$DNAV_CFG_LS_AFTER_MS" "250" "ls_delay alias"
 }
 
+test_ls_after_dls_config() {
+  local txt
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = LsCfg
+ls_after = dls
+ls_after_dnav = inherit
+ls_after_djump = 0
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS" "dls" "ls_after dls"
+  assert_eq "$DNAV_CFG_LS_DNAV" "-1" "dnav inherit stays -1"
+  assert_eq "$DNAV_CFG_LS_DJUMP" "0" "djump off"
+  assert_eq "$(_dnav_ls_mode dnav)" "dls" "dnav inherits dls"
+  assert_eq "$(_dnav_ls_mode djump)" "off" "djump override is off"
+  assert_ok _dnav_want_ls dnav
+  assert_fail _dnav_want_ls djump
+
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+ls_after = ls
+ls_after_dnav = dls
+ls_after_djump = ls
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS" "1" "ls_after ls stores 1"
+  assert_eq "$DNAV_CFG_LS_DNAV" "dls" "dnav override is dls"
+  assert_eq "$DNAV_CFG_LS_DJUMP" "1" "djump override is ls"
+  assert_eq "$(_dnav_ls_mode dnav)" "dls" "dnav uses its own dls"
+  assert_eq "$(_dnav_ls_mode djump)" "ls" "djump uses ls"
+  assert_eq "$(_dnav_ls_label "$DNAV_CFG_LS")" "ls" "1 is labeled ls"
+  assert_eq "$(_dnav_ls_label "$DNAV_CFG_LS_DNAV")" "dls" "dls is labeled dls"
+  assert_eq "$(_dnav_ls_label "$DNAV_CFG_LS_DJUMP")" "ls" "stored 1 is labeled ls"
+
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+ls_after = 1
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS" "1" "ls_after 1 still means ls"
+  assert_eq "$DNAV_CFG_LS_DNAV" "-1" "missing override inherits"
+  assert_eq "$(_dnav_ls_mode djump)" "ls" "djump inherits ls"
+
+  DNAV_CFG_LS=0
+  _dnav_ls_cycle ls_after
+  assert_eq "$DNAV_CFG_LS" "1" "cycle off to ls"
+  _dnav_ls_cycle ls_after
+  assert_eq "$DNAV_CFG_LS" "dls" "cycle ls to dls"
+  _dnav_ls_cycle ls_after
+  assert_eq "$DNAV_CFG_LS" "0" "cycle dls to off"
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "ls_after = 0" "cycle writes ls_after"
+
+  DNAV_CFG_LS_DJUMP=-1
+  _dnav_ls_cycle ls_after_djump
+  assert_eq "$DNAV_CFG_LS_DJUMP" "1" "djump cycle inherit to ls"
+  _dnav_ls_cycle ls_after_djump
+  assert_eq "$DNAV_CFG_LS_DJUMP" "dls" "djump cycle ls to dls"
+  _dnav_ls_cycle ls_after_djump
+  assert_eq "$DNAV_CFG_LS_DJUMP" "0" "djump cycle dls to off"
+  _dnav_ls_cycle ls_after_djump
+  assert_eq "$DNAV_CFG_LS_DJUMP" "-1" "djump cycle off to inherit"
+  txt="$(<"$DNAV_TEST_CONFIG/config")"
+  assert_contains "$txt" "ls_after_djump = inherit" "cycle writes inherit"
+
+  DNAV_CFG_LS=0
+  DNAV_CFG_LS_DNAV=-1
+  DNAV_CFG_LS_DJUMP=-1
+}
+
+test_shift_enter_config() {
+  local txt n dir tok
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = ShiftCfg
+ls_after = 0
+shift_enter = dls
+shift_enter_bar = 1
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "dls" "shift_enter dls"
+  assert_eq "$DNAV_CFG_SHIFT_BAR" "1" "shift_enter_bar on"
+  assert_eq "$DNAV_CFG_LS" "0" "enter listing stays off"
+  assert_eq "$(_dnav_ls_mode dnav)" "off" "enter ignores shift_enter"
+  assert_eq "$(_dnav_ls_mode dnav enter)" "off" "explicit enter ignores shift_enter"
+  assert_eq "$(_dnav_ls_mode dnav shift-enter)" "dls" "shift-enter uses shift_enter"
+  assert_fail _dnav_want_ls dnav
+
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+shift_enter = ls
+shift_enter_bar = 0
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "ls" "shift_enter ls stays the word ls"
+  assert_eq "$DNAV_CFG_SHIFT_BAR" "0" "shift_enter_bar off"
+  assert_eq "$(_dnav_ls_mode dnav shift-enter)" "ls" "shift-enter ls"
+
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+shift_enter = 1
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "ls" "shift_enter 1 means ls"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+shift_enter = off
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "none" "shift_enter off means none"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+shift_enter = 0
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "none" "shift_enter 0 means none"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+shift_enter = garbage
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "none" "shift_enter garbage means none"
+  assert_eq "$(_dnav_ls_mode dnav shift-enter)" "off" "garbage shift-enter lists nothing"
+
+  DNAV_CFG_LS=dls
+  DNAV_CFG_LS_DNAV=-1
+  DNAV_CFG_SHIFT_ENTER=none
+  assert_eq "$(_dnav_ls_mode dnav)" "dls" "enter still follows ls_after"
+  assert_eq "$(_dnav_ls_mode djump shift-enter)" "off" "djump shift-enter is still shift_enter"
+
+  source "$DNAV_ZSH_DIR/dnav-about"
+  DNAV_CFG_SHIFT_ENTER=none
+  _dnav_settings_apply_key enum shift_enter
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "ls" "settings cycles none to ls"
+  _dnav_settings_apply_key enum shift_enter
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "dls" "settings cycles ls to dls"
+  _dnav_settings_apply_key enum shift_enter
+  assert_eq "$DNAV_CFG_SHIFT_ENTER" "none" "settings cycles dls to none"
+  DNAV_CFG_SHIFT_BAR=0
+  _dnav_settings_apply_key toggle shift_enter_bar
+  assert_eq "$DNAV_CFG_SHIFT_BAR" "1" "settings toggles the shift bar"
+
+  n="$(_dnav_config_key_note shift_enter)"
+  assert_contains "$n" "none, ls, or dls" "schema note for shift_enter"
+  if [[ $n == *'|'* ]]; then
+    _dnav_test_fail "shift_enter note contains a pipe"
+  else
+    _dnav_test_pass "shift_enter note has no pipe"
+  fi
+  n="$(_dnav_config_key_note ls_after)"
+  assert_contains "$n" "ls -a after" "ls_after note unchanged"
+
+  for tok in A B C D H F '3~' '1~' '13;2u' '13;2;1u' '13;2:1u' '13:10;2u' '13;130u' '13;66u' '13;194u' '10;130u' '27;2;13~' '27;2;13;1~' '27;130;13~' '27u' '27;2u' '27;2:1u' '27;129u' '27;2;27~' '99;5u' '99;5:1u' '99;133u' '27;5;99~' '27;133;99~' '13;5u' '99~' '1;2A' '1;130A'; do
+    _dnav_match_csi "$tok"
+    case $tok in
+      A) assert_eq "$REPLY" "up" "csi A is up" ;;
+      B) assert_eq "$REPLY" "down" "csi B is down" ;;
+      C) assert_eq "$REPLY" "right" "csi C is right" ;;
+      D) assert_eq "$REPLY" "left" "csi D is left" ;;
+      H) assert_eq "$REPLY" "home" "csi H is home" ;;
+      F) assert_eq "$REPLY" "end" "csi F is end" ;;
+      3~) assert_eq "$REPLY" "delete" "csi delete" ;;
+      1~) assert_eq "$REPLY" "home" "csi home" ;;
+      13\;2u|13\;2\;1u|13\;2:1u|13:10\;2u|13\;130u|13\;66u|13\;194u|10\;130u|27\;2\;13~|27\;2\;13\;1~|27\;130\;13~) assert_eq "$REPLY" "shift-enter" "csi $tok is shift-enter" ;;
+      27u|27\;2u|27\;2:1u|27\;129u|27\;2\;27~) assert_eq "$REPLY" "esc" "csi $tok is escape" ;;
+      99\;5u|99\;5:1u|99\;133u|27\;5\;99~|27\;133\;99~) assert_eq "$REPLY" "ctrl-c" "csi $tok is ctrl-c" ;;
+      13\;5u|99~) assert_eq "$REPLY" "ignore" "csi $tok is not shift-enter" ;;
+      1\;2A|1\;130A) assert_eq "$REPLY" "up" "shift-up stays up" ;;
+      *) _dnav_test_fail "untested csi $tok" ;;
+    esac
+  done
+
+  _dnav_classify_key $'\r'
+  assert_eq "$REPLY" "enter" "carriage return is enter"
+  _dnav_classify_key $'\n'
+  assert_eq "$REPLY" "shift-enter" "newline is shift-enter"
+
+  dir="$DNAV_TEST_TMP/shiftseed"
+  mkdir -p -- "$dir"
+  _dnav_config_seed "$dir"
+  txt="$(<"$dir/config")"
+  assert_contains "$txt" "shift_enter = none" "seed writes shift_enter"
+  assert_contains "$txt" "shift_enter_bar = 0" "seed writes shift_enter_bar"
+
+  DNAV_CFG_LS=0
+  DNAV_CFG_LS_DNAV=-1
+  DNAV_CFG_LS_DJUMP=-1
+  DNAV_CFG_SHIFT_ENTER=none
+  DNAV_CFG_SHIFT_BAR=0
+}
+
 run_test test_seed_folders_are_generic
 run_test test_inaccessible_config_keys
 run_test test_ls_after_ms_config
+run_test test_ls_after_dls_config
+run_test test_shift_enter_config
 run_test test_seed_does_not_clobber_existing
 dnav_test_finish

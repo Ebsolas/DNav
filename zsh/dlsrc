@@ -1,0 +1,73 @@
+# dls rc — ranger-style. Missing file uses the built-in defaults.
+# set, highlight, ext, map, source.  # starts a comment.
+# Command flags override this file for one run: dls -la, dls -t.
+
+set show_hidden false
+set sort name
+set sort_dirs mixed
+set sort_dots mixed
+set sort_reverse false
+set sort_case ignore
+set colorscheme default
+
+# sort_dots first pulls a leading dot ahead of the other names in that group.
+# With sort_dirs first: dot dirs, dirs, dot files, files.
+# set sort_dirs first
+# set sort_dots first
+# set show_hidden true
+
+# KIND is dir, link, exec, file, image, archive, media, selected, status,
+# or any name you use in an ext line.
+# ATTRS: default, bold, dim, underline, reverse, a color name, or 0–255.
+# Color names: black red green yellow blue magenta cyan white
+#              bright-black … bright-white
+highlight dir bold blue
+highlight link bold cyan
+highlight exec bold green
+highlight file default
+highlight image magenta
+highlight archive red
+highlight media yellow
+highlight selected reverse
+highlight status dim
+
+ext jpg,jpeg,png,gif,webp,svg image
+ext mp3,flac,wav,mp4,mkv,webm media
+ext tar,gz,tgz,bz2,xz,zip,7z archive
+
+# One key, one action:
+#   move-left move-right move-up move-down
+#   open parent quit quit-dir cancel toggle-hidden cycle-sort reload filter
+# Names: a character, or <enter> <s-enter> <esc> <bs> <left> <right> <up> <down>
+# Defaults: hjkl and arrows move, Enter opens, Shift+Enter cds in and leaves,
+# Backspace parent, Escape quits, . toggles dotfiles, o cycles sort, R reloads,
+# / filters. Shift+Enter does not list or start another dls unless
+# shift_enter_ls says so.
+# map <s-enter> open stays in the grid.
+# The filter hides other names until Enter. Each word must match.
+# A dash excludes the next word when a space is in front of it.
+# map q quit
+# map <s-enter> quit-dir
+
+# Clear the visible page when dls leaves. The default is off.
+# Clauses split by | are or. Terms inside a clause split by & are and.
+# Spaces are ignored. Keys: enter, shift-enter, esc, ctrl-c.
+# Actions: quit, quit-dir, cancel.
+# N% is true when the painted lines are at least that percent of the screen.
+# pct>=N pct>N pct<=N pct<N pct=N and rows>=N compare that painted block.
+# rows counts painted lines, including the status line.
+# set auto_cls off
+# set auto_cls always
+# set auto_cls shift-enter
+# set auto_cls enter
+# set auto_cls shift-enter|50%
+# set auto_cls shift-enter&40%
+# set auto_cls rows>=12
+
+# After Shift+Enter leaves, list that folder. The default is off.
+# ls runs ls -a. dls opens the grid again.
+# set shift_enter_ls off
+# set shift_enter_ls ls
+# set shift_enter_ls dls
+
+# source ~/.config/dls/extra

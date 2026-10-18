@@ -1,5 +1,5 @@
-# zshrc stub: dKEY wrappers + dnav/dconfig/djump load files on first use.
-# Does not source djump or the TUI at shell start.
+# zshrc stub: dKEY wrappers + dnav/dconfig/djump/dls load files on first use.
+# Does not source djump, dls, or the TUI at shell start.
 
 [[ -n ${_DNAV_ZSH_STUB:-} ]] && return 0
 _DNAV_ZSH_STUB=1
@@ -44,7 +44,7 @@ _dnav_stub_bind_keys() {
     [[ $key =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
     cmd="d${key}"
     case $cmd in
-      dnav|djump|dconfig|dhelp) continue ;;
+      dnav|djump|dconfig|dhelp|dls) continue ;;
     esac
     if (( $+functions[$cmd] )); then
       continue
@@ -56,6 +56,17 @@ _dnav_stub_bind_keys() {
     esac
     eval "${cmd}() { (( \$+functions[_djump_goto] )) || source \"\$DNAV_DIR/djump\"; _djump_goto ${(q)key}; }"
   done < "$f"
+}
+
+# Grid ls. Defined before jump binding so a jump named ls cannot take dls.
+dls() {
+  [[ -r $DNAV_DIR/dls ]] || {
+    print -u2 -- "dnav: missing $DNAV_DIR/dls"
+    return 1
+  }
+  unfunction dls 2>/dev/null
+  source "$DNAV_DIR/dls" || return 1
+  dls "$@"
 }
 
 _dnav_stub_bind_keys

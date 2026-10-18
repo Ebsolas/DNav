@@ -22,9 +22,10 @@ _dnav_help_topic_body() {
     Move)
       print -r -- "h, l, ←, →                    move on the main bar"
       print -r -- "Enter                         open the selected folder"
-      print -r -- "Enter on About                open this help"
+      print -r -- "Shift+Enter                   jump into the folder, no listing"
+      print -r -- "Enter or Shift+Enter on About open this help"
       print -r -- "Esc                           leave dnav, or leave About"
-      print -r -- "After a jump                  a path bar is shown (ls if ls_after=1)"
+      print -r -- "After a jump                  a path bar, then ls or dls"
       print -r -- "The brand chip is not selectable"
       ;;
     Search)
@@ -74,8 +75,11 @@ _dnav_help_topic_body() {
       print -r -- "dnav --update                 refresh scripts; merge new config keys"
       print -r -- "other shells                 source shell/dnav.sh (or .fish / .ps1)"
       print -r -- "dnav --reindex                rebuild the search index"
-      print -r -- "ls_after=1                    run ls after a successful jump"
-      print -r -- "ls_after_ms=N                 wait N ms after the path bar before ls"
+      print -r -- "ls_after=0|ls|dls             listing after dnav and djump"
+      print -r -- "ls_after_dnav / _djump        override one; inherit uses ls_after"
+      print -r -- "ls_after_ms=N                 wait N ms after the path bar"
+      print -r -- "shift_enter=none|ls|dls       Shift+Enter listing (default none)"
+      print -r -- "shift_enter_bar=0|1           path bar on Shift+Enter"
       ;;
   esac
 }
@@ -112,6 +116,7 @@ _dnav_settings_fill_body() {
         case $ui in
           toggle) disp="$(_dnav_settings_onoff "$var")" ;;
           cycle3) disp="$(_dnav_settings_cycle3 "$var")" ;;
+          lsmode|lsmode3) disp="$(_dnav_ls_label "${(P)var}")" ;;
           *) disp="${(P)var}" ;;
         esac
         _dnav_settings_row "$ui" "$key" "${(r:18:)key} ${(r:10:)disp} $hint"
@@ -157,7 +162,7 @@ _dnav_inline_edit() {
   {
     printf "\e[%dB" $edit_row
     printf "\e[?25h"
-    stty -echo -icanon isig 2>/dev/null
+    stty -echo -icanon isig -icrnl -inlcr -igncr 2>/dev/null
     while true; do
       printf "\r\e[2K%s%s" "$prompt" "$buf"
       if (( $+functions[_dnav_read_token] )); then
@@ -167,7 +172,7 @@ _dnav_inline_edit() {
         read -k 1 k || k=esc
       fi
       case $k in
-        enter)
+        enter|shift-enter)
           REPLY="$buf"
           printf "\e[?25l\r\e[2K"
           (( edit_row > 0 )) && printf "\e[%dA" $edit_row
@@ -259,6 +264,7 @@ _dnav_about_refresh_style() {
 _dnav_about_edit_file() {
   local file="$1"
   local ed="${EDITOR:-${VISUAL:-vi}}"
+  local kb=${_DNAV_KB_PROTO:-0}
   [[ -n $file ]] || return 1
   # Clear about UI to a clean line
   printf "\r\e[2K"
@@ -271,11 +277,13 @@ _dnav_about_edit_file() {
   fi
   _DNAV_HELP_EXTRA=0
   printf "\r\e[2K\e[?25h"
+  _dnav_kb_pop
   stty "$_DNAV_STTY_ORIG" 2>/dev/null
   ${=ed} -- "$file"
-  stty -echo -icanon isig 2>/dev/null
+  stty -echo -icanon isig -icrnl -inlcr -igncr 2>/dev/null
   printf "\e[?25l"
   _dnav_autowrap_off
+  (( kb )) && _dnav_kb_push
   _dnav_config_load
   _dnav_about_refresh_style
   if [[ $file == */jumps ]] && (( $+functions[_djump_load] )); then
@@ -308,6 +316,9 @@ _dnav_settings_apply_key() {
       esac
       _dnav_config_var_set "$var" "$cur"
       _dnav_config_set "$key" "$(_dnav_cfg_cycle3_store "$cur")"
+      ;;
+    lsmode|lsmode3)
+      _dnav_ls_cycle "$key" || return 1
       ;;
     enum)
       opts=("${(@s:,:)${type#enum:}}")
@@ -371,7 +382,7 @@ _dnav_settings_apply_edit() {
   local ridx="${_DNAV_ABOUT_IDX[_DNAV_SETTINGS_ROW+1]}"
   local val label dest k
   case $kind in
-    toggle|cycle3|enum|value)
+    toggle|cycle3|enum|value|lsmode|lsmode3)
       _dnav_settings_apply_key "$kind" "$rkey" || return 1
       ;;
     folder)

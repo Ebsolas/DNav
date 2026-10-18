@@ -214,6 +214,38 @@ test_store_path_tilde() {
   assert_eq "$got" "~/Documents" "store as ~ path"
 }
 
+# A jump before dnav has been opened still reads the config file.
+test_goto_loads_bar_and_dls_from_config() {
+  local out cfg
+  cfg="$(mktemp -d)"
+  mkdir -p -- "$cfg/jump-box-marker"
+  cat > "$cfg/config" <<'EOF'
+ls_after = 0
+ls_after_djump = dls
+success_bar = 0
+success_bar_djump = 1
+success_anim = 0
+EOF
+  print -r -- "box  $cfg/jump-box-marker" > "$cfg/jumps"
+  out="$(
+    export DNAV_CONFIG_DIR="$cfg"
+    export DNAV_JUMPS="$cfg/jumps"
+    export DNAV_DIR="$DNAV_ZSH_DIR"
+    DNAV_CFG_LS=0
+    DNAV_CFG_LS_DJUMP=0
+    DNAV_CFG_SUCCESS_BAR=0
+    DNAV_CFG_SUCCESS_BAR_DJUMP=0
+    DNAV_CFG_SUCCESS_ANIM=0
+    unfunction dls _dnav_success_bar _dnav_maybe_ls 2>/dev/null || true
+    dls() { print -r -- DLS_RAN }
+    source "$DNAV_ZSH_DIR/djump"
+    _djump_goto box
+  )"
+  rm -rf -- "$cfg"
+  assert_contains "$out" "DLS_RAN" "jump opens dls from the config file"
+  assert_contains "$out" "jump-box-marker" "jump draws the success bar"
+}
+
 run_test test_load_jumps
 run_test test_resolve_home
 run_test test_resolve_doc
@@ -232,4 +264,5 @@ run_test test_djump_check_stolen_alias
 run_test test_djump_save_atomic
 run_test test_djump_load_hash_in_path
 run_test test_store_path_tilde
+run_test test_goto_loads_bar_and_dls_from_config
 dnav_test_finish

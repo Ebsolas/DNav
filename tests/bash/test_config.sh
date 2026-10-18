@@ -81,6 +81,20 @@ EOF
   fi
 }
 
+test_ls_after_dls_means_list() {
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+brand = LsCfg
+ls_after = dls
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS" "1" "bash treats dls as listing on"
+  cat > "$DNAV_TEST_CONFIG/config" <<'EOF'
+ls_after = ls
+EOF
+  _dnav_config_load
+  assert_eq "$DNAV_CFG_LS" "1" "bash treats ls as listing on"
+}
+
 test_dconfig_path() {
   local got
   got="$(dconfig -p)"
@@ -93,6 +107,7 @@ run_test test_expand_path_tilde
 run_test test_color_num
 run_test test_seeded_config_loaded
 run_test test_reload_picks_up_edits
+run_test test_ls_after_dls_means_list
 run_test test_folders_skip_about_help
 run_test test_dconfig_path
 dnav_test_finish
